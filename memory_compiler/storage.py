@@ -677,6 +677,48 @@ def parse_git_log(repo_path: str, since: str = None) -> list[dict]:
     return commits
 
 
+def parse_git_log_raw(raw_text: str) -> list[dict]:
+    """Parse raw git log output (--format='%H|%s|%an|%aI' --numstat or --stat).
+
+    Accepts output from:
+      git log --format="%H|%s|%an|%aI" --numstat
+    """
+    commits = []
+    current = None
+
+    for line in raw_text.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+
+        # Try header: hash|message|author|date
+        parts = line_stripped.split("|", 3)
+        if len(parts) == 4 and re.match(r'^[0-9a-f]{7,40}$', parts[0].strip()):
+            if current:
+                commits.append(current)
+            current = {
+                "hash": parts[0].strip(),
+                "message": parts[1].strip(),
+                "author": parts[2].strip(),
+                "date": parts[3].strip(),
+                "files": [],
+            }
+            continue
+
+        # Try numstat: ins\tdels\tpath
+        if current:
+            m = re.match(r'^(\d+|-)\t(\d+|-)\t(.+)$', line_stripped)
+            if m:
+                ins = int(m.group(1)) if m.group(1) != '-' else 0
+                dels = int(m.group(2)) if m.group(2) != '-' else 0
+                current["files"].append({"path": m.group(3), "insertions": ins, "deletions": dels})
+
+    if current:
+        commits.append(current)
+
+    return commits
+
+
 _PREFIX_RE = re.compile(r'^(fix|feat|refactor|docs|chore|build|test|style|perf|ci)[\(:\s]', re.IGNORECASE)
 
 

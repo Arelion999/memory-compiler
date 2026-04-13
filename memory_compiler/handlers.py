@@ -1167,40 +1167,55 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 # ─── Git capture ──────────────────────────────────────────────────────────
 
 
-async def git_capture(repo_path: str, project: str, since: str = None,
-                      auto_save: bool = False, group_by: str = "prefix") -> list[TextContent]:
-    """Capture knowledge from git commits of an external repository."""
+async def git_capture(repo_path: str = None, project: str = "", since: str = None,
+                      auto_save: bool = False, group_by: str = "prefix",
+                      git_log_raw: str = None) -> list[TextContent]:
+    """Capture knowledge from git commits.
+
+    Two modes:
+    - repo_path: server reads git log directly from a local/mounted repo
+    - git_log_raw: client sends raw output of `git log --format="%H|%s|%an|%aI" --numstat`
+    """
     from memory_compiler.storage import (
-        parse_git_log, group_commits, format_capture_group,
+        parse_git_log, parse_git_log_raw, group_commits, format_capture_group,
         read_last_capture, write_last_capture,
     )
 
-    # Validate repo
-    check = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=repo_path, capture_output=True, text=True,
-    )
-    if check.returncode != 0:
-        return [TextContent(type="text", text=f"'{repo_path}' — не git-репозиторий.")]
+    if not repo_path and not git_log_raw:
+        return [TextContent(type="text", text="Нужен repo_path или git_log_raw.")]
 
-    # Determine since
-    effective_since = since
-    if not effective_since:
-        last_hash = read_last_capture(project, repo_path)
-        if last_hash:
-            effective_since = last_hash
+    source_label = repo_path or "(raw input)"
 
-    # Parse git log
-    commits = parse_git_log(repo_path, effective_since)
+    if git_log_raw:
+        # Parse from raw text — no repo access needed
+        commits = parse_git_log_raw(git_log_raw)
+    else:
+        # Validate repo
+        check = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=repo_path, capture_output=True, text=True,
+        )
+        if check.returncode != 0:
+            return [TextContent(type="text", text=f"'{repo_path}' — не git-репозиторий.")]
+
+        # Determine since
+        effective_since = since
+        if not effective_since:
+            last_hash = read_last_capture(project, repo_path)
+            if last_hash:
+                effective_since = last_hash
+
+        commits = parse_git_log(repo_path, effective_since)
+
     if not commits:
-        msg = "Новых коммитов нет." if effective_since else "Коммитов не найдено."
+        msg = "Новых коммитов нет." if (since or (repo_path and read_last_capture(project, repo_path))) else "Коммитов не найдено."
         return [TextContent(type="text", text=msg)]
 
     # Group commits
     groups = group_commits(commits, group_by)
 
     # Format results
-    parts = [f"# Git Capture: {repo_path}\n"]
+    parts = [f"# Git Capture: {source_label}\n"]
     parts.append(f"**Коммитов:** {len(commits)} | **Групп:** {len(groups)} | **Режим:** {'auto_save' if auto_save else 'preview'}\n")
 
     saved_count = 0
@@ -1222,7 +1237,7 @@ async def git_capture(repo_path: str, project: str, since: str = None,
             parts.append(content)
 
     # Track last captured commit
-    if commits:
+    if commits and repo_path:
         write_last_capture(project, repo_path, commits[0]["hash"])
 
     if auto_save:
