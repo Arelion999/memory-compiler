@@ -841,6 +841,34 @@ async def list_tools() -> list[Tool]:
                 "properties": {}
             }
         ),
+        Tool(
+            name="start_task",
+            description="Начать нетривиальную задачу. ВЫЗЫВАЙ ПЕРВЫМ ДЕЙСТВИЕМ при получении задачи (баг, доработка, настройка, интеграция, деплой). Ищет похожие кейсы + загружает контекст сессии.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Тема задачи — что нужно сделать"},
+                    "project": {"type": "string", "description": "Имя проекта (если известно, иначе 'all')"}
+                },
+                "required": ["topic"]
+            }
+        ),
+        Tool(
+            name="finish_task",
+            description="Завершить задачу и сохранить решение. ВЫЗЫВАЙ ПОСЛЕ РЕШЕНИЯ любой нетривиальной задачи. Сохраняет урок + контекст сессии.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Краткое название решённой задачи"},
+                    "content": {"type": "string", "description": "Проблема + решение + ключевые факты"},
+                    "project": {"type": "string", "description": "Имя проекта"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "session_summary": {"type": "string", "description": "Что сделано в сессии"},
+                    "open_questions": {"type": "string", "description": "Что осталось / открытые вопросы"}
+                },
+                "required": ["topic", "content", "project"]
+            }
+        ),
     ]
 
 
@@ -889,6 +917,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await _remove_project(**arguments)
     elif name == "list_projects":
         result = await _list_projects()
+    elif name == "start_task":
+        result = await _start_task(**arguments)
+    elif name == "finish_task":
+        result = await _finish_task(**arguments)
     else:
         result = [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
     # Track response size
@@ -1602,6 +1634,59 @@ async def _article_history(project: str, filename: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"# История: {rel_path}\n\n```\n{log}\n```")]
     except Exception as e:
         return [TextContent(type="text", text=f"Ошибка git: {e}")]
+
+
+# ─── Комбинированные tools (start/finish task) ───────────────────────────────
+
+async def _start_task(topic: str, project: str = "all") -> list[TextContent]:
+    """Начать задачу: поиск в базе + загрузка сессии. Один вызов вместо трёх."""
+    parts = []
+
+    # 1. Поиск похожих кейсов
+    search_results = whoosh_search(topic, project=project, limit=5)
+    if search_results:
+        _track_access([f"{r['project']}/{r['file']}" for r in search_results])
+        parts.append(f"# Контекст для: {topic}\n")
+        parts.append(f"## Найдено в базе ({len(search_results)} статей)\n")
+        for r in search_results:
+            preview = "\n".join(r["preview"].splitlines()[:6])
+            parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+    else:
+        parts.append(f"# Контекст для: {topic}\n\nПохожих кейсов не найдено.\n")
+
+    # 2. Загрузка сессии
+    target_project = project if project != "all" else (search_results[0]["project"] if search_results else "general")
+    session_path = KNOWLEDGE_DIR / target_project / "_session.md"
+    if session_path.exists():
+        session_text = session_path.read_text(encoding="utf-8")
+        parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text}\n")
+
+    # 3. Active context
+    ctx_path = KNOWLEDGE_DIR / target_project / "_active_context.md"
+    if ctx_path.exists():
+        ctx_text = ctx_path.read_text(encoding="utf-8")
+        parts.append(f"\n## Последние действия\n{ctx_text}\n")
+
+    parts.append("\n---\n*Приступай к задаче. По завершении вызови `finish_task`.*")
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
+async def _finish_task(topic: str, content: str, project: str, tags: list = None,
+                       session_summary: str = "", open_questions: str = "") -> list[TextContent]:
+    """Завершить задачу: save_lesson + save_session. Один вызов вместо двух."""
+    parts = []
+
+    # 1. Сохранить урок
+    lesson_result = await _save_lesson(topic, content, project, tags)
+    parts.append(lesson_result[0].text)
+
+    # 2. Сохранить сессию
+    if session_summary:
+        session_result = await _save_session(project, session_summary, "", open_questions or "")
+        parts.append(session_result[0].text)
+
+    parts.append("\n*Задача записана в базу знаний.*")
+    return [TextContent(type="text", text="\n".join(parts))]
 
 
 # ─── Управление проектами ─────────────────────────────────────────────────────
