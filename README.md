@@ -186,10 +186,10 @@ pytest tests/ -v
 
 ## Конфигурация
 
-Проекты задаются через переменную окружения `PROJECTS` (через запятую):
+Проекты создаются динамически через `add_project()` или автоматически при `save_lesson()`. Каждый проект — отдельная директория в `knowledge/` с markdown-статьями.
+
+Опционально можно задать начальные проекты через переменную окружения:
 
 ```bash
-PROJECTS=backend,frontend,devops,general python server.py
+PROJECTS=backend,infra,general python server.py
 ```
-
-Каждый проект — отдельная директория в `knowledge/` с markdown-статьями.
