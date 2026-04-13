@@ -25,6 +25,8 @@ from memory_compiler.storage import (
     update_active_context, detect_contradictions,
     auto_tags, extract_git_refs, format_git_refs,
     update_cross_references,
+    extract_snippets, extract_errors, TEMPLATES,
+    read_project_deps, write_project_deps,
 )
 
 
@@ -53,10 +55,25 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
 
     if existing:
         # Update existing article
+        old_text = existing.read_text(encoding="utf-8")
+        old_line_count = len(old_text.splitlines())
         merge_into_article(existing, content, tags, ts)
         article_path = existing
         article_text = article_path.read_text(encoding="utf-8")
-        action = f"\U0001f504 Обновлено: {project}/{article_path.name}"
+        new_text = article_path.read_text(encoding="utf-8")
+        new_line_count = len(new_text.splitlines())
+        diff_lines = new_line_count - old_line_count
+        # Find new tags
+        old_tags_set = set()
+        for line in old_text.splitlines()[:10]:
+            if line.startswith("**Теги:**"):
+                old_tags_set = {t.strip().lower() for t in line.split(":", 1)[1].strip().split(",") if t.strip() and t.strip() != "—"}
+        new_tags_added = [t for t in tags if t.lower() not in old_tags_set]
+        diff_info = f" (+{diff_lines} строк" if diff_lines > 0 else f" ({diff_lines} строк"
+        if new_tags_added:
+            diff_info += f", теги: +{', +'.join(new_tags_added)}"
+        diff_info += ")"
+        action = f"\U0001f504 Обновлено: {project}/{article_path.name}{diff_info}"
     else:
         # Create new article
         article_path = project_dir(project) / f"{slug}.md"
@@ -716,6 +733,19 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         ctx_text = ctx_path.read_text(encoding="utf-8")
         parts.append(f"\n## Последние действия\n{ctx_text}\n")
 
+    # 4. Search in dependent projects
+    deps = read_project_deps(target_project)
+    if deps:
+        dep_results = []
+        for dep in deps:
+            dr = whoosh_search(topic, project=dep, limit=2)
+            dep_results.extend(dr)
+        if dep_results:
+            parts.append(f"\n## Из зависимых проектов ({', '.join(deps)})\n")
+            for r in dep_results[:4]:
+                preview = "\n".join(r["preview"].splitlines()[:4])
+                parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+
     parts.append("\n---\n*Приступай к задаче. По завершении вызови `finish_task`.*")
     return [TextContent(type="text", text="\n".join(parts))]
 
@@ -796,3 +826,280 @@ async def list_projects() -> list[TextContent]:
         else:
             lines.append(f"- **{proj}** \u2014 пуст")
     return [TextContent(type="text", text="\n".join(lines))]
+
+
+# ─── Snippet search ────────────────────────────────────────────────────────
+
+
+async def search_snippets(query: str, lang: str = None, project: str = "all") -> list[TextContent]:
+    """Search code snippets in knowledge base."""
+    results = whoosh_search(query, project=project, limit=10)
+    if not results:
+        return [TextContent(type="text", text=f"Сниппетов не найдено: '{query}'")]
+
+    found = []
+    for r in results:
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        if not fpath.exists():
+            continue
+        text = fpath.read_text(encoding="utf-8")
+        snippets = extract_snippets(text)
+        for s in snippets:
+            if lang and s["lang"] != lang:
+                continue
+            # Check if query words appear in code
+            q_words = set(w.lower() for w in query.split() if len(w) > 2)
+            code_lower = s["code"].lower()
+            matches = sum(1 for w in q_words if w in code_lower)
+            if matches > 0:
+                found.append({
+                    "article": f"{r['project']}/{r['file']}",
+                    "lang": s["lang"],
+                    "context": s["context"],
+                    "code": s["code"][:500],
+                    "relevance": matches,
+                })
+
+    found.sort(key=lambda x: x["relevance"], reverse=True)
+    if not found:
+        return [TextContent(type="text", text=f"Сниппетов с '{query}' не найдено.")]
+
+    out = [f"# Сниппеты: '{query}' ({len(found)} найдено)\n"]
+    for s in found[:10]:
+        out.append(f"---\n**[{s['article']}]** ({s['lang']}) — {s['context']}\n```{s['lang']}\n{s['code']}\n```\n")
+    return [TextContent(type="text", text="\n".join(out))]
+
+
+# ─── Runbook ───────────────────────────────────────────────────────────────
+
+
+async def save_runbook(topic: str, steps: list, project: str, tags: list = None) -> list[TextContent]:
+    """Create a runbook article with checklist steps."""
+    tags = tags or []
+    auto = auto_tags(" ".join(steps), topic)
+    existing_lower = {t.lower() for t in tags}
+    tags = tags + [t for t in auto if t not in existing_lower]
+    if "runbook" not in [t.lower() for t in tags]:
+        tags.append("runbook")
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+
+    steps_text = "\n".join(f"- [ ] {step}" for step in steps)
+    article_text = f"""# {topic}
+
+**Дата:** {ts}
+**Проект:** {project}
+**Теги:** {', '.join(tags)}
+**Тип:** runbook
+
+## Шаги
+
+{steps_text}
+"""
+    article_path = project_dir(project) / f"{slug}.md"
+    if article_path.exists():
+        article_path = project_dir(project) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+    article_path.write_text(article_text, encoding="utf-8")
+
+    index_document(article_text, article_path.name, project)
+    embed_document(article_text, article_path.name, project)
+    regenerate_index()
+    git_commit(f"runbook: {topic} [{project}]")
+
+    return [TextContent(type="text", text=f"\U0001f4cb Runbook создан: {project}/{article_path.name} ({len(steps)} шагов)")]
+
+
+async def get_runbook(project: str, filename: str) -> list[TextContent]:
+    """Read runbook and parse step statuses."""
+    fpath = KNOWLEDGE_DIR / project / filename
+    if not fpath.exists():
+        return [TextContent(type="text", text=f"Runbook не найден: {project}/{filename}")]
+    text = fpath.read_text(encoding="utf-8")
+    track_access([f"{project}/{filename}"])
+
+    total = text.count("- [ ]") + text.count("- [x]")
+    done = text.count("- [x]")
+    progress = f"{done}/{total}" if total > 0 else "нет шагов"
+
+    return [TextContent(type="text", text=f"\U0001f4cb Прогресс: {progress}\n\n{text}")]
+
+
+# ─── Error search ──────────────────────────────────────────────────────────
+
+
+async def search_error(error_text: str, project: str = "all") -> list[TextContent]:
+    """Search for similar errors in knowledge base."""
+    # Extract key parts from error text
+    error_patterns = extract_errors(error_text)
+
+    # Build search query from error patterns + original text
+    search_terms = []
+    for ep in error_patterns:
+        search_terms.append(ep["text"][:50])
+    if not search_terms:
+        # Fallback: use last line of error (usually the exception)
+        lines = error_text.strip().splitlines()
+        search_terms = [lines[-1][:100]] if lines else [error_text[:100]]
+
+    query = " ".join(search_terms)[:200]
+    results = whoosh_search(query, project=project, limit=10)
+
+    # Re-rank by error pattern overlap
+    ranked = []
+    for r in results:
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        if not fpath.exists():
+            continue
+        text = fpath.read_text(encoding="utf-8")
+        article_errors = extract_errors(text)
+
+        # Score boost for matching error types
+        boost = 0
+        for ae in article_errors:
+            for ep in error_patterns:
+                if ae["type"] == ep["type"]:
+                    boost += 10
+                    # Extra boost for matching error text
+                    if ep["text"][:30].lower() in ae["text"].lower():
+                        boost += 20
+        r["score"] = r.get("score", 0) + boost
+        ranked.append(r)
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    if not ranked:
+        return [TextContent(type="text", text=f"Похожих ошибок не найдено.")]
+
+    track_access([f"{r['project']}/{r['file']}" for r in ranked[:5]])
+
+    out = [f"# Похожие ошибки ({len(ranked)} найдено)\n"]
+    for r in ranked[:5]:
+        preview = "\n".join(r["preview"].splitlines()[:8])
+        out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+    return [TextContent(type="text", text="\n".join(out))]
+
+
+# ─── Project dependencies ─────────────────────────────────────────────────
+
+
+async def set_project_deps(project: str, depends_on: list) -> list[TextContent]:
+    """Set project dependencies."""
+    # Validate projects exist
+    for dep in depends_on:
+        if dep == project:
+            return [TextContent(type="text", text=f"Проект не может зависеть от себя.")]
+
+    write_project_deps(project, depends_on)
+    git_commit(f"deps: {project} -> {', '.join(depends_on)}")
+    return [TextContent(type="text", text=f"\U0001f517 Зависимости {project}: {', '.join(depends_on) if depends_on else 'нет'}")]
+
+
+async def get_project_deps(project: str) -> list[TextContent]:
+    """Get project dependencies."""
+    deps = read_project_deps(project)
+    if not deps:
+        return [TextContent(type="text", text=f"Проект {project} не имеет зависимостей.")]
+    return [TextContent(type="text", text=f"\U0001f517 {project} зависит от: {', '.join(deps)}")]
+
+
+# ─── Decisions ─────────────────────────────────────────────────────────────
+
+
+async def save_decision(title: str, decision: str, alternatives: str, reasoning: str,
+                        project: str, tags: list = None) -> list[TextContent]:
+    """Save an architectural/technical decision."""
+    tags = tags or []
+    auto = auto_tags(f"{decision} {reasoning}", title)
+    existing_lower = {t.lower() for t in tags}
+    tags = tags + [t for t in auto if t not in existing_lower]
+    if "decision" not in [t.lower() for t in tags]:
+        tags.append("decision")
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    slug = re.sub(r"[^\w\-]", "_", title.lower())[:50]
+
+    article_text = f"""# {title}
+
+**Дата:** {ts}
+**Проект:** {project}
+**Теги:** {', '.join(tags)}
+**Тип:** decision
+
+## Решение
+{decision}
+
+## Альтернативы
+{alternatives}
+
+## Обоснование
+{reasoning}
+"""
+    article_path = project_dir(project) / f"decision_{slug}.md"
+    if article_path.exists():
+        article_path = project_dir(project) / f"decision_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+    article_path.write_text(article_text, encoding="utf-8")
+
+    index_document(article_text, article_path.name, project)
+    embed_document(article_text, article_path.name, project)
+    update_active_context(project, f"Decision: {title}", decision)
+    regenerate_index()
+    git_commit(f"decision: {title} [{project}]")
+
+    return [TextContent(type="text", text=f"\U0001f4cc Решение записано: {project}/{article_path.name}")]
+
+
+async def search_decisions(query: str, project: str = "all") -> list[TextContent]:
+    """Search only decision articles."""
+    results = whoosh_search(query, project=project, limit=15)
+
+    # Filter to decision articles only
+    decisions = []
+    for r in results:
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        if not fpath.exists():
+            continue
+        text = fpath.read_text(encoding="utf-8")
+        if "**Тип:** decision" in text or r["file"].startswith("decision_"):
+            decisions.append(r)
+
+    if not decisions:
+        return [TextContent(type="text", text=f"Решений по '{query}' не найдено.")]
+
+    track_access([f"{r['project']}/{r['file']}" for r in decisions])
+    out = [f"# Решения: '{query}' ({len(decisions)})\n"]
+    for r in decisions:
+        preview = "\n".join(r["preview"].splitlines()[:8])
+        out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+    return [TextContent(type="text", text="\n".join(out))]
+
+
+# ─── Templates ─────────────────────────────────────────────────────────────
+
+
+async def save_from_template(template: str, fields: dict, project: str, tags: list = None) -> list[TextContent]:
+    """Create article from template."""
+    if template not in TEMPLATES:
+        available = ", ".join(TEMPLATES.keys())
+        return [TextContent(type="text", text=f"Шаблон '{template}' не найден. Доступные: {available}")]
+
+    tmpl = TEMPLATES[template]
+    # Check required fields
+    missing = [f for f in tmpl["fields"] if f not in fields]
+    if missing:
+        return [TextContent(type="text", text=f"Не хватает полей: {', '.join(missing)}. Нужны: {', '.join(tmpl['fields'])}")]
+
+    # Build content from template
+    content = tmpl["format"].format(**{f: fields.get(f, "") for f in tmpl["fields"]})
+    topic = fields.get("topic") or fields.get(tmpl["fields"][0], template)[:80]
+
+    # Delegate to save_lesson for indexing/git/etc
+    return await save_lesson(topic, content, project, tags)
+
+
+async def list_templates() -> list[TextContent]:
+    """List available article templates."""
+    out = ["# Шаблоны статей\n"]
+    for name, tmpl in TEMPLATES.items():
+        fields = ", ".join(tmpl["fields"])
+        out.append(f"- **{name}** — {tmpl['description']}\n  Поля: `{fields}`")
+    return [TextContent(type="text", text="\n".join(out))]
