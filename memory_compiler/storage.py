@@ -602,3 +602,166 @@ def read_audit_log(limit: int = 100) -> list[dict]:
         except Exception:
             pass
     return entries
+
+
+# ─── Git capture helpers ────────────────────────────────────────────────────
+
+
+_COMMIT_SEP = "---GIT_CAPTURE_SEP---"
+_COMMIT_FORMAT = f"%H|%s|%an|%aI{_COMMIT_SEP}"
+
+
+def parse_git_log(repo_path: str, since: str = None) -> list[dict]:
+    """Parse git log from external repo into structured commits list."""
+    cmd = ["git", "log", f"--format={_COMMIT_FORMAT}", "--numstat"]
+    if since:
+        # Detect if since is a commit hash (hex, 7-40 chars)
+        if re.match(r'^[0-9a-f]{7,40}$', since):
+            cmd.append(f"{since}..HEAD")
+        else:
+            cmd.extend(["--since", since])
+
+    result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+
+    commits = []
+    # numstat lines appear AFTER the separator, at the start of the next block.
+    # Block structure: [files_of_prev_commit]\n<header>
+    # So we collect (header, files) by pairing: header from block N, files from block N+1.
+    raw_blocks = result.stdout.split(_COMMIT_SEP)
+
+    headers = []  # list of (hash, message, author, date)
+    file_sections = []  # list of [file_dicts]
+
+    for block in raw_blocks:
+        lines = block.strip().splitlines()
+        if not lines:
+            # Empty block — no files for previous commit
+            file_sections.append([])
+            continue
+
+        # Parse numstat lines (before the header line)
+        files = []
+        header_line = None
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            m = re.match(r'^(\d+|-)\t(\d+|-)\t(.+)$', line_stripped)
+            if m:
+                ins = int(m.group(1)) if m.group(1) != '-' else 0
+                dels = int(m.group(2)) if m.group(2) != '-' else 0
+                files.append({"path": m.group(3), "insertions": ins, "deletions": dels})
+            elif "|" in line_stripped:
+                header_line = line_stripped
+
+        file_sections.append(files)
+
+        if header_line:
+            parts = header_line.split("|", 3)
+            if len(parts) == 4:
+                headers.append(tuple(p.strip() for p in parts))
+
+    # Pair: header[i] gets files from file_sections[i+1]
+    for i, (commit_hash, message, author, date_str) in enumerate(headers):
+        files = file_sections[i + 1] if i + 1 < len(file_sections) else []
+        commits.append({
+            "hash": commit_hash,
+            "message": message,
+            "author": author,
+            "date": date_str,
+            "files": files,
+        })
+
+    return commits
+
+
+_PREFIX_RE = re.compile(r'^(fix|feat|refactor|docs|chore|build|test|style|perf|ci)[\(:\s]', re.IGNORECASE)
+
+
+def group_commits(commits: list[dict], group_by: str = "prefix") -> dict:
+    """Group commits by prefix (conventional commits), branch, or file area."""
+    groups = {}
+
+    for c in commits:
+        if group_by == "prefix":
+            m = _PREFIX_RE.match(c["message"])
+            key = m.group(1).lower() if m else "other"
+        elif group_by == "file":
+            # Group by top-level directory of most-changed file
+            if c["files"]:
+                top_file = max(c["files"], key=lambda f: f["insertions"] + f["deletions"])
+                parts = top_file["path"].split("/")
+                key = parts[0] if len(parts) > 1 else "(root)"
+            else:
+                key = "(no files)"
+        else:  # branch — fallback to prefix
+            key = "other"
+            m = _PREFIX_RE.match(c["message"])
+            if m:
+                key = m.group(1).lower()
+
+        groups.setdefault(key, []).append(c)
+
+    return groups
+
+
+def format_capture_group(group_name: str, commits: list[dict]) -> str:
+    """Format a group of commits into markdown content."""
+    dates = [c["date"][:10] for c in commits]
+    first_date, last_date = min(dates), max(dates)
+
+    # Collect top changed files across all commits
+    file_stats = {}
+    for c in commits:
+        for f in c["files"]:
+            p = f["path"]
+            if p not in file_stats:
+                file_stats[p] = 0
+            file_stats[p] += f["insertions"] + f["deletions"]
+    top_files = sorted(file_stats, key=file_stats.get, reverse=True)[:5]
+
+    total_ins = sum(f["insertions"] for c in commits for f in c["files"])
+    total_dels = sum(f["deletions"] for c in commits for f in c["files"])
+
+    lines = [
+        f"**Коммитов:** {len(commits)}",
+        f"**Период:** {first_date} — {last_date}" if first_date != last_date else f"**Дата:** {first_date}",
+        f"**Изменения:** +{total_ins} / -{total_dels}",
+        f"**Файлы:** {', '.join(top_files)}" if top_files else "",
+        "",
+        "### Коммиты",
+    ]
+    for c in commits:
+        lines.append(f"- {c['message']} (`{c['hash'][:7]}`)")
+
+    return "\n".join(line for line in lines if line is not None)
+
+
+def read_last_capture(project: str, repo_path: str) -> Optional[str]:
+    """Read last captured commit hash for a repo in this project."""
+    cap_path = project_dir(project) / "_last_capture.json"
+    if not cap_path.exists():
+        return None
+    try:
+        data = json.loads(cap_path.read_text(encoding="utf-8"))
+        return data.get(repo_path, {}).get("last_commit")
+    except Exception:
+        return None
+
+
+def write_last_capture(project: str, repo_path: str, commit_hash: str):
+    """Save last captured commit hash for a repo."""
+    cap_path = project_dir(project) / "_last_capture.json"
+    data = {}
+    if cap_path.exists():
+        try:
+            data = json.loads(cap_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    data[repo_path] = {
+        "last_commit": commit_hash,
+        "last_capture": datetime.now().isoformat(),
+    }
+    cap_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
