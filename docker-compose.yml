@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  memory-compiler:
+    build: .
+    container_name: memory-compiler-mcp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/api/health')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./knowledge:/knowledge
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - KNOWLEDGE_DIR=/knowledge
+      - MCP_TRANSPORT=sse
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8765
+      # - PROJECTS=project-a,project-b,infra,general
+
+volumes:
+  hf_cache:

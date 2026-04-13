@@ -1,0 +1,29 @@
+# Деплой-скрипты с credentials
+deploy.py
+deploy_image.py
+setup_nas.py
+deploy.bat
+
+# Node (docx builder)
+docs/node_modules/
+docs/package.json
+docs/package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Knowledge base (отдельный git в /knowledge)
+knowledge/
+
+# IDE
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+test_all.py
