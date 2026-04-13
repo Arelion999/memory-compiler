@@ -1162,3 +1162,70 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
     git_commit(f"secret: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f512 Секрет сохранён: {project}/{article_path.name}")]
+
+
+# ─── Git capture ──────────────────────────────────────────────────────────
+
+
+async def git_capture(repo_path: str, project: str, since: str = None,
+                      auto_save: bool = False, group_by: str = "prefix") -> list[TextContent]:
+    """Capture knowledge from git commits of an external repository."""
+    from memory_compiler.storage import (
+        parse_git_log, group_commits, format_capture_group,
+        read_last_capture, write_last_capture,
+    )
+
+    # Validate repo
+    check = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=repo_path, capture_output=True, text=True,
+    )
+    if check.returncode != 0:
+        return [TextContent(type="text", text=f"'{repo_path}' — не git-репозиторий.")]
+
+    # Determine since
+    effective_since = since
+    if not effective_since:
+        last_hash = read_last_capture(project, repo_path)
+        if last_hash:
+            effective_since = last_hash
+
+    # Parse git log
+    commits = parse_git_log(repo_path, effective_since)
+    if not commits:
+        msg = "Новых коммитов нет." if effective_since else "Коммитов не найдено."
+        return [TextContent(type="text", text=msg)]
+
+    # Group commits
+    groups = group_commits(commits, group_by)
+
+    # Format results
+    parts = [f"# Git Capture: {repo_path}\n"]
+    parts.append(f"**Коммитов:** {len(commits)} | **Групп:** {len(groups)} | **Режим:** {'auto_save' if auto_save else 'preview'}\n")
+
+    saved_count = 0
+    for group_name, group_commits_list in sorted(groups.items(), key=lambda x: -len(x[1])):
+        content = format_capture_group(group_name, group_commits_list)
+        topic = f"git: {group_name} ({len(group_commits_list)} commits)"
+
+        if auto_save:
+            result = await save_lesson(
+                topic=topic,
+                content=content,
+                project=project,
+                tags=["git-capture", group_name],
+            )
+            saved_count += 1
+            parts.append(f"- Saved: **{group_name}** ({len(group_commits_list)} commits)")
+        else:
+            parts.append(f"\n## {group_name} ({len(group_commits_list)} commits)\n")
+            parts.append(content)
+
+    # Track last captured commit
+    if commits:
+        write_last_capture(project, repo_path, commits[0]["hash"])
+
+    if auto_save:
+        parts.append(f"\n*Сохранено {saved_count} статей в проект '{project}'.*")
+
+    return [TextContent(type="text", text="\n".join(parts))]
