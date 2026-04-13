@@ -262,6 +262,130 @@ async def list_tools() -> list[Tool]:
                 "required": ["topic", "content", "project"]
             }
         ),
+        Tool(
+            name="search_snippets",
+            description="Поиск по кодовым блокам в статьях.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Что искать в коде"},
+                    "lang": {"type": "string", "description": "Язык: python, bash, yaml, 1c, sql"},
+                    "project": {"type": "string", "default": "all"}
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="save_runbook",
+            description="Создать runbook — пошаговую инструкцию с чекбоксами.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Название runbook"},
+                    "steps": {"type": "array", "items": {"type": "string"}, "description": "Список шагов"},
+                    "project": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["topic", "steps", "project"]
+            }
+        ),
+        Tool(
+            name="get_runbook",
+            description="Получить runbook с прогрессом выполнения.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "filename": {"type": "string"}
+                },
+                "required": ["project", "filename"]
+            }
+        ),
+        Tool(
+            name="search_error",
+            description="Поиск похожих ошибок в базе знаний. Принимает трейсбек или текст ошибки.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "error_text": {"type": "string", "description": "Трейсбек или текст ошибки"},
+                    "project": {"type": "string", "default": "all"}
+                },
+                "required": ["error_text"]
+            }
+        ),
+        Tool(
+            name="set_project_deps",
+            description="Установить зависимости проекта. При start_task контекст подтягивается из зависимых проектов.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Список проектов-зависимостей"}
+                },
+                "required": ["project", "depends_on"]
+            }
+        ),
+        Tool(
+            name="get_project_deps",
+            description="Получить зависимости проекта.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"}
+                },
+                "required": ["project"]
+            }
+        ),
+        Tool(
+            name="save_decision",
+            description="Записать архитектурное/техническое решение с обоснованием.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Название решения"},
+                    "decision": {"type": "string", "description": "Что решили"},
+                    "alternatives": {"type": "string", "description": "Какие были альтернативы"},
+                    "reasoning": {"type": "string", "description": "Почему выбрали это"},
+                    "project": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["title", "decision", "alternatives", "reasoning", "project"]
+            }
+        ),
+        Tool(
+            name="search_decisions",
+            description="Поиск по журналу решений.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "project": {"type": "string", "default": "all"}
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="save_from_template",
+            description="Создать статью по шаблону (bug, setup, 1c, deploy, integration).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "template": {"type": "string", "description": "Имя шаблона: bug, setup, 1c, deploy, integration"},
+                    "fields": {"type": "object", "description": "Поля шаблона (зависят от типа)"},
+                    "project": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["template", "fields", "project"]
+            }
+        ),
+        Tool(
+            name="list_templates",
+            description="Список доступных шаблонов статей.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -314,6 +438,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.start_task(**arguments)
     elif name == "finish_task":
         result = await handlers.finish_task(**arguments)
+    elif name == "search_snippets":
+        result = await handlers.search_snippets(**arguments)
+    elif name == "save_runbook":
+        result = await handlers.save_runbook(**arguments)
+    elif name == "get_runbook":
+        result = await handlers.get_runbook(**arguments)
+    elif name == "search_error":
+        result = await handlers.search_error(**arguments)
+    elif name == "set_project_deps":
+        result = await handlers.set_project_deps(**arguments)
+    elif name == "get_project_deps":
+        result = await handlers.get_project_deps(**arguments)
+    elif name == "save_decision":
+        result = await handlers.save_decision(**arguments)
+    elif name == "search_decisions":
+        result = await handlers.search_decisions(**arguments)
+    elif name == "save_from_template":
+        result = await handlers.save_from_template(**arguments)
+    elif name == "list_templates":
+        result = await handlers.list_templates()
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size
