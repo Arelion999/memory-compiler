@@ -5,6 +5,8 @@ from memory_compiler.storage import (
     project_dir, today_log_path,
     extract_snippets, extract_errors, TEMPLATES,
     read_project_deps, write_project_deps,
+    encrypt_content, decrypt_content, is_encrypted,
+    audit_log, read_audit_log,
 )
 
 
@@ -112,3 +114,44 @@ def test_project_deps(knowledge_dir):
 def test_project_deps_nonexistent(knowledge_dir):
     deps = read_project_deps("nonexistent_proj_xyz")
     assert deps == []
+
+
+def test_encrypt_decrypt(monkeypatch):
+    import memory_compiler.config as cfg
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-passphrase-123")
+    text = "Super secret password: P@ssw0rd!"
+    encrypted = encrypt_content(text)
+    assert encrypted.startswith("ENC:")
+    assert "P@ssw0rd" not in encrypted
+    decrypted = decrypt_content(encrypted)
+    assert decrypted == text
+
+
+def test_is_encrypted():
+    assert is_encrypted("ENC:abc123") is True
+    assert is_encrypted("Normal text") is False
+    assert is_encrypted("") is False
+
+
+def test_encrypt_without_key(monkeypatch):
+    import memory_compiler.config as cfg
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "")
+    result = encrypt_content("test")
+    assert result == "test"  # no encryption without key
+
+
+def test_audit_log(knowledge_dir):
+    audit_log("search", {"query": "test", "project": "all"}, 500)
+    entries = read_audit_log(10)
+    assert len(entries) >= 1
+    last = entries[-1]
+    assert last["tool"] == "search"
+    assert last["size"] == 500
+
+
+def test_audit_log_hides_content(knowledge_dir):
+    audit_log("save_lesson", {"topic": "test", "content": "very long content here"}, 100)
+    entries = read_audit_log(10)
+    last = entries[-1]
+    assert "very long content" not in str(last)
+    assert "chars]" in str(last["args"]["content"])
