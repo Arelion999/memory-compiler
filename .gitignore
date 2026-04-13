@@ -1,3 +1,6 @@
+# Secrets
+.env
+
 # Деплой-скрипты с credentials
 deploy.py
 deploy_image.py

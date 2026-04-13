@@ -15,9 +15,9 @@ services:
       - MCP_TRANSPORT=sse
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8765
+      - MC_API_KEY=${MC_API_KEY:-}
+      - MC_ENCRYPT_KEY=${MC_ENCRYPT_KEY:-}
       # - PROJECTS=project-a,project-b,infra,general
-      # - MC_API_KEY=your-secret-key-here
-      # - MC_ENCRYPT_KEY=your-encryption-passphrase
 
 volumes:
   hf_cache:
