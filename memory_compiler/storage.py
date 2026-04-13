@@ -1,6 +1,7 @@
 """
 Storage module: article management, git versioning, and helper utilities.
 """
+import json
 import re
 import subprocess
 from datetime import datetime, date
@@ -404,3 +405,117 @@ def update_cross_references(topic: str, project: str, saved_path: str):
             text = text.rstrip() + f"\n\n## См. также\n{ref_line}\n"
 
         fpath.write_text(text, encoding="utf-8")
+
+
+# ─── Snippet extraction ─────────────────────────────────────────────────────
+
+
+def extract_snippets(text: str) -> list[dict]:
+    """Extract code blocks from markdown text.
+    Returns list of {lang: str, code: str, context: str}."""
+    snippets = []
+    lines = text.splitlines()
+    i = 0
+    current_context = ""
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("### ") or line.startswith("## "):
+            current_context = line.lstrip("#").strip()
+        if line.startswith("```"):
+            lang = line[3:].strip().lower() or "text"
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            if code_lines:
+                snippets.append({
+                    "lang": lang,
+                    "code": "\n".join(code_lines),
+                    "context": current_context,
+                })
+        i += 1
+    return snippets
+
+
+# ─── Error extraction ───────────────────────────────────────────────────────
+
+_ERROR_PATTERNS = [
+    (r'(Traceback \(most recent call last\)[\s\S]*?(?:\w+Error|\w+Exception):.+)', "python_traceback"),
+    (r'\b((?:HTTP|http)\s*(?:error\s*)?(\d{3}))\b', "http_code"),
+    (r'\b((?:Error|Exception|Ошибка|ОШИБКА)\s*[:]\s*.{10,100})', "error_message"),
+    (r'\b(errno\s*[:=]\s*\d+)', "errno"),
+    (r'\b(SQLSTATE\s*\[\w+\])', "sql_error"),
+    (r'(\{[\w.]+\(\d+\)\})', "1c_error"),
+]
+
+
+def extract_errors(text: str) -> list[dict]:
+    """Extract error patterns from text.
+    Returns list of {type: str, text: str}."""
+    errors = []
+    for pattern, err_type in _ERROR_PATTERNS:
+        for match in re.findall(pattern, text):
+            err_text = match if isinstance(match, str) else match[0]
+            errors.append({"type": err_type, "text": err_text.strip()[:200]})
+    return errors
+
+
+# ─── Article templates ──────────────────────────────────────────────────────
+
+TEMPLATES = {
+    "bug": {
+        "description": "Баг-репорт с симптомом, причиной и решением",
+        "fields": ["symptom", "cause", "fix"],
+        "format": "## Симптом\n{symptom}\n\n## Причина\n{cause}\n\n## Решение\n{fix}",
+    },
+    "setup": {
+        "description": "Настройка сервера/сервиса",
+        "fields": ["goal", "steps", "verification"],
+        "format": "## Цель\n{goal}\n\n## Шаги\n{steps}\n\n## Проверка\n{verification}",
+    },
+    "1c": {
+        "description": "Доработка 1С (обработка, отчёт, конфигурация)",
+        "fields": ["task", "solution", "objects"],
+        "format": "## Задача\n{task}\n\n## Решение\n{solution}\n\n## Объекты\n{objects}",
+    },
+    "deploy": {
+        "description": "Деплой/обновление",
+        "fields": ["target", "steps", "rollback"],
+        "format": "## Цель\n{target}\n\n## Шаги деплоя\n{steps}\n\n## Откат\n{rollback}",
+    },
+    "integration": {
+        "description": "Интеграция между системами",
+        "fields": ["systems", "protocol", "implementation"],
+        "format": "## Системы\n{systems}\n\n## Протокол\n{protocol}\n\n## Реализация\n{implementation}",
+    },
+}
+
+
+# ─── Project dependencies ───────────────────────────────────────────────────
+
+
+def get_project_deps_file(project: str) -> Path:
+    """Get path to project dependencies file."""
+    return project_dir(project) / "_deps.json"
+
+
+def read_project_deps(project: str) -> list[str]:
+    """Read project dependencies."""
+    deps_file = get_project_deps_file(project)
+    if deps_file.exists():
+        try:
+            data = json.loads(deps_file.read_text(encoding="utf-8"))
+            return data.get("depends_on", [])
+        except Exception:
+            pass
+    return []
+
+
+def write_project_deps(project: str, depends_on: list[str]):
+    """Write project dependencies."""
+    deps_file = get_project_deps_file(project)
+    deps_file.write_text(
+        json.dumps({"depends_on": depends_on}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
