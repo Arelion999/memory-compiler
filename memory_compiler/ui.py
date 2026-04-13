@@ -332,3 +332,41 @@ $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
 </script>
 </body>
 </html>"""
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Compiler — Вход</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1e293b;border-radius:12px;padding:2rem;width:360px;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+h1{font-size:1.25rem;margin-bottom:1.5rem;text-align:center}
+input{width:100%;padding:.75rem 1rem;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;font-size:1rem;margin-bottom:1rem}
+input:focus{outline:none;border-color:#3b82f6}
+button{width:100%;padding:.75rem;border:none;border-radius:8px;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
+button:hover{background:#2563eb}
+.error{color:#f87171;font-size:.875rem;margin-top:.5rem;text-align:center;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Memory Compiler</h1>
+<input type="password" id="key" placeholder="API Key" autofocus>
+<button onclick="doLogin()">Войти</button>
+<div class="error" id="err"></div>
+</div>
+<script>
+async function doLogin(){
+  const key=document.getElementById("key").value.trim();
+  if(!key)return;
+  const r=await fetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key})});
+  if(r.ok){location.href="/";}
+  else{const d=await r.json();const e=document.getElementById("err");e.textContent=d.error||"Ошибка";e.style.display="block";}
+}
+document.getElementById("key").addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()});
+</script>
+</body>
+</html>"""

@@ -6,21 +6,23 @@ import numpy as np
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route, Mount
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
-    _discover_projects,
+    _discover_projects, MC_API_KEY,
 )
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
     load_embeddings, _embeddings, _embed_texts, get_index,
 )
-from memory_compiler.storage import project_dir, regenerate_index, git_init
+from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article
-from memory_compiler.ui import WEB_HTML
+from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -247,6 +249,53 @@ async def web_tags(request: Request):
     return JSONResponse({"tags": [{"tag": t, "count": c} for t, c in sorted_tags]})
 
 
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if not MC_API_KEY:  # auth disabled — backward compatible
+            return await call_next(request)
+
+        # Public routes
+        if request.url.path in ("/login", "/api/auth/login"):
+            return await call_next(request)
+
+        # Check Bearer token or cookie
+        token = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        if not token:
+            token = request.cookies.get("mc_token")
+
+        if token == MC_API_KEY:
+            return await call_next(request)
+
+        # Unauthorized
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            return RedirectResponse("/login")
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+
+async def web_login(request: Request):
+    if request.method == "GET":
+        return HTMLResponse(LOGIN_HTML)
+    # POST
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    if data.get("key") == MC_API_KEY:
+        response = JSONResponse({"ok": True})
+        response.set_cookie("mc_token", MC_API_KEY, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
+        return response
+    return JSONResponse({"error": "Неверный ключ"}, status_code=401)
+
+
+async def web_audit(request: Request):
+    entries = read_audit_log(100)
+    return JSONResponse({"entries": entries})
+
+
 # ─── Starlette app factory ─────────────────────────────────────────────────
 
 
@@ -294,8 +343,15 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         yield
         task.cancel()
 
+    middleware = []
+    if MC_API_KEY:
+        middleware.append(Middleware(AuthMiddleware))
+
     return Starlette(
         routes=[
+            Route("/login", endpoint=web_login, methods=["GET", "POST"]),
+            Route("/api/auth/login", endpoint=web_login, methods=["POST"]),
+            Route("/api/audit", endpoint=web_audit),
             Route("/", endpoint=web_index),
             Route("/api/health", endpoint=web_health),
             Route("/api/search", endpoint=web_search),
@@ -312,5 +368,6 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=sse.handle_post_message),
         ],
+        middleware=middleware,
         lifespan=lifespan,
     )
