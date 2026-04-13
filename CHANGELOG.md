@@ -1,5 +1,23 @@
 # Changelog
 
+## v7.0.0 — 2026-04-13
+
+7 новых фич для AI-разработки. 30 MCP tools, 32 теста.
+
+### Добавлено
+
+- **Snippet Search** — `search_snippets(query, lang, project)` — поиск по кодовым блокам в статьях
+- **Runbook Mode** — `save_runbook(topic, steps, project)` + `get_runbook(project, filename)` — пошаговые инструкции с чекбоксами и прогрессом
+- **Error Pattern Matching** — `search_error(error_text, project)` — поиск по трейсбекам и кодам ошибок с ре-ранжированием
+- **Project Dependencies** — `set_project_deps(project, depends_on)` + `get_project_deps(project)` — граф зависимостей, автоподтягивание контекста в `start_task`
+- **Decision Log** — `save_decision(title, decision, alternatives, reasoning, project)` + `search_decisions(query, project)` — журнал архитектурных решений
+- **Article Templates** — `save_from_template(template, fields, project)` + `list_templates()` — шаблоны: bug, setup, 1c, deploy, integration
+
+### Улучшено
+
+- **Diff-Aware Save** — `save_lesson` теперь показывает diff: `+N строк, теги: +tag1, +tag2`
+- **start_task** — автоматически подтягивает контекст из зависимых проектов
+
 ## v6.0.0 — 2026-04-13
 
 Полный рефакторинг: монолит `server.py` (2480 строк) разбит на пакет `memory_compiler/` из 7 модулей.

@@ -35,7 +35,7 @@ docker-compose up -d --build
 
 ## Возможности
 
-### 19 MCP-инструментов
+### 30 MCP-инструментов
 
 **Поиск и чтение:**
 
@@ -44,6 +44,9 @@ docker-compose up -d --build
 | `search(query, project)` | Гибридный поиск BM25F + semantic с temporal decay |
 | `ask(question, project)` | Q&A — ответ с цитатами из статей |
 | `search_by_tag(tag, project)` | Все статьи с указанным тегом |
+| `search_snippets(query, lang, project)` | Поиск по кодовым блокам |
+| `search_error(error_text, project)` | Поиск по трейсбекам и кодам ошибок |
+| `search_decisions(query, project)` | Поиск по журналу решений |
 | `read_article(project, filename)` | Полный текст статьи |
 | `get_context(project, query)` | Топ релевантных статей перед задачей |
 | `get_summary(project)` | Сжатая сводка проекта (~200 токенов) |
@@ -52,9 +55,14 @@ docker-compose up -d --build
 
 | Инструмент | Описание |
 |------------|----------|
-| `save_lesson(topic, content, project, tags)` | Сохранить с автомержем, автотегами, детекцией противоречий |
+| `save_lesson(topic, content, project, tags)` | Сохранить с diff-отчётом, автомержем, автотегами, детекцией противоречий |
+| `save_decision(title, decision, alternatives, reasoning, project)` | Записать архитектурное решение |
+| `save_runbook(topic, steps, project)` | Создать пошаговую инструкцию с чекбоксами |
+| `save_from_template(template, fields, project)` | Создать статью по шаблону (bug, setup, 1c, deploy, integration) |
 | `edit_article(project, filename, content, append)` | Заменить или дописать |
 | `delete_article(project, filename)` | Удалить статью |
+| `get_runbook(project, filename)` | Получить runbook с прогрессом |
+| `list_templates()` | Список доступных шаблонов |
 
 **Сессии:**
 
@@ -78,6 +86,8 @@ docker-compose up -d --build
 | `add_project(name)` | Создать новый проект |
 | `remove_project(name)` | Удалить проект со всеми статьями |
 | `list_projects()` | Список проектов с количеством статей |
+| `set_project_deps(project, depends_on)` | Установить зависимости между проектами |
+| `get_project_deps(project)` | Получить зависимости проекта |
 
 **Обслуживание:**
 
