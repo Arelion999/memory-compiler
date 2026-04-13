@@ -27,6 +27,7 @@ from memory_compiler.storage import (
     update_cross_references,
     extract_snippets, extract_errors, TEMPLATES,
     read_project_deps, write_project_deps,
+    encrypt_content, decrypt_content, is_encrypted,
 )
 
 
@@ -176,6 +177,9 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
 
     out = [f"# Поиск: '{query}'\n"]
     for r in results:
+        # Hide encrypted content in search results
+        if "**Секрет:** да" in r.get("preview", ""):
+            r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
         preview_lines = r["preview"].splitlines()[:10]
         out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n" + "\n".join(preview_lines) + "\n")
 
@@ -647,6 +651,15 @@ async def read_article(project: str, filename: str) -> list[TextContent]:
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     text = fpath.read_text(encoding="utf-8")
+    # Decrypt encrypted sections
+    lines = text.splitlines()
+    decrypted_lines = []
+    for line in lines:
+        if is_encrypted(line):
+            decrypted_lines.append(decrypt_content(line))
+        else:
+            decrypted_lines.append(line)
+    text = "\n".join(decrypted_lines)
     key = f"{project}/{filename}"
     track_access([key])
     return [TextContent(type="text", text=text)]
@@ -1103,3 +1116,49 @@ async def list_templates() -> list[TextContent]:
         fields = ", ".join(tmpl["fields"])
         out.append(f"- **{name}** — {tmpl['description']}\n  Поля: `{fields}`")
     return [TextContent(type="text", text="\n".join(out))]
+
+
+async def save_secret(topic: str, content: str, project: str, tags: list = None) -> list[TextContent]:
+    """Save an encrypted secret article."""
+    from memory_compiler.config import MC_ENCRYPT_KEY
+    if not MC_ENCRYPT_KEY:
+        return [TextContent(type="text", text="MC_ENCRYPT_KEY не задан. Шифрование невозможно.")]
+
+    tags = tags or []
+    auto = auto_tags(content, topic)
+    existing_lower = {t.lower() for t in tags}
+    tags = tags + [t for t in auto if t not in existing_lower]
+    if "secret" not in [t.lower() for t in tags]:
+        tags.append("secret")
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+
+    encrypted_body = encrypt_content(content)
+
+    article_text = f"""# {topic}
+
+**Дата:** {ts}
+**Проект:** {project}
+**Теги:** {', '.join(tags)}
+**Секрет:** да
+
+## Содержание
+
+{encrypted_body}
+"""
+    article_path = project_dir(project) / f"secret_{slug}.md"
+    if article_path.exists():
+        article_path = project_dir(project) / f"secret_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+    article_path.write_text(article_text, encoding="utf-8")
+
+    # Index with title+tags only (not encrypted content) for searchability
+    index_text = f"# {topic}\n\n**Теги:** {', '.join(tags)}\n\n[зашифрованная статья]"
+    index_document(index_text, article_path.name, project)
+    embed_document(index_text, article_path.name, project)
+    regenerate_index()
+    update_active_context(project, f"Secret: {topic}", "[зашифровано]")
+    track_access([f"{project}/{article_path.name}"])
+    git_commit(f"secret: {topic} [{project}]")
+
+    return [TextContent(type="text", text=f"\U0001f512 Секрет сохранён: {project}/{article_path.name}")]
