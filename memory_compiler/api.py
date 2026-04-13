@@ -20,7 +20,7 @@ from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
     load_embeddings, get_index,
 )
-from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log
+from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log, decrypt_content, is_encrypted
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 
@@ -57,13 +57,22 @@ async def web_project(request: Request):
 
 
 async def web_article(request: Request):
-    """Get full article text."""
+    """Get full article text, with decryption for secrets."""
     project = request.path_params["project"]
     filename = request.path_params["filename"]
     fpath = KNOWLEDGE_DIR / project / filename
     if not fpath.exists() or not fpath.suffix == ".md":
         return JSONResponse({"error": "not found"}, status_code=404)
     text = fpath.read_text(encoding="utf-8")
+    # Decrypt secret articles for authorized web users
+    if "ENC:" in text:
+        lines_dec = []
+        for line in text.splitlines():
+            if line.strip().startswith("ENC:"):
+                lines_dec.append(decrypt_content(line.strip()))
+            else:
+                lines_dec.append(line)
+        text = "\n".join(lines_dec)
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename
     return JSONResponse({"title": title, "project": project, "file": filename, "content": text})
