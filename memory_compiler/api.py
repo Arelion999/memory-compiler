@@ -15,9 +15,10 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
     _discover_projects, MC_API_KEY,
 )
+from memory_compiler import search as _search_mod
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
-    load_embeddings, _embeddings, _embed_texts, get_index,
+    load_embeddings, get_index,
 )
 from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article
@@ -107,7 +108,7 @@ async def web_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "documents": ix.doc_count(),
-        "embeddings": len(_embeddings),
+        "embeddings": len(_search_mod._embeddings),
         "total_articles": total_articles,
         "total_size_kb": round(total_chars / 1024, 1),
         "daily_logs": daily_count,
@@ -121,14 +122,14 @@ async def web_graph(request: Request):
     nodes = []
     edges = []
     # Collect parent-only embeddings
-    parent_keys = [k for k in _embeddings.keys() if "#chunk" not in k and not k.split("/")[-1].startswith("_")]
+    parent_keys = [k for k in _search_mod._embeddings.keys() if "#chunk" not in k and not k.split("/")[-1].startswith("_")]
     palette = ["#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#F97316", "#6B7280", "#EF4444", "#14B8A6", "#A855F7"]
     proj_colors = {p: palette[i % len(palette)] for i, p in enumerate(PROJECTS)}
     proj_colors["daily"] = "#9CA3AF"
 
     for key in parent_keys:
         proj = key.split("/")[0]
-        title = _embed_texts.get(key, key.split("/")[-1])
+        title = _search_mod._embed_texts.get(key, key.split("/")[-1])
         meta = article_meta.get(key, {})
         nodes.append({
             "id": key, "title": title, "project": proj,
@@ -139,7 +140,7 @@ async def web_graph(request: Request):
     # Build edges (similarity > 0.5)
     for i, k1 in enumerate(parent_keys):
         for k2 in parent_keys[i+1:]:
-            sim = float(np.dot(_embeddings[k1], _embeddings[k2]))
+            sim = float(np.dot(_search_mod._embeddings[k1], _search_mod._embeddings[k2]))
             if sim > 0.5:
                 edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
 
@@ -151,7 +152,7 @@ async def web_analytics(request: Request):
     load_article_meta()
     items = []
     for path, meta in article_meta.items():
-        title = _embed_texts.get(path, path.split("/")[-1] if "/" in path else path)
+        title = _search_mod._embed_texts.get(path, path.split("/")[-1] if "/" in path else path)
         proj = path.split("/")[0] if "/" in path else "unknown"
         items.append({
             "path": path, "title": title, "project": proj,
@@ -368,11 +369,11 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         load_article_meta()
         count = rebuild_index()
         print(f"Whoosh index built: {count} documents")
-        if not load_embeddings() or len(_embeddings) != count:
+        if not load_embeddings() or len(_search_mod._embeddings) != count:
             ecount = rebuild_embeddings()
             print(f"Embeddings built: {ecount} documents")
         else:
-            print(f"Embeddings loaded from cache: {len(_embeddings)} documents")
+            print(f"Embeddings loaded from cache: {len(_search_mod._embeddings)} documents")
         task = asyncio.create_task(auto_compile_loop())
         print("Auto-compile scheduled daily at 02:00")
         yield
