@@ -402,17 +402,18 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="git_capture",
-            description="Автосбор знаний из git-коммитов. Анализирует историю любого репозитория, группирует коммиты и сохраняет как статьи в базу знаний.",
+            description="Автосбор знаний из git-коммитов. Два режима: repo_path (сервер читает git log из смонтированного репо) или git_log_raw (клиент передаёт вывод 'git log --format=\"%H|%s|%an|%aI\" --numstat').",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "repo_path": {"type": "string", "description": "Путь к git-репозиторию"},
+                    "repo_path": {"type": "string", "description": "Путь к git-репозиторию (на сервере/в контейнере)"},
                     "project": {"type": "string", "description": "Проект в KB для сохранения"},
                     "since": {"type": "string", "description": "С какого момента: дата ISO, '3 days ago', commit hash. По умолчанию: с последнего capture"},
                     "auto_save": {"type": "boolean", "default": False, "description": "true = сохранить как статьи, false = вернуть сводку для ревью"},
-                    "group_by": {"type": "string", "enum": ["prefix", "branch", "file"], "default": "prefix", "description": "Группировка: prefix (conventional commits), branch, file (по директории)"}
+                    "group_by": {"type": "string", "enum": ["prefix", "branch", "file"], "default": "prefix", "description": "Группировка: prefix (conventional commits), branch, file (по директории)"},
+                    "git_log_raw": {"type": "string", "description": "Сырой вывод git log (вместо repo_path). Формат: git log --format='%H|%s|%an|%aI' --numstat"}
                 },
-                "required": ["repo_path", "project"]
+                "required": ["project"]
             }
         ),
     ]
