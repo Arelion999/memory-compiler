@@ -9,6 +9,8 @@ services:
       - "8765:8765"
     volumes:
       - ./knowledge:/knowledge
+      - ./server.py:/app/server.py:ro
+      - ./memory_compiler:/app/memory_compiler:ro
       - hf_cache:/root/.cache/huggingface
     environment:
       - KNOWLEDGE_DIR=/knowledge
