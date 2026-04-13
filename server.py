@@ -32,7 +32,22 @@ from whoosh.scoring import BM25F
 
 KNOWLEDGE_DIR = Path(os.environ.get("KNOWLEDGE_DIR", "/knowledge"))
 INDEX_DIR = KNOWLEDGE_DIR / ".whoosh_index"
-PROJECTS = os.environ.get("PROJECTS", "project-a,project-b,infra,general").split(",")
+_INITIAL_PROJECTS = os.environ.get("PROJECTS", "general").split(",")
+_HIDDEN_DIRS = {".whoosh_index", ".git", "daily"}
+
+
+def _discover_projects() -> list[str]:
+    """Собрать список проектов из существующих папок + initial."""
+    found = set(_INITIAL_PROJECTS)
+    if KNOWLEDGE_DIR.exists():
+        for d in KNOWLEDGE_DIR.iterdir():
+            if d.is_dir() and d.name not in _HIDDEN_DIRS and not d.name.startswith("."):
+                found.add(d.name)
+    return sorted(found)
+
+
+# Динамический список — обновляется при добавлении/удалении
+PROJECTS = _discover_projects()
 
 # Custom analyzer: splits on dots, @, spaces etc. Works with cyrillic+latin.
 analyzer = RegexTokenizer(r'[\w]{2,}') | LowercaseFilter()
@@ -412,8 +427,11 @@ def today_log_path() -> Path:
 
 
 def project_dir(project: str) -> Path:
+    global PROJECTS
     p = KNOWLEDGE_DIR / project
     p.mkdir(parents=True, exist_ok=True)
+    if project not in PROJECTS:
+        PROJECTS = _discover_projects()
     return p
 
 
@@ -610,7 +628,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "topic": {"type": "string", "description": "Короткое название"},
                     "content": {"type": "string", "description": "Проблема, причина, решение"},
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"}
                 },
@@ -623,7 +641,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "query": {"type": "string", "description": "Описание задачи"}
                 },
                 "required": ["project"]
@@ -636,7 +654,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "project": {"type": "string", "enum": PROJECTS + ["all"], "default": "all"}
+                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["query"]
             }
@@ -659,7 +677,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS + ["all"], "default": "all"},
+                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"},
                     "fix": {"type": "boolean", "default": False, "description": "Автоисправление безопасных проблем (теги, index)"}
                 }
             }
@@ -678,7 +696,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "summary": {"type": "string", "description": "Что сделано в этой сессии"},
                     "decisions": {"type": "string", "description": "Принятые решения"},
                     "open_questions": {"type": "string", "description": "Что осталось / открытые вопросы"}
@@ -692,7 +710,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS}
+                    "project": {"type": "string", "description": "Имя проекта"}
                 },
                 "required": ["project"]
             }
@@ -703,7 +721,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS}
+                    "project": {"type": "string", "description": "Имя проекта"}
                 },
                 "required": ["project"]
             }
@@ -715,7 +733,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "question": {"type": "string", "description": "Вопрос на естественном языке"},
-                    "project": {"type": "string", "enum": PROJECTS + ["all"], "default": "all"}
+                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["question"]
             }
@@ -726,7 +744,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS}
+                    "project": {"type": "string", "description": "Имя проекта"}
                 },
                 "required": ["project"]
             }
@@ -737,7 +755,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "filename": {"type": "string", "description": "Имя файла статьи (например, my_article.md)"}
                 },
                 "required": ["project", "filename"]
@@ -749,7 +767,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "filename": {"type": "string", "description": "Имя файла статьи"},
                     "content": {"type": "string", "description": "Новое содержимое (полная замена тела статьи)"},
                     "append": {"type": "boolean", "default": False, "description": "True — дописать в конец, False — заменить тело"}
@@ -763,7 +781,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS + ["daily"]},
+                    "project": {"type": "string", "description": "Имя проекта или 'daily'"},
                     "filename": {"type": "string", "description": "Имя файла статьи"}
                 },
                 "required": ["project", "filename"]
@@ -776,7 +794,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "tag": {"type": "string", "description": "Тег для поиска"},
-                    "project": {"type": "string", "enum": PROJECTS + ["all"], "default": "all"}
+                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["tag"]
             }
@@ -787,10 +805,40 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "enum": PROJECTS},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "filename": {"type": "string", "description": "Имя файла статьи"}
                 },
                 "required": ["project", "filename"]
+            }
+        ),
+        Tool(
+            name="add_project",
+            description="Создать новый проект в базе знаний.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Имя проекта (латиница, без пробелов)"}
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="remove_project",
+            description="Удалить проект из базы знаний (все статьи проекта будут удалены).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Имя проекта для удаления"}
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="list_projects",
+            description="Список всех проектов с количеством статей.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
             }
         ),
     ]
@@ -835,6 +883,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await _search_by_tag(**arguments)
     elif name == "article_history":
         result = await _article_history(**arguments)
+    elif name == "add_project":
+        result = await _add_project(**arguments)
+    elif name == "remove_project":
+        result = await _remove_project(**arguments)
+    elif name == "list_projects":
+        result = await _list_projects()
     else:
         result = [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
     # Track response size
@@ -1550,6 +1604,65 @@ async def _article_history(project: str, filename: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"Ошибка git: {e}")]
 
 
+# ─── Управление проектами ─────────────────────────────────────────────────────
+
+async def _add_project(name: str) -> list[TextContent]:
+    global PROJECTS
+    name = re.sub(r'[^\w\-]', '', name.lower().strip())
+    if not name:
+        return [TextContent(type="text", text="Некорректное имя проекта.")]
+    proj_path = KNOWLEDGE_DIR / name
+    if proj_path.exists():
+        return [TextContent(type="text", text=f"Проект '{name}' уже существует.")]
+    proj_path.mkdir(parents=True, exist_ok=True)
+    PROJECTS = _discover_projects()
+    _git_commit(f"add project: {name}")
+    return [TextContent(type="text", text=f"✅ Проект '{name}' создан. Всего проектов: {len(PROJECTS)}")]
+
+
+async def _remove_project(name: str) -> list[TextContent]:
+    global PROJECTS
+    name = name.strip()
+    proj_path = KNOWLEDGE_DIR / name
+    if not proj_path.exists():
+        return [TextContent(type="text", text=f"Проект '{name}' не найден.")]
+    # Посчитать статьи
+    articles = list(proj_path.glob("*.md"))
+    if articles:
+        # Удалить все статьи из индексов
+        for md in articles:
+            key = f"{name}/{md.name}"
+            _embeddings.pop(key, None)
+            chunk_keys = [k for k in list(_embeddings.keys()) if k.startswith(key + "#")]
+            for ck in chunk_keys:
+                _embeddings.pop(ck, None)
+            _embed_texts.pop(key, None)
+            _article_meta.pop(key, None)
+    # Удалить папку
+    import shutil
+    shutil.rmtree(str(proj_path))
+    _save_article_meta()
+    PROJECTS = _discover_projects()
+    rebuild_index()
+    _regenerate_index()
+    _git_commit(f"remove project: {name} ({len(articles)} articles)")
+    return [TextContent(type="text", text=f"🗑️ Проект '{name}' удалён ({len(articles)} статей). Осталось проектов: {len(PROJECTS)}")]
+
+
+async def _list_projects() -> list[TextContent]:
+    PROJECTS[:] = _discover_projects()
+    lines = [f"# Проекты ({len(PROJECTS)})\n"]
+    for proj in PROJECTS:
+        proj_path = KNOWLEDGE_DIR / proj
+        if proj_path.exists():
+            articles = [f for f in proj_path.glob("*.md") if not f.name.startswith("_")]
+            size = sum(f.stat().st_size for f in articles)
+            lines.append(f"- **{proj}** — {len(articles)} статей, {round(size/1024, 1)} KB")
+        else:
+            lines.append(f"- **{proj}** — пуст")
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
 # ─── Автотегирование ─────────────────────────────────────────────────────────
 
 _AUTO_TAG_RULES = [
@@ -2001,8 +2114,6 @@ async def web_search(request: Request):
 
 async def web_project(request: Request):
     project = request.path_params["project"]
-    if project not in PROJECTS:
-        return JSONResponse({"articles": []})
     proj_path = KNOWLEDGE_DIR / project
     if not proj_path.exists():
         return JSONResponse({"articles": []})
@@ -2023,8 +2134,6 @@ async def web_article(request: Request):
     """Get full article text."""
     project = request.path_params["project"]
     filename = request.path_params["filename"]
-    if project not in PROJECTS + ["daily"]:
-        return JSONResponse({"error": "invalid project"}, status_code=400)
     fpath = KNOWLEDGE_DIR / project / filename
     if not fpath.exists() or not fpath.suffix == ".md":
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -2046,8 +2155,6 @@ async def web_save(request: Request):
     tags = data.get("tags", [])
     if not topic or not content:
         return JSONResponse({"error": "topic and content required"}, status_code=400)
-    if project not in PROJECTS:
-        return JSONResponse({"error": f"invalid project, use: {PROJECTS}"}, status_code=400)
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
     result = await _save_lesson(topic, content, project, tags)
@@ -2055,8 +2162,9 @@ async def web_save(request: Request):
 
 
 async def web_health(request: Request):
+    global PROJECTS
+    PROJECTS = _discover_projects()
     ix = get_index()
-    # Calculate total knowledge size
     total_chars = 0
     total_articles = 0
     project_stats = {}
@@ -2160,8 +2268,6 @@ async def web_compile_run(request: Request):
 async def web_export(request: Request):
     """Export all articles from a project as JSON."""
     project = request.path_params["project"]
-    if project not in PROJECTS:
-        return JSONResponse({"error": "invalid project"}, status_code=400)
     proj_path = KNOWLEDGE_DIR / project
     if not proj_path.exists():
         return JSONResponse({"articles": []})
