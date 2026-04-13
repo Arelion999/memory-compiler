@@ -16,6 +16,10 @@ INDEX_DIR = KNOWLEDGE_DIR / ".whoosh_index"
 _INITIAL_PROJECTS = os.environ.get("PROJECTS", "general").split(",")
 _HIDDEN_DIRS = {".whoosh_index", ".git", "daily"}
 
+# Auth & encryption
+MC_API_KEY = os.environ.get("MC_API_KEY", "")
+MC_ENCRYPT_KEY = os.environ.get("MC_ENCRYPT_KEY", "")
+
 
 def _discover_projects() -> list[str]:
     """Collect project list from existing folders + initial."""

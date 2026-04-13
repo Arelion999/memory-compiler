@@ -1,6 +1,8 @@
 """
 Storage module: article management, git versioning, and helper utilities.
 """
+import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -519,3 +521,84 @@ def write_project_deps(project: str, depends_on: list[str]):
         json.dumps({"depends_on": depends_on}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+# --- Encryption ---
+
+def _get_cipher():
+    """Get Fernet cipher from MC_ENCRYPT_KEY env var."""
+    from memory_compiler.config import MC_ENCRYPT_KEY
+    if not MC_ENCRYPT_KEY:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        dk = hashlib.pbkdf2_hmac("sha256", MC_ENCRYPT_KEY.encode(), b"memory-compiler-salt", 100000)
+        return Fernet(base64.urlsafe_b64encode(dk))
+    except ImportError:
+        return None
+
+
+def encrypt_content(text: str) -> str:
+    """Encrypt text content. Returns 'ENC:...' string or original if no key."""
+    cipher = _get_cipher()
+    if not cipher:
+        return text
+    return "ENC:" + cipher.encrypt(text.encode()).decode()
+
+
+def decrypt_content(text: str) -> str:
+    """Decrypt 'ENC:...' content. Returns original text if not encrypted."""
+    if not text.startswith("ENC:"):
+        return text
+    cipher = _get_cipher()
+    if not cipher:
+        return "[MC_ENCRYPT_KEY не задан — расшифровка невозможна]"
+    try:
+        return cipher.decrypt(text[4:].encode()).decode()
+    except Exception:
+        return "[Ошибка расшифровки]"
+
+
+def is_encrypted(text: str) -> bool:
+    """Check if content is encrypted."""
+    return text.strip().startswith("ENC:")
+
+
+# --- Audit log ---
+
+def _audit_path():
+    return KNOWLEDGE_DIR / "_audit.log"
+
+
+def audit_log(tool_name: str, args: dict, result_size: int):
+    """Log tool call to audit file."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    safe_args = {}
+    for k, v in args.items():
+        if k in ("content", "error_text", "steps"):
+            safe_args[k] = f"[{len(str(v))} chars]"
+        elif k in ("key", "password"):
+            safe_args[k] = "***"
+        else:
+            safe_args[k] = v
+    line = json.dumps({"ts": ts, "tool": tool_name, "args": safe_args, "size": result_size}, ensure_ascii=False)
+    try:
+        with open(_audit_path(), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def read_audit_log(limit: int = 100) -> list[dict]:
+    """Read last N audit entries."""
+    path = _audit_path()
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    entries = []
+    for line in lines[-limit:]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            pass
+    return entries
