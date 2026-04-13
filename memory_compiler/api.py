@@ -7,7 +7,6 @@ from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route, Mount
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -249,33 +248,67 @@ async def web_tags(request: Request):
     return JSONResponse({"tags": [{"tag": t, "count": c} for t, c in sorted_tags]})
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if not MC_API_KEY:  # auth disabled — backward compatible
-            return await call_next(request)
+class AuthMiddleware:
+    """Pure ASGI middleware (compatible with SSE/streaming)."""
 
-        # Public routes (health for Docker healthcheck, login for auth)
-        if request.url.path in ("/login", "/api/auth/login", "/api/health"):
-            return await call_next(request)
+    def __init__(self, app):
+        self.app = app
 
-        # Check Bearer token, cookie, or query param
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+
+        if not MC_API_KEY:
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "")
+        query = scope.get("query_string", b"").decode()
+
+        # Public routes
+        if path in ("/login", "/api/auth/login", "/api/health"):
+            return await self.app(scope, receive, send)
+
+        # OAuth discovery (mcp-remote probes this) — return 404
+        if path.startswith("/.well-known/"):
+            response = JSONResponse({"error": "not found"}, status_code=404)
+            return await response(scope, receive, send)
+
+        # SSE/MCP + /messages/ — pass through (auth via key in SSE URL)
+        if path == "/sse" or path.startswith("/messages"):
+            return await self.app(scope, receive, send)
+
+        # Extract token from headers, cookies, or query param
         token = None
-        auth_header = request.headers.get("authorization", "")
+        headers = dict((k.decode(), v.decode()) for k, v in scope.get("headers", []))
+        auth_header = headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+
         if not token:
-            token = request.cookies.get("mc_token")
+            # Parse cookies
+            cookie_str = headers.get("cookie", "")
+            for part in cookie_str.split(";"):
+                part = part.strip()
+                if part.startswith("mc_token="):
+                    token = part[9:]
+                    break
+
         if not token:
-            token = request.query_params.get("key")
+            # Parse query string
+            from urllib.parse import parse_qs
+            params = parse_qs(query)
+            token = params.get("key", [None])[0]
 
         if token == MC_API_KEY:
-            return await call_next(request)
+            return await self.app(scope, receive, send)
 
         # Unauthorized
-        accept = request.headers.get("accept", "")
+        accept = headers.get("accept", "")
         if "text/html" in accept:
-            return RedirectResponse("/login")
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            response = RedirectResponse("/login")
+        else:
+            response = JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await response(scope, receive, send)
 
 
 async def web_login(request: Request):
