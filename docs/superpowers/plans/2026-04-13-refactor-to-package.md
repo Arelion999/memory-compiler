@@ -117,7 +117,7 @@ def decay_factor(path: str) -> float:
 
 - [ ] **Step 3: Verify config module imports**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python -c "from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS, SCHEMA; print('OK', len(PROJECTS))"`
+Run: `cd /path/to/memory-compiler && python -c "from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS, SCHEMA; print('OK', len(PROJECTS))"`
 Expected: `OK` with number of projects
 
 - [ ] **Step 4: Commit**
@@ -432,7 +432,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
 
 - [ ] **Step 2: Verify search module imports**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python -c "from memory_compiler.search import whoosh_search, rebuild_index; print('OK')"`
+Run: `cd /path/to/memory-compiler && python -c "from memory_compiler.search import whoosh_search, rebuild_index; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 3: Commit**
@@ -802,7 +802,7 @@ def update_cross_references(topic: str, project: str, saved_path: str):
 
 - [ ] **Step 2: Verify storage module**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python -c "from memory_compiler.storage import today_log_path, project_dir, auto_tags; print('OK')"`
+Run: `cd /path/to/memory-compiler && python -c "from memory_compiler.storage import today_log_path, project_dir, auto_tags; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 3: Commit**
@@ -919,7 +919,7 @@ Note: This is the largest module. The implementer must copy ALL handler function
 
 - [ ] **Step 2: Verify handlers module**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python -c "from memory_compiler.handlers import save_lesson, search, compile; print('OK')"`
+Run: `cd /path/to/memory-compiler && python -c "from memory_compiler.handlers import save_lesson, search, compile; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 3: Commit**
@@ -1158,7 +1158,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Verify the server starts**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && KNOWLEDGE_DIR=./knowledge python -c "from memory_compiler.tools import app; from memory_compiler.api import create_starlette_app; print('OK')"`
+Run: `cd /path/to/memory-compiler && KNOWLEDGE_DIR=./knowledge python -c "from memory_compiler.tools import app; from memory_compiler.api import create_starlette_app; print('OK')"`
 Expected: `OK`
 
 - [ ] **Step 3: Commit**
@@ -1413,7 +1413,7 @@ pytest-asyncio>=0.23.0
 
 - [ ] **Step 8: Run tests**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && pip install pytest pytest-asyncio && python -m pytest tests/ -v`
+Run: `cd /path/to/memory-compiler && pip install pytest pytest-asyncio && python -m pytest tests/ -v`
 Expected: All tests pass
 
 - [ ] **Step 9: Commit**
@@ -1486,7 +1486,7 @@ volumes:
 
 - [ ] **Step 3: Test Docker build**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && docker build -t memory-compiler-test .`
+Run: `cd /path/to/memory-compiler && docker build -t memory-compiler-test .`
 Expected: Build succeeds
 
 - [ ] **Step 4: Commit**
@@ -1554,22 +1554,22 @@ git commit -m "docs: update README for package structure"
 
 - [ ] **Step 1: Run full test suite**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python -m pytest tests/ -v`
+Run: `cd /path/to/memory-compiler && python -m pytest tests/ -v`
 Expected: All tests pass
 
 - [ ] **Step 2: Verify server starts locally**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && KNOWLEDGE_DIR=./knowledge timeout 10 python server.py || true`
+Run: `cd /path/to/memory-compiler && KNOWLEDGE_DIR=./knowledge timeout 10 python server.py || true`
 Expected: Server starts, prints "Whoosh index built" before timeout
 
 - [ ] **Step 3: Run existing integration tests**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && python test_all.py`
+Run: `cd /path/to/memory-compiler && python test_all.py`
 Expected: All existing tests pass (requires running server)
 
 - [ ] **Step 4: Docker build verification**
 
-Run: `cd /c/Users/areli/SynologyDrive/DEV/memory-compiler && docker build -t memory-compiler-test .`
+Run: `cd /path/to/memory-compiler && docker build -t memory-compiler-test .`
 Expected: Build succeeds
 
 - [ ] **Step 5: Final commit**
