@@ -35,7 +35,7 @@ docker-compose up -d --build
 
 ## Возможности
 
-### 32 MCP-инструмента
+### 33 MCP-инструмента
 
 **Поиск и чтение:**
 
@@ -94,6 +94,7 @@ docker-compose up -d --build
 
 | Инструмент | Описание |
 |------------|----------|
+| `git_capture(repo_path, project, ...)` | Автосбор знаний из git-коммитов (repo_path или git_log_raw) |
 | `compile(dry_run, project, since)` | Компиляция дневных логов в wiki-статьи |
 | `lint(project, fix)` | Проверка: дубли, устаревшее, теги |
 | `reindex()` | Переиндексация |
@@ -217,3 +218,26 @@ pytest tests/ -v
 ```bash
 PROJECTS=backend,infra,general python server.py
 ```
+
+### Git Capture
+
+Два режима автосбора знаний из git:
+
+**Режим 1 — repo_path** (сервер читает git напрямую):
+```bash
+# .env
+GIT_REPOS_PATH=/path/to/your/repos
+```
+
+```
+git_capture(repo_path="/repos/my-project", project="myapp", auto_save=true)
+```
+
+**Режим 2 — git_log_raw** (клиент передаёт вывод git log):
+```bash
+# Claude запускает локально:
+git log --format="%H|%s|%an|%aI" --numstat --since="7 days ago"
+# и передаёт вывод в git_log_raw параметр
+```
+
+Повторные вызовы с `repo_path` автоматически обрабатывают только новые коммиты.
