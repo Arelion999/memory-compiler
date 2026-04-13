@@ -4,6 +4,9 @@ deploy_image.py
 setup_nas.py
 deploy.bat
 
+# Docs (не для публикации)
+docs/description.md
+
 # Node (docx builder)
 docs/node_modules/
 docs/package.json
