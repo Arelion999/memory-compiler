@@ -5,12 +5,6 @@ services:
     build: .
     container_name: memory-compiler-mcp
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/api/health')"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     ports:
       - "8765:8765"
     volumes:
