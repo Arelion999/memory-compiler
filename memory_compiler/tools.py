@@ -4,7 +4,7 @@ from mcp.types import Tool, TextContent
 
 from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings
-from memory_compiler.storage import regenerate_index
+from memory_compiler.storage import regenerate_index, audit_log
 from memory_compiler import handlers
 
 app = Server("memory-compiler")
@@ -386,6 +386,20 @@ async def list_tools() -> list[Tool]:
                 "properties": {}
             }
         ),
+        Tool(
+            name="save_secret",
+            description="Сохранить зашифрованную секретную статью (пароли, ключи, credentials).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Название секрета"},
+                    "content": {"type": "string", "description": "Содержание (будет зашифровано)"},
+                    "project": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["topic", "content", "project"]
+            }
+        ),
     ]
 
 
@@ -458,9 +472,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.save_from_template(**arguments)
     elif name == "list_templates":
         result = await handlers.list_templates()
+    elif name == "save_secret":
+        result = await handlers.save_secret(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size
     total = sum(len(t.text) for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
+    audit_log(name, arguments, total)
     return result
