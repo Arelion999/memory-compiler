@@ -254,17 +254,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not MC_API_KEY:  # auth disabled — backward compatible
             return await call_next(request)
 
-        # Public routes
-        if request.url.path in ("/login", "/api/auth/login"):
+        # Public routes (health for Docker healthcheck, login for auth)
+        if request.url.path in ("/login", "/api/auth/login", "/api/health"):
             return await call_next(request)
 
-        # Check Bearer token or cookie
+        # Check Bearer token, cookie, or query param
         token = None
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
         if not token:
             token = request.cookies.get("mc_token")
+        if not token:
+            token = request.query_params.get("key")
 
         if token == MC_API_KEY:
             return await call_next(request)
