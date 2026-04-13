@@ -1,5 +1,17 @@
 # Changelog
 
+## v9.0.0 — 2026-04-14
+
+Git Capture: автосбор знаний из git-коммитов. 33 MCP tools, 37 тестов.
+
+### Добавлено
+
+- **Git Capture** — `git_capture(repo_path, project, since, auto_save, group_by, git_log_raw)` — анализ git-истории любого репозитория, группировка коммитов по conventional commit prefix / файловой структуре, автосохранение как статьи в KB
+- **Dual mode** — два режима: `repo_path` (сервер читает git log из смонтированного репо) и `git_log_raw` (клиент передаёт сырой вывод `git log`)
+- **Last capture tracking** — `_last_capture.json` запоминает последний обработанный коммит, повторный вызов обрабатывает только новые
+- **Docker: /repos mount** — `GIT_REPOS_PATH` env → монтируется как `/repos:ro` для repo_path режима (опционально)
+- **Dockerfile** — `git config --global --add safe.directory '*'` для mounted repos
+
 ## v8.0.0 — 2026-04-13
 
 Безопасность: авторизация, шифрование секретов, аудит. 32 MCP tools, 37 тестов.
