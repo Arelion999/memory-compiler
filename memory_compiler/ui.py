@@ -62,6 +62,7 @@ h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 <a href="#" onclick="showTab('graph');return false" id="tab-graph">Граф</a>
 <a href="#" onclick="showTab('compile');return false" id="tab-compile">Компиляция</a>
 <a href="#" onclick="showTab('analytics');return false" id="tab-analytics">Аналитика</a>
+<a href="#" onclick="showTab('audit');return false" id="tab-audit">Аудит</a>
 </div>
 <div id="view-search">
 <div class="search-box">
@@ -98,6 +99,9 @@ h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 <div id="view-analytics" style="display:none">
 <div id="analytics-content"></div>
 </div>
+<div id="view-audit" style="display:none">
+<div id="audit-content"></div>
+</div>
 <script>
 let PROJECTS=[];
 fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
@@ -107,12 +111,13 @@ const $=id=>document.getElementById(id);
 let current=null;
 
 function showTab(t){
-  ["search","add","graph","compile","analytics"].forEach(v=>{
+  ["search","add","graph","compile","analytics","audit"].forEach(v=>{
     $("view-"+v).style.display=v===t?"block":"none";
     $("tab-"+v).className=v===t?"active":"";
   });
   if(t==="graph")loadGraph();
   if(t==="analytics")loadAnalytics();
+  if(t==="audit")loadAudit();
 }
 
 function renderProjects(){
@@ -325,6 +330,25 @@ async function loadAnalytics(){
     h+=`<div class="card"><h3>Никогда не открывались</h3><pre>${d.never_accessed.join("\\n")}</pre></div>`;
   }
   $("analytics-content").innerHTML=h;
+}
+
+async function loadAudit(){
+  $("audit-content").innerHTML='<div class="empty">Загрузка...</div>';
+  const r=await fetch("/api/audit");
+  const d=await r.json();
+  if(!d.entries||!d.entries.length){$("audit-content").innerHTML='<div class="empty">Нет записей</div>';return;}
+  let h='<div class="card"><h3>Аудит (последние '+d.entries.length+')</h3>';
+  d.entries.reverse().forEach(e=>{
+    const args=Object.entries(e.args||{}).map(([k,v])=>k+'='+JSON.stringify(v)).join(', ');
+    h+='<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:0.8em">';
+    h+='<span style="color:var(--text2)">'+esc(e.ts)+'</span> ';
+    h+='<span style="color:var(--accent)">'+esc(e.tool)+'</span> ';
+    h+='<span style="color:var(--text2)">'+esc(args).substring(0,100)+'</span> ';
+    h+='<span style="color:var(--text2)">['+e.size+' chars]</span>';
+    h+='</div>';
+  });
+  h+='</div>';
+  $("audit-content").innerHTML=h;
 }
 
 $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
