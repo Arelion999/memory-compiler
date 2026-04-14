@@ -37,7 +37,48 @@ async def web_search(request: Request):
     if not q:
         return JSONResponse({"results": []})
     results = whoosh_search(q, limit=15)
-    return JSONResponse({"results": results})
+    # Add snippets: lines from article body that contain query words (with context)
+    import re as _re
+    query_words = [w.lower() for w in _re.split(r'[\s,;.:]+', q) if len(w) > 2]
+    for r in results:
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        if not fpath.exists():
+            r["snippets"] = []
+            continue
+        try:
+            text = fpath.read_text(encoding="utf-8")
+        except Exception:
+            r["snippets"] = []
+            continue
+        # Decrypt ENC: lines for snippets (auth required for endpoint)
+        if "ENC:" in text:
+            from memory_compiler.storage import decrypt_content as _dec
+            new_lines = []
+            for line in text.splitlines():
+                if line.strip().startswith("ENC:"):
+                    new_lines.append(_dec(line.strip()))
+                else:
+                    new_lines.append(line)
+            text = "\n".join(new_lines)
+        lines = text.splitlines()
+        snippets = []
+        seen_indices = set()
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            if any(w in line_lower for w in query_words):
+                # Context: 1 line before, the match, 1 line after
+                start, end = max(0, i - 1), min(len(lines), i + 2)
+                idx_set = frozenset(range(start, end))
+                if idx_set & seen_indices:
+                    continue
+                seen_indices.update(idx_set)
+                snippet_lines = lines[start:end]
+                snippets.append("\n".join(snippet_lines))
+                if len(snippets) >= 5:
+                    break
+        r["snippets"] = snippets
+        r["query_words"] = query_words  # for client-side highlight
+    return JSONResponse({"results": results, "query": q})
 
 
 async def web_project(request: Request):

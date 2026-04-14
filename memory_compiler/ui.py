@@ -30,6 +30,9 @@ h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 .card h3{font-size:0.95em;color:var(--accent);margin-bottom:6px}
 .card .meta{font-size:0.8em;color:var(--text2);margin-bottom:8px}
 .card .body{white-space:pre-wrap;font-size:0.85em;color:var(--text);line-height:1.5;max-height:200px;overflow-y:auto}
+.snippet{background:#1a2332;border-left:3px solid var(--accent);padding:6px 10px;margin:6px 0;font-size:0.8em;font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;border-radius:4px;line-height:1.4}
+[data-theme=light] .snippet{background:#f0f6fc}
+mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-weight:600}
 .card .body h1,.card .body h2,.card .body h3{color:var(--accent);margin:8px 0 4px}
 .card .body strong{color:var(--text)}
 .card .body code{background:var(--bg3);padding:1px 4px;border-radius:3px;font-size:0.9em}
@@ -131,13 +134,25 @@ function renderProjects(){
   ).join("");
 }
 
+let lastQueryWords=[];
 async function doSearch(){
   const q=$("q").value.trim();
   if(!q)return;
   current=null;renderProjects();
   const r=await fetch("/api/search?q="+encodeURIComponent(q));
   const d=await r.json();
+  lastQueryWords=(d.query||q).toLowerCase().split(/[\s,;.:]+/).filter(w=>w.length>2);
   renderResults(d.results);
+}
+
+function highlight(s){
+  if(!lastQueryWords.length||!s)return s;
+  let out=s;
+  for(const w of lastQueryWords){
+    const re=new RegExp("("+w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","gi");
+    out=out.replace(re,"<mark>$1</mark>");
+  }
+  return out;
 }
 
 async function loadProject(p){
@@ -152,9 +167,17 @@ async function expandCard(proj,file,el){
   if(card.classList.contains("expanded")){card.classList.remove("expanded");el.textContent="Развернуть";return;}
   const r=await fetch("/api/article/"+proj+"/"+file);
   const d=await r.json();
-  card.querySelector(".body").innerHTML=md2html(d.content||"Ошибка загрузки");
+  // Replace snippets/preview with full body, keep highlight
+  const snippets=card.querySelectorAll(".snippet");
+  snippets.forEach(s=>s.remove());
+  let bodyEl=card.querySelector(".body");
+  if(!bodyEl){bodyEl=document.createElement("div");bodyEl.className="body";card.querySelector(".meta").after(bodyEl);}
+  bodyEl.innerHTML=highlight(md2html(d.content||"Ошибка загрузки"));
   card.classList.add("expanded");
   el.textContent="Свернуть";
+  // Scroll to first match
+  const firstMark=bodyEl.querySelector("mark");
+  if(firstMark){setTimeout(()=>firstMark.scrollIntoView({behavior:"smooth",block:"center"}),100);}
 }
 async function deleteArticle(proj,file,el){
   if(!confirm("Удалить "+proj+"/"+file+"?"))return;
@@ -176,7 +199,13 @@ function renderResults(items){
   if(!items||!items.length){$("results").innerHTML='<div class="empty">Ничего не найдено</div>';return;}
   $("results").innerHTML=items.map(i=>{
     const bc=`<div class="breadcrumb"><a href="#" onclick="loadProject('${esc(i.project)}');return false">${esc(i.project)}</a> &rsaquo; ${esc(i.file)}</div>`;
-    return `<div class="card">${bc}<h3>${esc(i.title)}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}</div><div class="body">${md2html(i.preview)}</div><div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">Развернуть</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">Удалить</button></div></div>`;
+    let snippetHtml="";
+    if(i.snippets&&i.snippets.length){
+      snippetHtml=i.snippets.map(s=>'<div class="snippet">'+highlight(esc(s))+'</div>').join("");
+    }else{
+      snippetHtml='<div class="body">'+highlight(md2html(i.preview))+'</div>';
+    }
+    return `<div class="card">${bc}<h3>${highlight(esc(i.title))}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}${i.snippets&&i.snippets.length?' &middot; '+i.snippets.length+' совпадений':''}</div>${snippetHtml}<div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">Развернуть</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">Удалить</button></div></div>`;
   }).join("");
 }
 
