@@ -1,5 +1,33 @@
 # Changelog
 
+## v11.0.0 — 2026-04-14
+
+Obsidian import + Knowledge gap detection. 36 MCP tools, 49 тестов.
+
+### Добавлено
+
+- **import_obsidian** — `import_obsidian(vault_path, project, folder_mapping, dry_run, skip_inbox)` — импорт заметок из Obsidian vault. Парсит YAML frontmatter, inline-теги (#tag), wiki-ссылки ([[X]] → **X**, [[X|Y]] → **Y**). Поддержка маппинга подпапок в проекты KB. dry_run по умолчанию.
+- **knowledge_gap** — `knowledge_gap(repo_path, project, days, git_log_raw)` — находит темы активные в git-коммитах, но не покрытые статьями в базе. Извлекает темы из commit messages (убирает conventional prefix), сравнивает с embeddings существующих статей. Порог gap: similarity < 0.5.
+- **storage.py** — `parse_obsidian_note()` — парсер Obsidian notes без внешних зависимостей
+
+## v10.0.0 — 2026-04-14
+
+Infrastructure hardening: security fixes + autodeploy + backup + scheduled tasks.
+
+### Безопасность
+
+- **git_capture path traversal (CRITICAL)** — валидация `repo_path` под `/repos` или `/tmp`, блокировка KNOWLEDGE_DIR. Настраивается через `GIT_CAPTURE_ALLOWED_ROOTS` env
+- **since validation (HIGH)** — whitelist regex `[\w\s\-:./,]+` для non-hash значений
+- **git_log_raw size limit (MEDIUM)** — макс 5MB для защиты от DoS
+- **remove_project confirm** — требует `confirm=True` если в проекте есть статьи
+
+### Инфраструктура
+
+- **Автодеплой на NAS** — `mc-watcher.sh` + cron (minute) — автоперезапуск контейнера при изменении `*.py` по mtime
+- **Daily backup** — `mc-backup.sh` + cron (4 AM) — tar.gz с ротацией 7 дней в `backups/`
+- **Auto-lint weekly** — воскресенье 3 AM в lifespan, с `fix=True`
+- **.env.example** — документация всех env-переменных
+
 ## v9.0.0 — 2026-04-14
 
 Git Capture, Ingest, Obsidian-граф, start_task context. 34 MCP tools, 37 тестов.

@@ -35,7 +35,7 @@ docker-compose up -d --build
 
 ## Возможности
 
-### 34 MCP-инструмента
+### 36 MCP-инструментов
 
 **Поиск и чтение:**
 
@@ -95,7 +95,9 @@ docker-compose up -d --build
 | Инструмент | Описание |
 |------------|----------|
 | `ingest(url, project, ...)` | Загрузка знаний из URL (HTML→markdown) или raw_text (PDF/документы) |
+| `import_obsidian(vault_path, project, folder_mapping, dry_run)` | Импорт заметок из Obsidian vault (frontmatter, теги, wiki-ссылки) |
 | `git_capture(repo_path, project, ...)` | Автосбор знаний из git-коммитов (repo_path или git_log_raw) |
+| `knowledge_gap(repo_path, project, days)` | Найти темы в git-коммитах, которых нет в базе знаний |
 | `compile(dry_run, project, since)` | Компиляция дневных логов в wiki-статьи |
 | `lint(project, fix)` | Проверка: дубли, устаревшее, теги |
 | `reindex()` | Переиндексация |
