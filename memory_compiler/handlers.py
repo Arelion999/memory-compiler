@@ -1213,13 +1213,45 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 # ─── Git capture ──────────────────────────────────────────────────────────
 
 
+_ALLOWED_REPO_ROOTS = ["/repos", "/tmp"]  # configurable via GIT_CAPTURE_ALLOWED_ROOTS env
+_SINCE_SAFE_RE = re.compile(r'^[\w\s\-:./,]+$')
+_MAX_RAW_INPUT = 5 * 1024 * 1024  # 5 MB
+
+
+def _validate_repo_path(repo_path: str) -> Optional[str]:
+    """Validate repo_path is under allowed roots. Returns error msg or None."""
+    import os
+    import memory_compiler.config as _cfg
+
+    # Get allowed roots (env override)
+    roots_env = os.environ.get("GIT_CAPTURE_ALLOWED_ROOTS")
+    roots = roots_env.split(",") if roots_env else _ALLOWED_REPO_ROOTS
+
+    try:
+        resolved = os.path.realpath(repo_path)
+    except Exception:
+        return "Некорректный путь."
+
+    # Must be under at least one allowed root
+    for root in roots:
+        root_resolved = os.path.realpath(root)
+        if resolved == root_resolved or resolved.startswith(root_resolved + os.sep):
+            # Explicitly block knowledge dir and app dir
+            kd = os.path.realpath(str(_cfg.KNOWLEDGE_DIR))
+            if resolved == kd or resolved.startswith(kd + os.sep):
+                return "Доступ к knowledge dir запрещён."
+            return None
+
+    return f"repo_path должен быть под одним из: {', '.join(roots)}"
+
+
 async def git_capture(repo_path: str = None, project: str = "", since: str = None,
                       auto_save: bool = False, group_by: str = "prefix",
                       git_log_raw: str = None) -> list[TextContent]:
     """Capture knowledge from git commits.
 
     Two modes:
-    - repo_path: server reads git log directly from a local/mounted repo
+    - repo_path: server reads git log directly from a local/mounted repo (must be under /repos or /tmp)
     - git_log_raw: client sends raw output of `git log --format="%H|%s|%an|%aI" --numstat`
     """
     from memory_compiler.storage import (
@@ -1230,19 +1262,32 @@ async def git_capture(repo_path: str = None, project: str = "", since: str = Non
     if not repo_path and not git_log_raw:
         return [TextContent(type="text", text="Нужен repo_path или git_log_raw.")]
 
+    # Validate since (defense in depth — subprocess uses list args, but reject suspicious input)
+    if since and not re.match(r'^[0-9a-f]{7,40}$', since) and not _SINCE_SAFE_RE.match(since):
+        return [TextContent(type="text", text="since содержит недопустимые символы.")]
+
+    # Limit git_log_raw size (DoS prevention)
+    if git_log_raw and len(git_log_raw) > _MAX_RAW_INPUT:
+        return [TextContent(type="text", text=f"git_log_raw слишком большой ({len(git_log_raw)} bytes, макс {_MAX_RAW_INPUT}).")]
+
     source_label = repo_path or "(raw input)"
 
     if git_log_raw:
         # Parse from raw text — no repo access needed
         commits = parse_git_log_raw(git_log_raw)
     else:
+        # Validate repo_path (path traversal prevention)
+        path_err = _validate_repo_path(repo_path)
+        if path_err:
+            return [TextContent(type="text", text=path_err)]
+
         # Validate repo
         check = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
             cwd=repo_path, capture_output=True, text=True,
         )
         if check.returncode != 0:
-            return [TextContent(type="text", text=f"'{repo_path}' — не git-репозиторий.")]
+            return [TextContent(type="text", text="Указанный путь — не git-репозиторий.")]
 
         # Determine since
         effective_since = since
