@@ -807,3 +807,120 @@ def write_last_capture(project: str, repo_path: str, commit_hash: str):
         "last_capture": datetime.now().isoformat(),
     }
     cap_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ─── Ingest helpers ─────────────────────────────────────────────────────
+
+
+def html_to_markdown(html: str) -> str:
+    """Convert HTML to readable markdown using stdlib html.parser."""
+    from html.parser import HTMLParser
+
+    class _H2M(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.out = []
+            self.tag_stack = []
+            self.skip = False
+            self.li_count = 0
+
+        def handle_starttag(self, tag, attrs):
+            self.tag_stack.append(tag)
+            if tag in ("script", "style", "nav", "footer", "header", "aside", "noscript"):
+                self.skip = True
+            elif tag == "h1":
+                self.out.append("\n# ")
+            elif tag == "h2":
+                self.out.append("\n## ")
+            elif tag == "h3":
+                self.out.append("\n### ")
+            elif tag in ("h4", "h5", "h6"):
+                self.out.append("\n#### ")
+            elif tag == "p":
+                self.out.append("\n\n")
+            elif tag == "br":
+                self.out.append("\n")
+            elif tag == "li":
+                self.out.append("\n- ")
+            elif tag == "strong" or tag == "b":
+                self.out.append("**")
+            elif tag == "em" or tag == "i":
+                self.out.append("*")
+            elif tag == "code":
+                self.out.append("`")
+            elif tag == "pre":
+                self.out.append("\n```\n")
+            elif tag == "a":
+                href = dict(attrs).get("href", "")
+                if href and not href.startswith("#") and not href.startswith("javascript"):
+                    self.out.append("[")
+            elif tag == "blockquote":
+                self.out.append("\n> ")
+
+        def handle_endtag(self, tag):
+            if tag in self.tag_stack:
+                self.tag_stack.remove(tag)
+            if tag in ("script", "style", "nav", "footer", "header", "aside", "noscript"):
+                self.skip = False
+            elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                self.out.append("\n")
+            elif tag == "strong" or tag == "b":
+                self.out.append("**")
+            elif tag == "em" or tag == "i":
+                self.out.append("*")
+            elif tag == "code":
+                self.out.append("`")
+            elif tag == "pre":
+                self.out.append("\n```\n")
+
+        def handle_data(self, data):
+            if self.skip:
+                return
+            text = data.strip()
+            if text:
+                self.out.append(text if self.tag_stack and self.tag_stack[-1] == "pre" else " " + text)
+
+    parser = _H2M()
+    parser.feed(html)
+    text = "".join(parser.out)
+    # Clean up
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
+
+
+def fetch_url(url: str, timeout: int = 15) -> tuple:
+    """Fetch URL content. Returns (text, content_type, title)."""
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; memory-compiler/1.0)",
+        "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read(512 * 1024)  # 512KB limit
+            charset = "utf-8"
+            if "charset=" in content_type:
+                charset = content_type.split("charset=")[-1].split(";")[0].strip()
+            text = data.decode(charset, errors="replace")
+
+            # Extract title
+            title = url
+            m = re.search(r'<title[^>]*>([^<]+)</title>', text, re.IGNORECASE)
+            if m:
+                title = m.group(1).strip()
+
+            # Convert HTML to markdown
+            if "html" in content_type.lower():
+                text = html_to_markdown(text)
+
+            return text, content_type, title
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP {e.code}: {e.reason}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"URL error: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Fetch error: {e}")

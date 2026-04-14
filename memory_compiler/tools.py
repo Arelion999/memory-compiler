@@ -416,6 +416,22 @@ async def list_tools() -> list[Tool]:
                 "required": ["project"]
             }
         ),
+        Tool(
+            name="ingest",
+            description="Загрузить знания из внешнего источника (URL или текст). Два режима: url (сервер загружает страницу, конвертирует HTML→markdown) или raw_text (клиент передаёт текст из PDF/документа).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Проект в KB для сохранения"},
+                    "url": {"type": "string", "description": "URL веб-страницы для загрузки"},
+                    "raw_text": {"type": "string", "description": "Готовый текст (вместо url). Для PDF, документов и т.д."},
+                    "source": {"type": "string", "description": "Описание источника (для raw_text): имя файла, URL и т.д."},
+                    "topic": {"type": "string", "description": "Тема статьи (по умолчанию: заголовок страницы)"},
+                    "auto_save": {"type": "boolean", "default": False, "description": "true = сохранить сразу, false = превью"}
+                },
+                "required": ["project"]
+            }
+        ),
     ]
 
 
@@ -492,6 +508,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.save_secret(**arguments)
     elif name == "git_capture":
         result = await handlers.git_capture(**arguments)
+    elif name == "ingest":
+        result = await handlers.ingest(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size

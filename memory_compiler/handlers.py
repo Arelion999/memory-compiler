@@ -1290,3 +1290,70 @@ async def git_capture(repo_path: str = None, project: str = "", since: str = Non
         parts.append(f"\n*Сохранено {saved_count} статей в проект '{project}'.*")
 
     return [TextContent(type="text", text="\n".join(parts))]
+
+
+# ─── Ingest (external sources) ────────────────────────────────────────────
+
+
+async def ingest(project: str, url: str = None, raw_text: str = None,
+                 source: str = None, topic: str = None,
+                 auto_save: bool = False) -> list[TextContent]:
+    """Ingest knowledge from external sources (URL or raw text).
+
+    Two modes:
+    - url: server fetches the page, converts HTML to markdown
+    - raw_text + source: client passes pre-extracted text (PDF, etc.)
+    """
+    from memory_compiler.storage import fetch_url
+
+    if not url and not raw_text:
+        return [TextContent(type="text", text="Нужен url или raw_text.")]
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if url:
+        try:
+            text, content_type, page_title = fetch_url(url)
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Ошибка загрузки: {e}")]
+        effective_topic = topic or page_title
+        effective_source = url
+    else:
+        text = raw_text
+        effective_topic = topic or source or "Ingest"
+        effective_source = source or "raw input"
+
+    # Truncate if too long
+    max_chars = 50000
+    truncated = False
+    if len(text) > max_chars:
+        text = text[:max_chars]
+        truncated = True
+
+    # Format content with source metadata
+    content = f"**Источник:** {effective_source}\n**Дата:** {ts}\n\n{text}"
+    if truncated:
+        content += f"\n\n*[обрезано до {max_chars} символов]*"
+
+    if auto_save:
+        result = await save_lesson(
+            topic=effective_topic,
+            content=content,
+            project=project,
+            tags=["ingest", "external"],
+        )
+        return result
+    else:
+        # Preview mode — return extracted text
+        preview = text[:3000]
+        if len(text) > 3000:
+            preview += f"\n\n*...ещё {len(text) - 3000} символов*"
+        parts = [
+            f"# Ingest: {effective_topic}\n",
+            f"**Источник:** {effective_source}",
+            f"**Размер:** {len(text)} символов",
+            f"**Режим:** preview (auto_save=true для сохранения)\n",
+            "---\n",
+            preview,
+        ]
+        return [TextContent(type="text", text="\n".join(parts))]
