@@ -168,10 +168,10 @@ async def web_graph(request: Request):
     for i, k1 in enumerate(emb_keys):
         for k2 in emb_keys[i+1:]:
             sim = float(np.dot(_search_mod._embeddings[k1], _search_mod._embeddings[k2]))
-            if sim > 0.5:
+            if sim > 0.4:
                 edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
 
-    # Also connect articles sharing tags (for those without embeddings)
+    # Also connect articles sharing tags
     from collections import defaultdict
     tag_index = defaultdict(list)
     for n in nodes:
@@ -181,14 +181,40 @@ async def web_graph(request: Request):
                 if t and t != "—":
                     tag_index[t].append(n["id"])
     edge_set = {(e["source"], e["target"]) for e in edges}
+    # Ensure every node has at least one edge via tags — reduce orphans
+    node_has_edge = {n["id"]: False for n in nodes}
+    for e in edges:
+        node_has_edge[e["source"]] = True
+        node_has_edge[e["target"]] = True
+
+    # Pass 1: connect nodes in common tag groups (limit per tag by size)
     for tag, ids in tag_index.items():
-        if len(ids) > 10:
-            continue  # skip overly common tags
+        # Skip mega-tags (>25 nodes) to avoid graph explosion
+        if len(ids) > 25:
+            continue
         for i, a in enumerate(ids):
             for b in ids[i+1:]:
                 if (a, b) not in edge_set and (b, a) not in edge_set:
-                    edges.append({"source": a, "target": b, "weight": 0.35})
+                    edges.append({"source": a, "target": b, "weight": 0.3})
                     edge_set.add((a, b))
+                    node_has_edge[a] = True
+                    node_has_edge[b] = True
+
+    # Pass 2: for remaining orphans, connect to any node in the same project
+    proj_nodes = defaultdict(list)
+    for n in nodes:
+        proj_nodes[n["project"]].append(n["id"])
+    for nid, has in node_has_edge.items():
+        if has:
+            continue
+        proj = next((n["project"] for n in nodes if n["id"] == nid), None)
+        if proj and proj_nodes[proj]:
+            # Connect to first non-self node in project
+            for other in proj_nodes[proj]:
+                if other != nid and (nid, other) not in edge_set and (other, nid) not in edge_set:
+                    edges.append({"source": nid, "target": other, "weight": 0.2})
+                    edge_set.add((nid, other))
+                    break
 
     return JSONResponse({"nodes": nodes, "edges": edges})
 
