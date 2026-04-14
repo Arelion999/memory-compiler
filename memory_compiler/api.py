@@ -168,53 +168,41 @@ async def web_graph(request: Request):
     for i, k1 in enumerate(emb_keys):
         for k2 in emb_keys[i+1:]:
             sim = float(np.dot(_search_mod._embeddings[k1], _search_mod._embeddings[k2]))
-            if sim > 0.4:
+            if sim > 0.45:
                 edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
 
-    # Also connect articles sharing tags
+    # Tag-based edges — only for meaningful (non-meta) tags
     from collections import defaultdict
+    TAG_BLACKLIST = {
+        "obsidian-import", "базаданных", "clippings", "inbox",
+        "—", "", "dashboard", "главная",
+    }
     tag_index = defaultdict(list)
     for n in nodes:
         if n["tags"]:
             for t in n["tags"].split(","):
                 t = t.strip().lower()
-                if t and t != "—":
+                if t and t not in TAG_BLACKLIST:
                     tag_index[t].append(n["id"])
-    edge_set = {(e["source"], e["target"]) for e in edges}
-    # Ensure every node has at least one edge via tags — reduce orphans
-    node_has_edge = {n["id"]: False for n in nodes}
-    for e in edges:
-        node_has_edge[e["source"]] = True
-        node_has_edge[e["target"]] = True
 
-    # Pass 1: connect nodes in common tag groups (limit per tag by size)
+    edge_set = {(e["source"], e["target"]) for e in edges}
     for tag, ids in tag_index.items():
-        # Skip mega-tags (>25 nodes) to avoid graph explosion
-        if len(ids) > 25:
+        # Meaningful tag: 2-15 articles
+        if len(ids) < 2 or len(ids) > 15:
             continue
         for i, a in enumerate(ids):
             for b in ids[i+1:]:
                 if (a, b) not in edge_set and (b, a) not in edge_set:
                     edges.append({"source": a, "target": b, "weight": 0.3})
                     edge_set.add((a, b))
-                    node_has_edge[a] = True
-                    node_has_edge[b] = True
 
-    # Pass 2: for remaining orphans, connect to any node in the same project
-    proj_nodes = defaultdict(list)
+    # Mark orphans (no edges) — UI can dim them
+    connected = set()
+    for e in edges:
+        connected.add(e["source"])
+        connected.add(e["target"])
     for n in nodes:
-        proj_nodes[n["project"]].append(n["id"])
-    for nid, has in node_has_edge.items():
-        if has:
-            continue
-        proj = next((n["project"] for n in nodes if n["id"] == nid), None)
-        if proj and proj_nodes[proj]:
-            # Connect to first non-self node in project
-            for other in proj_nodes[proj]:
-                if other != nid and (nid, other) not in edge_set and (other, nid) not in edge_set:
-                    edges.append({"source": nid, "target": other, "weight": 0.2})
-                    edge_set.add((nid, other))
-                    break
+        n["orphan"] = n["id"] not in connected
 
     return JSONResponse({"nodes": nodes, "edges": edges})
 

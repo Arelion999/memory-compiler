@@ -245,7 +245,8 @@ function filterGraph(){
   });
   graphNmap={};graphNodes.forEach(n=>graphNmap[n.id]=n);
   gZoom=1;gPanX=0;gPanY=0;
-  $("graph-info").textContent=graphNodes.length+" статей, "+graphEdges.length+" связей";
+  const orphans=graphNodes.filter(n=>n.orphan).length;
+  $("graph-info").textContent=graphNodes.length+" статей, "+graphEdges.length+" связей"+(orphans?" · "+orphans+" без связей":"");
   if(graphAnim)cancelAnimationFrame(graphAnim);
   tickGraph();
   setupGraphEvents();
@@ -312,11 +313,12 @@ function renderGraph(){
   ctx.globalAlpha=1;
   // Nodes
   graphNodes.forEach(n=>{
-    const r=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
+    const baseR=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
+    const r=n.orphan?baseR*0.6:baseR;
     const isActive=gHover&&(gHover.id===n.id||graphEdges.some(e=>(e.source===gHover.id&&e.target===n.id)||(e.target===gHover.id&&e.source===n.id)));
     const dimmed=gHover&&!isActive;
-    ctx.globalAlpha=dimmed?0.2:1;
-    ctx.fillStyle=n.color;ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=dimmed?0.2:(n.orphan?0.5:1);
+    ctx.fillStyle=n.orphan?"#6B7280":n.color;ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fill();
     if(n===gHover||n===gDrag){ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();}
     // Label
     const fontSize=Math.max(10,Math.min(14,11/gZoom));
