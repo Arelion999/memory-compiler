@@ -2,7 +2,7 @@
 
 ## v9.0.0 — 2026-04-14
 
-Git Capture: автосбор знаний из git-коммитов. 33 MCP tools, 37 тестов.
+Git Capture + улучшения start_task + расшифровка в Web UI. 33 MCP tools, 37 тестов.
 
 ### Добавлено
 
@@ -11,6 +11,8 @@ Git Capture: автосбор знаний из git-коммитов. 33 MCP too
 - **Last capture tracking** — `_last_capture.json` запоминает последний обработанный коммит, повторный вызов обрабатывает только новые
 - **Docker: /repos mount** — `GIT_REPOS_PATH` env → монтируется как `/repos:ro` для repo_path режима (опционально)
 - **Dockerfile** — `git config --global --add safe.directory '*'` для mounted repos
+- **start_task: decisions + runbooks** — при старте задачи показывает релевантные архитектурные решения (score > 30, краткий формат) и подходящие runbooks. Фильтрация по релевантности — 0 overhead при отсутствии совпадений
+- **Web UI: расшифровка секретов** — секретные статьи (ENC:) расшифровываются для авторизованных пользователей в веб-интерфейсе
 
 ## v8.0.0 — 2026-04-13
 
