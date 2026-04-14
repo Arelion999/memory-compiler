@@ -418,6 +418,34 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="import_obsidian",
+            description="Импорт заметок из Obsidian vault. Парсит YAML frontmatter, теги, wiki-ссылки. dry_run=true для превью.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "vault_path": {"type": "string", "description": "Путь к Obsidian vault"},
+                    "project": {"type": "string", "description": "Целевой проект в KB (по умолчанию для всех заметок)"},
+                    "folder_mapping": {"type": "object", "description": "Маппинг папок vault → проекты KB. Например: {\"Работа\": \"work\", \"Инфраструктура\": \"infra\"}"},
+                    "dry_run": {"type": "boolean", "default": True, "description": "true = превью, false = импорт"},
+                    "skip_inbox": {"type": "boolean", "default": True, "description": "Пропустить папку Inbox"}
+                },
+                "required": ["vault_path", "project"]
+            }
+        ),
+        Tool(
+            name="knowledge_gap",
+            description="Найти темы активные в git-коммитах, но отсутствующие в базе знаний. Полезно для обнаружения недокументированных знаний.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_path": {"type": "string", "description": "Путь к git-репозиторию"},
+                    "project": {"type": "string", "default": "all", "description": "Проект для сравнения (или 'all')"},
+                    "days": {"type": "number", "default": 30, "description": "За сколько последних дней анализировать коммиты"},
+                    "git_log_raw": {"type": "string", "description": "Сырой git log (альтернатива repo_path)"}
+                }
+            }
+        ),
+        Tool(
             name="ingest",
             description="Загрузить знания из внешнего источника (URL или текст). Два режима: url (сервер загружает страницу, конвертирует HTML→markdown) или raw_text (клиент передаёт текст из PDF/документа).",
             inputSchema={
@@ -511,6 +539,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.git_capture(**arguments)
     elif name == "ingest":
         result = await handlers.ingest(**arguments)
+    elif name == "import_obsidian":
+        result = await handlers.import_obsidian(**arguments)
+    elif name == "knowledge_gap":
+        result = await handlers.knowledge_gap(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size

@@ -1405,3 +1405,220 @@ async def ingest(project: str, url: str = None, raw_text: str = None,
             preview,
         ]
         return [TextContent(type="text", text="\n".join(parts))]
+
+
+# ─── Import Obsidian vault ────────────────────────────────────────────────
+
+
+async def import_obsidian(vault_path: str, project: str,
+                          folder_mapping: dict = None,
+                          dry_run: bool = True,
+                          skip_inbox: bool = True) -> list[TextContent]:
+    """Import notes from an Obsidian vault into the knowledge base.
+
+    Parses YAML frontmatter, converts wiki-links to bold text, preserves tags.
+    folder_mapping maps Obsidian subfolders to KB projects (e.g. {"Работа": "work"}).
+    """
+    from memory_compiler.storage import parse_obsidian_note
+    from pathlib import Path
+
+    vault = Path(vault_path)
+    if not vault.exists() or not vault.is_dir():
+        return [TextContent(type="text", text=f"Vault не найден: {vault_path}")]
+
+    folder_mapping = folder_mapping or {}
+
+    # Collect .md files (skip .obsidian, .git, .trash)
+    skip_dirs = {".obsidian", ".git", ".trash"}
+    if skip_inbox:
+        skip_dirs.add("Inbox")
+
+    notes = []
+    for md_path in vault.rglob("*.md"):
+        # Skip hidden dirs
+        if any(p in skip_dirs for p in md_path.parts):
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if not text.strip():
+            continue
+        notes.append((md_path, text))
+
+    # Process
+    stats = {"total": len(notes), "saved": 0, "skipped": 0, "errors": 0}
+    summaries = []
+
+    for md_path, text in notes:
+        rel = md_path.relative_to(vault)
+        parts = rel.parts
+
+        # Determine target project via folder mapping
+        target_project = project
+        for part in parts:
+            if part in folder_mapping:
+                target_project = folder_mapping[part]
+                break
+
+        parsed = parse_obsidian_note(text)
+        # Topic: frontmatter.title → first # heading → filename
+        topic = parsed["title"]
+        if not topic:
+            for line in parsed["body"].splitlines()[:20]:
+                if line.startswith("# "):
+                    topic = line[2:].strip()
+                    break
+        if not topic:
+            topic = md_path.stem
+
+        content = parsed["body"].strip()
+        if not content:
+            stats["skipped"] += 1
+            continue
+        content = f"**Источник:** Obsidian/{rel.as_posix()}\n\n{content}"
+
+        # Tags: frontmatter tags + "obsidian-import" + folder name
+        tags = list(parsed["tags"])
+        tags.append("obsidian-import")
+        if len(parts) > 1:
+            tags.append(parts[0].lower())
+
+        if dry_run:
+            summaries.append(f"- [{target_project}] {topic} (tags: {', '.join(tags[:5])})")
+            stats["saved"] += 1
+        else:
+            try:
+                await save_lesson(topic=topic, content=content, project=target_project, tags=tags)
+                stats["saved"] += 1
+                if stats["saved"] <= 10:
+                    summaries.append(f"✓ [{target_project}] {topic}")
+            except Exception as e:
+                stats["errors"] += 1
+                summaries.append(f"✗ {topic}: {e}")
+
+    mode = "dry-run (preview)" if dry_run else "saved"
+    out = [
+        f"# Obsidian Import: {vault_path}\n",
+        f"**Режим:** {mode}",
+        f"**Найдено:** {stats['total']} | **Импортировано:** {stats['saved']} | **Пропущено:** {stats['skipped']} | **Ошибок:** {stats['errors']}\n",
+    ]
+    if dry_run and len(summaries) > 20:
+        out.append("## Первые 20 (всего " + str(len(summaries)) + "):")
+        out.extend(summaries[:20])
+        out.append(f"\n*...ещё {len(summaries) - 20}. Передайте dry_run=False для импорта.*")
+    else:
+        out.extend(summaries[:30])
+        if len(summaries) > 30:
+            out.append(f"*...ещё {len(summaries) - 30}*")
+
+    return [TextContent(type="text", text="\n".join(out))]
+
+
+# ─── Knowledge gap detector ───────────────────────────────────────────────
+
+
+async def knowledge_gap(repo_path: str = None, project: str = "all",
+                        days: int = 30, git_log_raw: str = None) -> list[TextContent]:
+    """Find topics active in git commits but missing in the knowledge base.
+
+    Extracts topics from commit messages (conventional prefix + file paths),
+    compares against existing articles via semantic similarity.
+    Returns ranked list of gaps — topics with low KB coverage.
+    """
+    from memory_compiler.storage import parse_git_log, parse_git_log_raw, group_commits
+    from memory_compiler.search import _embeddings, get_embed_model
+
+    # Get commits
+    if git_log_raw:
+        commits = parse_git_log_raw(git_log_raw)
+    elif repo_path:
+        from memory_compiler.handlers import _validate_repo_path
+        err = _validate_repo_path(repo_path)
+        if err:
+            return [TextContent(type="text", text=err)]
+        commits = parse_git_log(repo_path, f"{days} days ago")
+    else:
+        return [TextContent(type="text", text="Нужен repo_path или git_log_raw.")]
+
+    if not commits:
+        return [TextContent(type="text", text="Коммитов не найдено.")]
+
+    # Extract topic candidates from commit messages
+    # Strip conventional prefix, split by conjunctions, collect noun-phrase-ish chunks
+    topics = {}
+    for c in commits:
+        msg = c["message"]
+        # Strip prefix
+        msg = re.sub(r'^(fix|feat|refactor|docs|chore|build|test|style|perf|ci)[\(:][^:]*:\s*', '', msg, flags=re.IGNORECASE)
+        msg = re.sub(r'^(fix|feat|refactor|docs|chore|build|test|style|perf|ci):\s*', '', msg, flags=re.IGNORECASE)
+        # Take first 60 chars as topic candidate
+        topic_text = msg[:80].strip()
+        if len(topic_text) < 10:
+            continue
+        topics[topic_text] = topics.get(topic_text, 0) + 1
+
+    if not topics:
+        return [TextContent(type="text", text="Не удалось извлечь темы из коммитов.")]
+
+    # Compute coverage via semantic similarity with existing articles
+    model = get_embed_model()
+    if not model:
+        return [TextContent(type="text", text="Embeddings недоступны.")]
+
+    # Filter embeddings by project
+    kb_keys = [k for k in _embeddings.keys() if "#chunk" not in k]
+    if project and project != "all":
+        kb_keys = [k for k in kb_keys if k.startswith(f"{project}/")]
+    if not kb_keys:
+        return [TextContent(type="text", text=f"В проекте '{project}' нет статей для сравнения.")]
+
+    # Encode topics
+    topic_list = list(topics.keys())
+    topic_vectors = model.encode(topic_list, show_progress_bar=False)
+
+    # Find max similarity for each topic
+    import numpy as np
+    gaps = []
+    for i, topic_text in enumerate(topic_list):
+        tv = topic_vectors[i]
+        tv = tv / (np.linalg.norm(tv) + 1e-8)
+        max_sim = 0.0
+        best_match = None
+        for k in kb_keys:
+            kv = _embeddings[k]
+            sim = float(np.dot(tv, kv))
+            if sim > max_sim:
+                max_sim = sim
+                best_match = k
+        gaps.append({
+            "topic": topic_text,
+            "count": topics[topic_text],
+            "max_sim": max_sim,
+            "best_match": best_match,
+        })
+
+    # Sort by count desc + low similarity = real gaps
+    gaps.sort(key=lambda g: (-g["count"], g["max_sim"]))
+
+    # Filter: gap = similarity < 0.5
+    real_gaps = [g for g in gaps if g["max_sim"] < 0.5]
+
+    out = [f"# Knowledge Gap Report\n"]
+    out.append(f"**Коммитов:** {len(commits)} | **Тем:** {len(topics)} | **Пробелов:** {len(real_gaps)}\n")
+
+    if real_gaps:
+        out.append("## Пробелы (нет статей)\n")
+        for g in real_gaps[:15]:
+            out.append(f"- **{g['topic']}** (×{g['count']}, max_sim: {g['max_sim']:.2f})")
+    else:
+        out.append("*Все темы покрыты статьями с достаточным сходством.*")
+
+    # Well-covered for reference
+    covered = [g for g in gaps if g["max_sim"] >= 0.5]
+    if covered:
+        out.append("\n## Покрытые темы (для справки)\n")
+        for g in covered[:5]:
+            out.append(f"- {g['topic']} → {g['best_match']} ({g['max_sim']:.2f})")
+
+    return [TextContent(type="text", text="\n".join(out))]

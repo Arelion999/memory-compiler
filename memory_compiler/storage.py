@@ -892,6 +892,67 @@ def html_to_markdown(html: str) -> str:
     return text.strip()
 
 
+def parse_obsidian_note(text: str) -> dict:
+    """Parse an Obsidian note: YAML frontmatter, tags, wiki-links, body."""
+    result = {"frontmatter": {}, "tags": [], "wiki_links": [], "body": text, "title": None}
+
+    # Parse YAML frontmatter
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end > 0:
+            fm_text = text[4:end]
+            body = text[end + 5:]
+            # Simple YAML parser (no external deps)
+            current_key = None
+            for line in fm_text.splitlines():
+                if not line.strip():
+                    continue
+                # List continuation
+                if line.startswith("  - ") and current_key:
+                    if not isinstance(result["frontmatter"].get(current_key), list):
+                        result["frontmatter"][current_key] = []
+                    result["frontmatter"][current_key].append(line[4:].strip())
+                elif ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip()
+                    val = val.strip()
+                    current_key = key
+                    if val:
+                        result["frontmatter"][key] = val
+                    else:
+                        result["frontmatter"][key] = None  # list to follow
+            result["body"] = body
+            # Extract tags from frontmatter
+            fm_tags = result["frontmatter"].get("tags")
+            if isinstance(fm_tags, list):
+                result["tags"] = [t.strip().lstrip("#") for t in fm_tags]
+            elif isinstance(fm_tags, str):
+                result["tags"] = [t.strip().lstrip("#") for t in re.split(r'[,\s]+', fm_tags) if t.strip()]
+            # Title
+            if "title" in result["frontmatter"]:
+                result["title"] = str(result["frontmatter"]["title"])
+
+    # Inline tags (#tag)
+    inline_tags = re.findall(r'(?<![\w/])#([а-яА-ЯёЁ\w-]+)', result["body"])
+    result["tags"].extend(inline_tags)
+    result["tags"] = list(dict.fromkeys(result["tags"]))  # dedup preserve order
+
+    # Wiki links [[Target]] or [[Target|Alias]]
+    for m in re.finditer(r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]', result["body"]):
+        target = m.group(1).strip()
+        result["wiki_links"].append(target)
+
+    # Convert wiki links to plain text (since we don't have real cross-references yet)
+    # [[Target]] → **Target**, [[Target|Alias]] → **Alias**
+    def _repl(m):
+        target = m.group(1).strip()
+        alias = (m.group(2) or target).strip()
+        return f"**{alias}**"
+    result["body"] = re.sub(r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]', _repl, result["body"])
+
+    return result
+
+
 def fetch_url(url: str, timeout: int = 15) -> tuple:
     """Fetch URL content. Returns (text, content_type, title)."""
     import urllib.request
