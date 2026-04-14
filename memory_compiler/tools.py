@@ -466,8 +466,8 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name in stats:
-        stats[name] = stats.get(name, 0) + 1
+    # Count every tool call (not only predefined keys)
+    stats[name] = stats.get(name, 0) + 1
     if name == "save_lesson":
         result = await handlers.save_lesson(**arguments)
     elif name == "get_context":
