@@ -2,10 +2,12 @@
 # Daily backup of memory-compiler knowledge base
 # Install on NAS:
 #   1) copy to /usr/local/bin/mc-backup.sh (chmod +x)
-#   2) add to /etc/crontab: 0 4 * * * root /usr/local/bin/mc-backup.sh
+#   2) edit KB_DIR/BACKUP_DIR below to your paths
+#   3) add to /etc/crontab: 0 4 * * * root /usr/local/bin/mc-backup.sh
 
-KB_DIR="/path/to/memory-compiler/knowledge"
-BACKUP_DIR="/path/to/memory-compiler/backups"
+# Paths (override via env if needed)
+KB_DIR="${KB_DIR:-/path/to/memory-compiler/knowledge}"
+BACKUP_DIR="${BACKUP_DIR:-/path/to/memory-compiler/backups}"
 LOG="/var/log/mc-backup.log"
 KEEP_DAYS=7
 
