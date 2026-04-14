@@ -13,6 +13,7 @@ Git Capture + улучшения start_task + расшифровка в Web UI. 
 - **Dockerfile** — `git config --global --add safe.directory '*'` для mounted repos
 - **start_task: decisions + runbooks** — при старте задачи показывает релевантные архитектурные решения (score > 30, краткий формат) и подходящие runbooks. Фильтрация по релевантности — 0 overhead при отсутствии совпадений
 - **Web UI: расшифровка секретов** — секретные статьи (ENC:) расшифровываются для авторизованных пользователей в веб-интерфейсе
+- **Граф знаний (Obsidian-style)** — полная переделка: все статьи из FS (не только embeddings), живая force-simulation, drag узлов, zoom/pan, фильтр по проектам, hover-подсветка связей с tooltip, tag-based edges, touch-поддержка для мобилки
 
 ## v8.0.0 — 2026-04-13
 
