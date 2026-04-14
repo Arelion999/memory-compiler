@@ -33,6 +33,10 @@ docker-compose up -d --build
 }
 ```
 
+### Подключение к Claude Desktop
+
+Полная инструкция: [docs/claude-desktop-setup.md](docs/claude-desktop-setup.md) — MCP, hooks, правила выбора проекта/tool, настройка зависимостей.
+
 ## Возможности
 
 ### 36 MCP-инструментов
