@@ -23,7 +23,8 @@ __pycache__/
 # Knowledge base (отдельный git в /knowledge)
 knowledge/
 
-# IDE
+# Claude
+CLAUDE.md
 .claude/
 .vscode/
 .idea/
