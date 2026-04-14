@@ -759,6 +759,52 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 preview = "\n".join(r["preview"].splitlines()[:4])
                 parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
 
+    # 5. Relevant decisions (brief, only high-score)
+    decision_results = whoosh_search(topic, project=target_project, limit=10)
+    decisions_found = []
+    for r in decision_results:
+        if r.get("score", 0) < 30:
+            continue
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        if not fpath.exists():
+            continue
+        if r["file"].startswith("decision_") or "**Тип:** decision" in fpath.read_text(encoding="utf-8")[:500]:
+            # Extract first line of decision section
+            text = fpath.read_text(encoding="utf-8")
+            decision_line = ""
+            for line in text.splitlines():
+                if line.startswith("## Решение"):
+                    idx = text.splitlines().index(line)
+                    if idx + 1 < len(text.splitlines()):
+                        decision_line = text.splitlines()[idx + 1].strip()
+                    break
+            decisions_found.append(f"- **{r['title']}** — {decision_line[:100]}")
+    if decisions_found:
+        parts.append(f"\n## Решения по теме\n")
+        parts.extend(decisions_found[:3])
+        parts.append("")
+
+    # 6. Relevant runbooks (brief, only matching)
+    proj_path = KNOWLEDGE_DIR / target_project
+    if proj_path.exists():
+        runbooks_found = []
+        for md in proj_path.glob("*.md"):
+            if md.name.startswith("_"):
+                continue
+            head = md.read_text(encoding="utf-8")[:300]
+            if "**Тип:** runbook" not in head:
+                continue
+            title = head.splitlines()[0].lstrip("# ").strip() if head.splitlines() else md.stem
+            # Check relevance: any topic word in title
+            topic_words = {w.lower() for w in topic.split() if len(w) > 3}
+            if topic_words & {w.lower() for w in title.split()}:
+                total = head.count("- [ ]") + head.count("- [x]")
+                runbooks_found.append(f"- **{title}** ({md.name}, {total} шагов)")
+        if runbooks_found:
+            parts.append(f"\n## Runbooks\n")
+            parts.extend(runbooks_found[:3])
+            parts.append("")
+
     parts.append("\n---\n*Приступай к задаче. По завершении вызови `finish_task`.*")
     return [TextContent(type="text", text="\n".join(parts))]
 
