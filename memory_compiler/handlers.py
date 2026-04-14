@@ -718,45 +718,66 @@ async def article_history(project: str, filename: str) -> list[TextContent]:
 
 
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
-    """Начать задачу: поиск в базе + загрузка сессии. Один вызов вместо трёх."""
+    """Начать задачу: поиск релевантного контекста. Все блоки фильтруются по relevance."""
+    MIN_SCORE = 15  # min whoosh score to show
     parts = []
 
-    # 1. Поиск похожих кейсов
+    # Topic words for relevance checks
+    topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
+
+    # 1. Поиск похожих кейсов (только score >= MIN_SCORE)
     search_results = whoosh_search(topic, project=project, limit=5)
-    if search_results:
-        track_access([f"{r['project']}/{r['file']}" for r in search_results])
-        parts.append(f"# Контекст для: {topic}\n")
-        parts.append(f"## Найдено в базе ({len(search_results)} статей)\n")
-        for r in search_results:
-            preview = "\n".join(r["preview"].splitlines()[:6])
+    relevant = [r for r in search_results if r.get("score", 0) >= MIN_SCORE]
+    parts.append(f"# Контекст для: {topic}\n")
+    if relevant:
+        track_access([f"{r['project']}/{r['file']}" for r in relevant])
+        parts.append(f"## Найдено в базе ({len(relevant)} релевантных)\n")
+        for r in relevant[:3]:
+            preview = "\n".join(r["preview"].splitlines()[:4])
             parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
     else:
-        parts.append(f"# Контекст для: {topic}\n\nПохожих кейсов не найдено.\n")
+        parts.append("*Похожих кейсов не найдено в базе.*\n")
 
-    # 2. Загрузка сессии
-    target_project = project if project != "all" else (search_results[0]["project"] if search_results else "general")
-    session_path = KNOWLEDGE_DIR / target_project / "_session.md"
-    if session_path.exists():
-        session_text = session_path.read_text(encoding="utf-8")
-        parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text}\n")
+    # 2. Determine target project
+    target_project = project if project != "all" else (relevant[0]["project"] if relevant else "general")
 
-    # 3. Active context
+    # 3. Active context — только записи где title пересекается с темой
     ctx_path = KNOWLEDGE_DIR / target_project / "_active_context.md"
-    if ctx_path.exists():
+    if ctx_path.exists() and topic_words:
         ctx_text = ctx_path.read_text(encoding="utf-8")
-        parts.append(f"\n## Последние действия\n{ctx_text}\n")
+        relevant_lines = []
+        for line in ctx_text.splitlines():
+            if not line.startswith("- ["):
+                continue
+            line_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', line.lower()))
+            # match if at least one topic word appears
+            if topic_words & line_words:
+                relevant_lines.append(line)
+        if relevant_lines:
+            parts.append(f"\n## Связанные действия в {target_project}\n")
+            parts.extend(relevant_lines[:3])
+            parts.append("")
 
-    # 4. Search in dependent projects
+    # 4. Session — только если содержит слова темы
+    session_path = KNOWLEDGE_DIR / target_project / "_session.md"
+    if session_path.exists() and topic_words:
+        session_text = session_path.read_text(encoding="utf-8")
+        session_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', session_text.lower()))
+        if topic_words & session_words:
+            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:400]}{'...' if len(session_text) > 400 else ''}\n")
+
+    # 5. Search in dependent projects (только релевантные)
     deps = read_project_deps(target_project)
     if deps:
         dep_results = []
         for dep in deps:
             dr = whoosh_search(topic, project=dep, limit=2)
-            dep_results.extend(dr)
+            dep_results.extend([r for r in dr if r.get("score", 0) >= MIN_SCORE])
         if dep_results:
+            dep_results.sort(key=lambda r: -r.get("score", 0))
             parts.append(f"\n## Из зависимых проектов ({', '.join(deps)})\n")
-            for r in dep_results[:4]:
-                preview = "\n".join(r["preview"].splitlines()[:4])
+            for r in dep_results[:2]:
+                preview = "\n".join(r["preview"].splitlines()[:3])
                 parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
 
     # 5. Relevant decisions (brief, only high-score)
