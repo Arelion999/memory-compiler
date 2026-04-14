@@ -886,6 +886,9 @@ def html_to_markdown(html: str) -> str:
     # Clean up
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'  +', ' ', text)
+    # Remove stray spaces before inline markers
+    text = re.sub(r'\s+(\*\*|\*|`)', r'\1', text)
+    text = re.sub(r'(\*\*|\*|`)\s+', r'\1 ', text)
     return text.strip()
 
 

@@ -7,6 +7,8 @@ from memory_compiler.storage import (
     read_project_deps, write_project_deps,
     encrypt_content, decrypt_content, is_encrypted,
     audit_log, read_audit_log,
+    parse_git_log_raw, group_commits, format_capture_group,
+    html_to_markdown,
 )
 
 
@@ -155,3 +157,85 @@ def test_audit_log_hides_content(knowledge_dir):
     last = entries[-1]
     assert "very long content" not in str(last)
     assert "chars]" in str(last["args"]["content"])
+
+
+# ─── Git capture ──────────────────────────────────────────────────────────
+
+def test_parse_git_log_raw_basic():
+    raw = "abc1234567890|fix: bug|Author|2026-04-01T10:00:00+00:00\n10\t2\tsrc/file.py\n"
+    commits = parse_git_log_raw(raw)
+    assert len(commits) == 1
+    assert commits[0]["hash"] == "abc1234567890"
+    assert commits[0]["message"] == "fix: bug"
+    assert len(commits[0]["files"]) == 1
+    assert commits[0]["files"][0]["insertions"] == 10
+
+
+def test_parse_git_log_raw_multiple():
+    raw = (
+        "abc1234567890|feat: new feature|Alice|2026-04-01T10:00:00+00:00\n"
+        "50\t0\tsrc/new.py\n"
+        "def5678901234|fix: typo|Bob|2026-04-02T11:00:00+00:00\n"
+        "1\t1\tREADME.md\n"
+    )
+    commits = parse_git_log_raw(raw)
+    assert len(commits) == 2
+    assert commits[0]["author"] == "Alice"
+    assert commits[1]["author"] == "Bob"
+
+
+def test_group_commits_by_prefix():
+    commits = [
+        {"hash": "a" * 7, "message": "fix: bug", "author": "A", "date": "2026-04-01T00:00:00+00:00", "files": []},
+        {"hash": "b" * 7, "message": "feat: thing", "author": "A", "date": "2026-04-02T00:00:00+00:00", "files": []},
+        {"hash": "c" * 7, "message": "fix: another", "author": "A", "date": "2026-04-03T00:00:00+00:00", "files": []},
+        {"hash": "d" * 7, "message": "random message", "author": "A", "date": "2026-04-04T00:00:00+00:00", "files": []},
+    ]
+    groups = group_commits(commits, "prefix")
+    assert "fix" in groups
+    assert "feat" in groups
+    assert "other" in groups
+    assert len(groups["fix"]) == 2
+
+
+def test_format_capture_group():
+    commits = [
+        {"hash": "abc1234", "message": "fix: bug", "author": "A", "date": "2026-04-01T10:00:00+00:00",
+         "files": [{"path": "src/a.py", "insertions": 10, "deletions": 2}]},
+    ]
+    result = format_capture_group("fix", commits)
+    assert "fix: bug" in result
+    assert "abc1234" in result
+    assert "src/a.py" in result
+
+
+# ─── HTML to markdown ─────────────────────────────────────────────────────
+
+def test_html_to_markdown_basic():
+    html = "<h1>Title</h1><p>Hello world</p>"
+    md = html_to_markdown(html)
+    assert "# Title" in md
+    assert "Hello" in md
+    assert "world" in md
+
+
+def test_html_to_markdown_bold():
+    html = "<p><strong>bold text</strong></p>"
+    md = html_to_markdown(html)
+    assert "**" in md
+    assert "bold text" in md
+
+
+def test_html_to_markdown_strips_scripts():
+    html = "<p>Keep this</p><script>alert('evil')</script><style>.x{}</style>"
+    md = html_to_markdown(html)
+    assert "Keep this" in md
+    assert "alert" not in md
+    assert ".x" not in md
+
+
+def test_html_to_markdown_lists():
+    html = "<ul><li>first</li><li>second</li></ul>"
+    md = html_to_markdown(html)
+    assert "- first" in md
+    assert "- second" in md
