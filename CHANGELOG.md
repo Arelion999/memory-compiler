@@ -2,7 +2,7 @@
 
 ## v9.0.0 — 2026-04-14
 
-Git Capture + улучшения start_task + расшифровка в Web UI. 33 MCP tools, 37 тестов.
+Git Capture, Ingest, Obsidian-граф, start_task context. 34 MCP tools, 37 тестов.
 
 ### Добавлено
 
@@ -14,6 +14,7 @@ Git Capture + улучшения start_task + расшифровка в Web UI. 
 - **start_task: decisions + runbooks** — при старте задачи показывает релевантные архитектурные решения (score > 30, краткий формат) и подходящие runbooks. Фильтрация по релевантности — 0 overhead при отсутствии совпадений
 - **Web UI: расшифровка секретов** — секретные статьи (ENC:) расшифровываются для авторизованных пользователей в веб-интерфейсе
 - **Граф знаний (Obsidian-style)** — полная переделка: все статьи из FS (не только embeddings), живая force-simulation, drag узлов, zoom/pan, фильтр по проектам, hover-подсветка связей с tooltip, tag-based edges, touch-поддержка для мобилки
+- **Ingest** — `ingest(url, project, raw_text, source, topic, auto_save)` — загрузка знаний из URL (HTML→markdown) или raw_text (PDF, документы). Preview по умолчанию, auto_save для сохранения. Без внешних зависимостей
 
 ## v8.0.0 — 2026-04-13
 
