@@ -21,7 +21,7 @@ from memory_compiler.search import (
     load_embeddings, get_index,
 )
 from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log, decrypt_content, is_encrypted
-from memory_compiler.handlers import compile as _compile, save_lesson, delete_article
+from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 
 
@@ -407,6 +407,24 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             except Exception as e:
                 print(f"Auto-compile error: {e}")
 
+    async def auto_lint_loop():
+        """Run lint weekly on Sunday at 3 AM."""
+        from datetime import datetime, timedelta
+        while True:
+            now = datetime.now()
+            # Next Sunday 3 AM
+            days_ahead = (6 - now.weekday()) % 7
+            target = (now + timedelta(days=days_ahead)).replace(hour=3, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=7)
+            wait = (target - now).total_seconds()
+            await asyncio.sleep(wait)
+            try:
+                result = await _lint(project="all", fix=True)
+                print(f"Auto-lint: {result[0].text[:500]}")
+            except Exception as e:
+                print(f"Auto-lint error: {e}")
+
     @asynccontextmanager
     async def lifespan(app):
         git_init()
@@ -419,9 +437,11 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         else:
             print(f"Embeddings loaded from cache: {len(_search_mod._embeddings)} documents")
         task = asyncio.create_task(auto_compile_loop())
-        print("Auto-compile scheduled daily at 02:00")
+        lint_task = asyncio.create_task(auto_lint_loop())
+        print("Auto-compile scheduled daily at 02:00, auto-lint weekly Sun 03:00")
         yield
         task.cancel()
+        lint_task.cancel()
 
     middleware = []
     if MC_API_KEY:

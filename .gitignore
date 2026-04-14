@@ -22,6 +22,7 @@ __pycache__/
 
 # Knowledge base (отдельный git в /knowledge)
 knowledge/
+backups/
 
 # Claude
 CLAUDE.md
