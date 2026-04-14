@@ -214,7 +214,7 @@ Claude Desktop поддерживает **5 hooks** из `~/.claude/settings.jso
 `start_task` автоматически подтягивает контекст из зависимых проектов. Настройте:
 
 ```python
-# Клиентские 1С-проекты зависят от общих знаний
+# Клиентские проекты зависят от общих знаний
 set_project_deps(project="client-a", depends_on=["work", "infra"])
 set_project_deps(project="client-b", depends_on=["work", "infra"])
 

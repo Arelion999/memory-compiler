@@ -1,10 +1,12 @@
 #!/bin/bash
-# Auto-restart memory-compiler when code changes
-# Install on Synology NAS:
+# Auto-restart memory-compiler container when source code changes
+# Install on NAS:
 #   1) copy to /usr/local/bin/mc-watcher.sh (chmod +x)
-#   2) add to /etc/crontab: */1 * * * * root /usr/local/bin/mc-watcher.sh
+#   2) edit MC_DIR below to point to your memory_compiler/ directory
+#   3) add to /etc/crontab: */1 * * * * root /usr/local/bin/mc-watcher.sh
 
-MC_DIR="/path/to/memory-compiler/memory_compiler"
+# Path to memory_compiler/ source dir (override via env if needed)
+MC_DIR="${MC_DIR:-/path/to/memory-compiler/memory_compiler}"
 STATE="/var/log/mc-watcher.state"
 LOG="/var/log/mc-watcher.log"
 DOCKER="/usr/local/bin/docker"
