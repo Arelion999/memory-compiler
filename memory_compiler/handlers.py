@@ -844,7 +844,7 @@ async def add_project(name: str) -> list[TextContent]:
     return [TextContent(type="text", text=f"\u2705 Проект '{name}' создан. Всего проектов: {len(_cfg.PROJECTS)}")]
 
 
-async def remove_project(name: str) -> list[TextContent]:
+async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     import memory_compiler.config as _cfg
     name = name.strip()
     proj_path = KNOWLEDGE_DIR / name
@@ -852,6 +852,9 @@ async def remove_project(name: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"Проект '{name}' не найден.")]
     # Посчитать статьи
     articles = list(proj_path.glob("*.md"))
+    # Require explicit confirmation to delete project with articles
+    if articles and not confirm:
+        return [TextContent(type="text", text=f"⚠️ Проект '{name}' содержит {len(articles)} статей. Для удаления передайте confirm=True. Это действие необратимо.")]
     if articles:
         # Удалить все статьи из индексов
         for md in articles:
