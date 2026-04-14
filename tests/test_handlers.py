@@ -56,6 +56,19 @@ async def test_add_and_remove_project(knowledge_dir):
 
 
 @pytest.mark.asyncio
+async def test_remove_project_requires_confirm(knowledge_dir):
+    """Removing a project with articles requires confirm=True."""
+    await add_project("withdata")
+    await save_lesson("Test", "content", "withdata")
+    # Without confirm — blocked
+    result = await remove_project("withdata")
+    assert "confirm=True" in result[0].text
+    # With confirm — succeeds
+    result = await remove_project("withdata", confirm=True)
+    assert "withdata" in result[0].text
+
+
+@pytest.mark.asyncio
 async def test_save_runbook(knowledge_dir):
     result = await save_runbook("Deploy Steps", ["Stop service", "Pull code", "Start service"], "testproj")
     assert "Runbook" in result[0].text

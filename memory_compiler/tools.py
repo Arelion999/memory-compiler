@@ -217,11 +217,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="remove_project",
-            description="Удалить проект из базы знаний (все статьи проекта будут удалены).",
+            description="Удалить проект из базы знаний (все статьи проекта будут удалены). Требует confirm=true если в проекте есть статьи.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Имя проекта для удаления"}
+                    "name": {"type": "string", "description": "Имя проекта для удаления"},
+                    "confirm": {"type": "boolean", "default": False, "description": "Подтверждение удаления (обязательно если в проекте есть статьи)"}
                 },
                 "required": ["name"]
             }
