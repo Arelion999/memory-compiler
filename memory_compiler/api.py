@@ -131,11 +131,13 @@ async def web_graph(request: Request):
     nodes = []
     edges = []
     palette = ["#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#F97316", "#6B7280", "#EF4444", "#14B8A6", "#A855F7"]
-    proj_colors = {p: palette[i % len(palette)] for i, p in enumerate(PROJECTS)}
+    # Refresh project list from filesystem (picks up projects created in other processes)
+    current_projects = _discover_projects()
+    proj_colors = {p: palette[i % len(palette)] for i, p in enumerate(current_projects)}
 
     # Collect ALL articles from filesystem
     all_keys = []
-    for proj in PROJECTS:
+    for proj in current_projects:
         proj_path = KNOWLEDGE_DIR / proj
         if not proj_path.exists():
             continue
@@ -207,7 +209,7 @@ async def web_analytics(request: Request):
 
     # Never accessed articles
     all_articles = set()
-    for proj in PROJECTS:
+    for proj in _discover_projects():
         p = KNOWLEDGE_DIR / proj
         if p.exists():
             for md in p.glob("*.md"):
@@ -273,7 +275,7 @@ async def web_delete_article(request: Request):
 async def web_tags(request: Request):
     """Get all tags with counts."""
     tag_counts: dict[str, int] = {}
-    for proj in PROJECTS:
+    for proj in _discover_projects():
         proj_path = KNOWLEDGE_DIR / proj
         if not proj_path.exists():
             continue
