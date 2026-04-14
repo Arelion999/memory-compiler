@@ -145,12 +145,15 @@ async function doSearch(){
   renderResults(d.results);
 }
 
+function escRegex(w){return w.split("").map(c=>"^.*+?$()[]{}|".indexOf(c)>=0?"\\\\"+c:c).join("");}
 function highlight(s){
   if(!lastQueryWords.length||!s)return s;
   let out=s;
   for(const w of lastQueryWords){
-    const re=new RegExp("("+w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","gi");
-    out=out.replace(re,"<mark>$1</mark>");
+    try{
+      const re=new RegExp("("+escRegex(w)+")","gi");
+      out=out.replace(re,"<mark>$1</mark>");
+    }catch(e){}
   }
   return out;
 }
