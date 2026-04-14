@@ -1,5 +1,37 @@
 # Changelog
 
+## v12.0.0 — 2026-04-15
+
+Search quality + UX. 36 MCP tools, 49 тестов.
+
+### Поиск
+
+- **Cross-encoder reranking** — после hybrid retrieval (BM25 + semantic + decay) топ-20 кандидатов пересортируются `BAAI/bge-reranker-base` (280MB, multilingual, lazy load). Precision@3 +15-20%. Graceful degradation при ошибке загрузки модели.
+- **start_task релевантность** — все блоки фильтруются по теме: search >= score 15, active_context только пересекающиеся записи, session показывается только при совпадении слов, deps — только релевантные. Раньше выгружались последние 10 действий и полная сессия независимо от темы.
+
+### Web UI
+
+- **Snippets с подсветкой** — `/api/search` возвращает `snippets` (строки с совпадениями + контекст ±1 строка, max 5 на статью). UI рендерит monospace-блоки вместо общего preview. Слова запроса подсвечиваются `<mark>` жёлтым в title, snippets и развёрнутой статье.
+- **Auto-scroll** к первому совпадению при expand статьи.
+- **Расшифровка ENC: на лету** — поиск работает по содержимому секретов (только для авторизованных).
+- **Счётчик совпадений** в meta строке карточки.
+
+### Граф
+
+- **Top-K edges per node** — после Obsidian-импорта (209 статей) граф имел 10725 связей ("волосяной шар"). Теперь max 8 strongest связей на узел → 650 edges, читаемо.
+- **Orphan marker** — узлы без связей подсвечиваются серым (50% opacity, меньший размер) — честный сигнал "статья изолирована".
+- **Live PROJECTS list** — `web_graph/analytics/tags` теперь вызывают `_discover_projects()` на каждый запрос. Раньше использовали кэш PROJECTS — проекты, созданные в других процессах (docker exec), не появлялись в графе до рестарта.
+
+### Прочее
+
+- **Stats fix** — `tools.py` инкрементировал счётчик только для 5 legacy ключей. Теперь учитываются все 36 tools.
+- **PostToolUse hook matcher** — расширен с `(save_lesson|finish_task)` до полного списка: `save_decision`, `save_runbook`, `save_from_template`, `save_secret`, `ingest`, `import_obsidian`, `git_capture`, `edit_article`.
+- **CLAUDE.md правила** — добавлены таблицы выбора проекта (9 проектов) и tool (8 типов).
+- **Project deps** — настроены: `niksdesk/work` → `[infra, ...]`, `1c-clients` → `[work, infra]`.
+- **3 runbook'a** в `memory-compiler`: деплой на NAS, рестарт контейнера, ручной backup.
+- **MIT License** добавлен.
+- **docs/claude-desktop-setup.md** — гайд настройки Desktop.
+
 ## v11.0.0 — 2026-04-14
 
 Obsidian import + Knowledge gap detection. 36 MCP tools, 49 тестов.
