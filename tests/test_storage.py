@@ -239,3 +239,41 @@ def test_html_to_markdown_lists():
     md = html_to_markdown(html)
     assert "- first" in md
     assert "- second" in md
+
+
+# ─── Obsidian parser ──────────────────────────────────────────────────────
+
+def test_parse_obsidian_with_frontmatter():
+    from memory_compiler.storage import parse_obsidian_note
+    note = """---
+title: Test Note
+tags:
+  - foo
+  - bar
+---
+# Body
+
+Some content with [[Target]] link.
+"""
+    r = parse_obsidian_note(note)
+    assert r["title"] == "Test Note"
+    assert "foo" in r["tags"]
+    assert "bar" in r["tags"]
+    assert "**Target**" in r["body"]
+    assert "Target" in r["wiki_links"]
+
+
+def test_parse_obsidian_inline_tags():
+    from memory_compiler.storage import parse_obsidian_note
+    note = "# Heading\n\nSome text with #работа and #docker tags"
+    r = parse_obsidian_note(note)
+    assert "работа" in r["tags"]
+    assert "docker" in r["tags"]
+
+
+def test_parse_obsidian_alias_link():
+    from memory_compiler.storage import parse_obsidian_note
+    note = "See [[Target Page|display text]] here"
+    r = parse_obsidian_note(note)
+    assert "**display text**" in r["body"]
+    assert "Target Page" in r["wiki_links"]
