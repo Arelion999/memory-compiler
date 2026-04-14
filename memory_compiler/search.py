@@ -5,7 +5,7 @@ import pickle
 from typing import Optional
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from whoosh import index as whoosh_index
 from whoosh.qparser import MultifieldParser, OrGroup, AndGroup, FuzzyTermPlugin
@@ -30,6 +30,51 @@ def get_embed_model() -> SentenceTransformer:
     if _embed_model is None:
         _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
     return _embed_model
+
+
+# ─── Cross-encoder reranker (lazy load) ────────────────────────────────────
+
+RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
+_reranker_model: Optional[CrossEncoder] = None
+
+
+def get_reranker_model() -> Optional[CrossEncoder]:
+    """Lazy-load cross-encoder. Returns None on failure (graceful degradation)."""
+    global _reranker_model
+    if _reranker_model is None:
+        try:
+            _reranker_model = CrossEncoder(RERANKER_MODEL_NAME, max_length=512)
+        except Exception as e:
+            print(f"Reranker load failed: {e}, falling back to bi-encoder only")
+            _reranker_model = False  # marker: tried and failed
+    return _reranker_model if _reranker_model else None
+
+
+def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
+    """Rerank candidates by cross-encoder. Each candidate dict needs 'preview' or 'title'.
+    Adds 'rerank_score' field. Returns top_k sorted by it. Falls back to original order on failure.
+    """
+    if not candidates or len(candidates) <= 1:
+        return candidates[:top_k]
+
+    model = get_reranker_model()
+    if model is None:
+        return candidates[:top_k]  # graceful: no reranker, keep original order
+
+    pairs = []
+    for c in candidates:
+        # Use title + preview snippet (max 400 chars total)
+        text = (c.get("title", "") + " " + c.get("preview", ""))[:400]
+        pairs.append([query, text])
+
+    try:
+        scores = model.predict(pairs, show_progress_bar=False)
+        for c, s in zip(candidates, scores):
+            c["rerank_score"] = float(s)
+        return sorted(candidates, key=lambda c: c.get("rerank_score", 0), reverse=True)[:top_k]
+    except Exception as e:
+        print(f"Rerank failed: {e}")
+        return candidates[:top_k]
 
 
 def _doc_text_for_embedding(text: str) -> str:

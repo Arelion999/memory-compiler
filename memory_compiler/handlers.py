@@ -718,23 +718,34 @@ async def article_history(project: str, filename: str) -> list[TextContent]:
 
 
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
-    """Начать задачу: поиск релевантного контекста. Все блоки фильтруются по relevance."""
-    MIN_SCORE = 15  # min whoosh score to show
+    """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance."""
+    from memory_compiler.search import rerank
+    MIN_SCORE = 15  # min hybrid score
+    MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
 
     # Topic words for relevance checks
     topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
 
-    # 1. Поиск похожих кейсов (только score >= MIN_SCORE)
-    search_results = whoosh_search(topic, project=project, limit=5)
-    relevant = [r for r in search_results if r.get("score", 0) >= MIN_SCORE]
+    # 1. Hybrid retrieval — берём top-20, ререйнкер выбирает top-3
+    candidates = whoosh_search(topic, project=project, limit=20)
+    candidates = [r for r in candidates if r.get("score", 0) >= MIN_SCORE]
+    reranked = rerank(topic, candidates, top_k=5)
+    # Final filter by rerank_score (reranker may say all are weak)
+    relevant = [r for r in reranked if r.get("rerank_score", 1.0) >= MIN_RERANK]
+    if not relevant and reranked:
+        relevant = reranked[:1]  # at least show top-1 even if low
+
     parts.append(f"# Контекст для: {topic}\n")
     if relevant:
         track_access([f"{r['project']}/{r['file']}" for r in relevant])
-        parts.append(f"## Найдено в базе ({len(relevant)} релевантных)\n")
+        parts.append(f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)\n")
         for r in relevant[:3]:
             preview = "\n".join(r["preview"].splitlines()[:4])
-            parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+            scores = f"hybrid: {r.get('score', 0)}"
+            if "rerank_score" in r:
+                scores += f", rerank: {r['rerank_score']:.2f}"
+            parts.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
     else:
         parts.append("*Похожих кейсов не найдено в базе.*\n")
 
