@@ -9,6 +9,7 @@ deploy.bat
 
 # Docs (не для публикации)
 docs/description.md
+docs/superpowers/
 
 # Node (docx builder)
 docs/node_modules/
