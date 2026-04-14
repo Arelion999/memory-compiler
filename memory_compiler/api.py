@@ -127,31 +127,66 @@ async def web_health(request: Request):
 
 
 async def web_graph(request: Request):
-    """Knowledge graph -- nodes and edges from embeddings."""
+    """Knowledge graph -- nodes from filesystem, edges from embeddings."""
     nodes = []
     edges = []
-    # Collect parent-only embeddings
-    parent_keys = [k for k in _search_mod._embeddings.keys() if "#chunk" not in k and not k.split("/")[-1].startswith("_")]
     palette = ["#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#F97316", "#6B7280", "#EF4444", "#14B8A6", "#A855F7"]
     proj_colors = {p: palette[i % len(palette)] for i, p in enumerate(PROJECTS)}
-    proj_colors["daily"] = "#9CA3AF"
 
-    for key in parent_keys:
-        proj = key.split("/")[0]
-        title = _search_mod._embed_texts.get(key, key.split("/")[-1])
-        meta = article_meta.get(key, {})
-        nodes.append({
-            "id": key, "title": title, "project": proj,
-            "color": proj_colors.get(proj, "#6B7280"),
-            "access_count": meta.get("access_count", 0),
-        })
+    # Collect ALL articles from filesystem
+    all_keys = []
+    for proj in PROJECTS:
+        proj_path = KNOWLEDGE_DIR / proj
+        if not proj_path.exists():
+            continue
+        for md in proj_path.glob("*.md"):
+            if md.name.startswith("_"):
+                continue
+            key = f"{proj}/{md.name}"
+            text = md.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            title = lines[0].lstrip("# ").strip() if lines else md.stem
+            # Extract tags
+            tags = ""
+            for line in lines[:10]:
+                if line.startswith("**Теги:**"):
+                    tags = line.replace("**Теги:**", "").strip()
+                    break
+            meta = article_meta.get(key, {})
+            all_keys.append(key)
+            nodes.append({
+                "id": key, "title": title, "project": proj,
+                "color": proj_colors.get(proj, "#6B7280"),
+                "access_count": meta.get("access_count", 0),
+                "tags": tags,
+            })
 
-    # Build edges (similarity > 0.5)
-    for i, k1 in enumerate(parent_keys):
-        for k2 in parent_keys[i+1:]:
+    # Build edges from embeddings (similarity > 0.5)
+    emb_keys = [k for k in all_keys if k in _search_mod._embeddings]
+    for i, k1 in enumerate(emb_keys):
+        for k2 in emb_keys[i+1:]:
             sim = float(np.dot(_search_mod._embeddings[k1], _search_mod._embeddings[k2]))
             if sim > 0.5:
                 edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
+
+    # Also connect articles sharing tags (for those without embeddings)
+    from collections import defaultdict
+    tag_index = defaultdict(list)
+    for n in nodes:
+        if n["tags"]:
+            for t in n["tags"].split(","):
+                t = t.strip().lower()
+                if t and t != "—":
+                    tag_index[t].append(n["id"])
+    edge_set = {(e["source"], e["target"]) for e in edges}
+    for tag, ids in tag_index.items():
+        if len(ids) > 10:
+            continue  # skip overly common tags
+        for i, a in enumerate(ids):
+            for b in ids[i+1:]:
+                if (a, b) not in edge_set and (b, a) not in edge_set:
+                    edges.append({"source": a, "target": b, "weight": 0.35})
+                    edge_set.add((a, b))
 
     return JSONResponse({"nodes": nodes, "edges": edges})
 
