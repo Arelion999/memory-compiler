@@ -83,10 +83,15 @@ h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 <button class="btn-save" onclick="doSave()">Сохранить</button>
 </div>
 <div id="view-graph" style="display:none">
-<div id="graph-container" style="width:100%;height:500px;border:1px solid #30363d;border-radius:8px;background:#0d1117;position:relative">
-<canvas id="graph-canvas" style="width:100%;height:100%"></canvas>
+<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+<select id="graph-project" onchange="filterGraph()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:13px">
+<option value="">Все проекты</option>
+</select>
+<span id="graph-info" style="color:var(--text2);font-size:13px;padding:6px 0"></span>
 </div>
-<div id="graph-info" class="empty">Загрузка графа...</div>
+<div id="graph-container" style="width:100%;height:600px;border:1px solid var(--border);border-radius:8px;background:var(--bg);position:relative;overflow:hidden">
+<canvas id="graph-canvas"></canvas>
+</div>
 </div>
 <div id="view-compile" style="display:none">
 <div id="compile-msg"></div>
@@ -208,91 +213,198 @@ async function loadTags(){
 }
 function searchByTag(tag){$("q").value=tag;doSearch();}
 
-// Graph visualization with interaction
-let graphData=null,graphNodes=[],graphNmap={};
+// Animated graph (Obsidian-style) with zoom, pan, drag
+let graphRaw=null,graphNodes=[],graphEdges=[],graphNmap={},graphAnim=null;
+let gZoom=1,gPanX=0,gPanY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
+let gFilterProject="";
 async function loadGraph(){
   $("graph-info").textContent="Загрузка...";
   const r=await fetch("/api/graph");
-  graphData=await r.json();
-  $("graph-info").textContent=`${graphData.nodes.length} статей, ${graphData.edges.length} связей. Клик по узлу — открыть статью.`;
-  setupGraph();
+  graphRaw=await r.json();
+  // Populate project filter
+  const sel=$("graph-project");
+  const projs=[...new Set(graphRaw.nodes.map(n=>n.project))].sort();
+  sel.innerHTML='<option value="">Все проекты</option>'+projs.map(p=>'<option value="'+p+'">'+p+'</option>').join("");
+  filterGraph();
 }
-function setupGraph(){
-  if(!graphData)return;
-  const c=$("graph-canvas");
-  const W=c.parentElement.clientWidth;
-  const H=Math.max(400,Math.min(600,window.innerHeight-200));
-  c.width=W;c.height=H;
-  graphNodes=graphData.nodes.map((n,i)=>({...n,x:W/2+Math.cos(i*2.39)*W*0.35,y:H/2+Math.sin(i*2.39)*H*0.35,vx:0,vy:0}));
+function filterGraph(){
+  gFilterProject=$("graph-project").value;
+  const filtered=gFilterProject?graphRaw.nodes.filter(n=>n.project===gFilterProject):graphRaw.nodes;
+  const ids=new Set(filtered.map(n=>n.id));
+  graphEdges=graphRaw.edges.filter(e=>ids.has(e.source)&&ids.has(e.target));
+  const c=$("graph-canvas");const cont=c.parentElement;
+  const W=cont.clientWidth;const H=cont.clientHeight||600;
+  c.width=W*2;c.height=H*2;c.style.width=W+"px";c.style.height=H+"px";
+  // Init positions — spread by project clusters
+  const projIdx={};let pi=0;
+  graphNodes=filtered.map((n,i)=>{
+    if(!(n.project in projIdx))projIdx[n.project]=pi++;
+    const cl=projIdx[n.project];const a=cl*2.4+i*0.15;
+    const cx=W+Math.cos(a)*(200+cl*80);const cy=H+Math.sin(a)*(200+cl*80);
+    return{...n,x:cx+(Math.random()-0.5)*100,y:cy+(Math.random()-0.5)*100,vx:0,vy:0};
+  });
   graphNmap={};graphNodes.forEach(n=>graphNmap[n.id]=n);
-  for(let iter=0;iter<80;iter++){
-    graphNodes.forEach(a=>{graphNodes.forEach(b=>{
-      if(a===b)return;
-      let dx=a.x-b.x,dy=a.y-b.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-      if(d<80){let f=(80-d)*0.04;a.vx+=dx/d*f;a.vy+=dy/d*f;}
-    });});
-    graphData.edges.forEach(e=>{
-      const s=graphNmap[e.source],t=graphNmap[e.target];
-      if(!s||!t)return;
-      let dx=t.x-s.x,dy=t.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-      let f=(d-120)*0.008*e.weight;
-      s.vx+=dx/d*f;s.vy+=dy/d*f;t.vx-=dx/d*f;t.vy-=dy/d*f;
-    });
-    graphNodes.forEach(n=>{n.x+=n.vx*0.5;n.y+=n.vy*0.5;n.vx*=0.8;n.vy*=0.8;
-      n.x=Math.max(40,Math.min(W-40,n.x));n.y=Math.max(40,Math.min(H-40,n.y));});
-  }
-  renderGraph();
-  // Click handler
-  c.onclick=function(ev){
-    const rect=c.getBoundingClientRect();
-    const mx=ev.clientX-rect.left,my=ev.clientY-rect.top;
-    for(const n of graphNodes){
-      const r=Math.max(5,Math.min(12,4+n.access_count));
-      if(Math.hypot(n.x-mx,n.y-my)<r+5){
-        const [proj,file]=n.id.split("/",2);
-        showTab("search");loadProject(proj);
-        return;
-      }
-    }
-  };
-  // Hover handler
-  c.onmousemove=function(ev){
-    const rect=c.getBoundingClientRect();
-    const mx=ev.clientX-rect.left,my=ev.clientY-rect.top;
-    let found=false;
-    for(const n of graphNodes){
-      const r=Math.max(5,Math.min(12,4+n.access_count));
-      if(Math.hypot(n.x-mx,n.y-my)<r+5){
-        c.style.cursor="pointer";
-        c.title=n.title+" ("+n.project+")";
-        found=true;break;
-      }
-    }
-    if(!found){c.style.cursor="default";c.title="";}
-  };
+  gZoom=1;gPanX=0;gPanY=0;
+  $("graph-info").textContent=graphNodes.length+" статей, "+graphEdges.length+" связей";
+  if(graphAnim)cancelAnimationFrame(graphAnim);
+  tickGraph();
+  setupGraphEvents();
 }
-function renderGraph(){
-  if(!graphData)return;
-  const c=$("graph-canvas");
-  const ctx=c.getContext("2d");
-  ctx.clearRect(0,0,c.width,c.height);
-  ctx.globalAlpha=0.25;
-  graphData.edges.forEach(e=>{
+function tickGraph(){
+  const alpha=0.3;const N=graphNodes.length;
+  // Repulsion (Barnes-Hut simplified)
+  for(let i=0;i<N;i++){
+    const a=graphNodes[i];
+    for(let j=i+1;j<N;j++){
+      const b=graphNodes[j];
+      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;
+      if(d2<1)d2=1;
+      const d=Math.sqrt(d2);
+      const rep=Math.min(2000/d2,3)*alpha;
+      a.vx+=dx/d*rep;a.vy+=dy/d*rep;
+      b.vx-=dx/d*rep;b.vy-=dy/d*rep;
+    }
+  }
+  // Attraction (springs)
+  graphEdges.forEach(e=>{
     const s=graphNmap[e.source],t=graphNmap[e.target];
     if(!s||!t)return;
-    ctx.strokeStyle=getComputedStyle(document.body).getPropertyValue("color")||"#30363d";
-    ctx.lineWidth=Math.max(1,e.weight*2.5);
+    let dx=t.x-s.x,dy=t.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=(d-200)*0.002*e.weight*alpha;
+    s.vx+=dx/d*f;s.vy+=dy/d*f;t.vx-=dx/d*f;t.vy-=dy/d*f;
+  });
+  // Center gravity
+  const c=$("graph-canvas");const cx=c.width/2,cy=c.height/2;
+  graphNodes.forEach(n=>{
+    if(n===gDrag)return;
+    n.vx+=(cx-n.x)*0.0005*alpha;n.vy+=(cy-n.y)*0.0005*alpha;
+    n.vx*=0.85;n.vy*=0.85;
+    n.x+=n.vx;n.y+=n.vy;
+  });
+  renderGraph();
+  graphAnim=requestAnimationFrame(tickGraph);
+}
+function renderGraph(){
+  const c=$("graph-canvas");const ctx=c.getContext("2d");
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.save();
+  ctx.translate(c.width/2+gPanX*2,c.height/2+gPanY*2);
+  ctx.scale(gZoom,gZoom);
+  ctx.translate(-c.width/2,-c.height/2);
+  // Edges
+  ctx.globalAlpha=0.15;
+  graphEdges.forEach(e=>{
+    const s=graphNmap[e.source],t=graphNmap[e.target];
+    if(!s||!t)return;
+    ctx.strokeStyle="#58a6ff";ctx.lineWidth=Math.max(1,e.weight*3);
     ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();
   });
+  // Highlight hovered node connections
+  if(gHover){
+    ctx.globalAlpha=0.6;ctx.strokeStyle="#58a6ff";ctx.lineWidth=2;
+    graphEdges.forEach(e=>{
+      if(e.source!==gHover.id&&e.target!==gHover.id)return;
+      const s=graphNmap[e.source],t=graphNmap[e.target];
+      if(!s||!t)return;
+      ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();
+    });
+  }
   ctx.globalAlpha=1;
+  // Nodes
   graphNodes.forEach(n=>{
-    const r=Math.max(5,Math.min(12,4+n.access_count));
+    const r=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
+    const isActive=gHover&&(gHover.id===n.id||graphEdges.some(e=>(e.source===gHover.id&&e.target===n.id)||(e.target===gHover.id&&e.source===n.id)));
+    const dimmed=gHover&&!isActive;
+    ctx.globalAlpha=dimmed?0.2:1;
     ctx.fillStyle=n.color;ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fill();
-    ctx.strokeStyle="rgba(255,255,255,0.3)";ctx.lineWidth=1;ctx.stroke();
-    ctx.fillStyle=getComputedStyle(document.body).color||"#c9d1d9";
-    ctx.font="10px -apple-system,sans-serif";ctx.textAlign="center";
-    ctx.fillText(n.title.substring(0,25),n.x,n.y-r-5);
+    if(n===gHover||n===gDrag){ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();}
+    // Label
+    const fontSize=Math.max(10,Math.min(14,11/gZoom));
+    ctx.font=fontSize+"px -apple-system,sans-serif";ctx.textAlign="center";
+    ctx.fillStyle=dimmed?"rgba(200,200,200,0.2)":"rgba(200,210,220,0.9)";
+    const label=n.title.length>35?n.title.substring(0,33)+"…":n.title;
+    ctx.fillText(label,n.x,n.y-r-6);
   });
+  ctx.globalAlpha=1;
+  // Tooltip for hovered node
+  if(gHover){
+    const r=Math.max(6,Math.min(16,5+(gHover.access_count||0)*0.5));
+    const lines=[gHover.title,gHover.project+(gHover.tags?" · "+gHover.tags.substring(0,40):"")];
+    const tw=Math.max(...lines.map(l=>l.length))*7+16;
+    const tx=gHover.x-tw/2,ty=gHover.y+r+12;
+    ctx.fillStyle="rgba(30,40,55,0.95)";ctx.strokeStyle="#58a6ff";ctx.lineWidth=1;
+    ctx.beginPath();ctx.roundRect(tx,ty,tw,lines.length*18+12,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#c9d1d9";ctx.font="12px -apple-system,sans-serif";ctx.textAlign="left";
+    lines.forEach((l,i)=>ctx.fillText(l,tx+8,ty+16+i*18));
+  }
+  ctx.restore();
+}
+function setupGraphEvents(){
+  const c=$("graph-canvas");
+  function canvasXY(ev){
+    const rect=c.getBoundingClientRect();
+    const sx=(ev.clientX-rect.left)*2,sy=(ev.clientY-rect.top)*2;
+    const wx=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;
+    const wy=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;
+    return[wx,wy];
+  }
+  function findNode(wx,wy){
+    for(const n of graphNodes){
+      const r=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
+      if(Math.hypot(n.x-wx,n.y-wy)<r+8)return n;
+    }return null;
+  }
+  c.onmousedown=function(ev){
+    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
+    if(n){gDrag=n;gDrag.vx=0;gDrag.vy=0;c.style.cursor="grabbing";}
+    else{gPanning=true;gPanStart={x:ev.clientX-gPanX,y:ev.clientY-gPanY};c.style.cursor="move";}
+  };
+  c.onmousemove=function(ev){
+    if(gDrag){const[wx,wy]=canvasXY(ev);gDrag.x=wx;gDrag.y=wy;gDrag.vx=0;gDrag.vy=0;return;}
+    if(gPanning&&gPanStart){gPanX=ev.clientX-gPanStart.x;gPanY=ev.clientY-gPanStart.y;return;}
+    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
+    gHover=n;c.style.cursor=n?"pointer":"default";
+  };
+  c.onmouseup=function(){
+    if(gDrag){gDrag=null;c.style.cursor="default";}
+    gPanning=false;gPanStart=null;
+  };
+  c.ondblclick=function(ev){
+    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
+    if(n){const[proj]=n.id.split("/",2);showTab("search");loadProject(proj);}
+  };
+  c.onwheel=function(ev){
+    ev.preventDefault();
+    const delta=ev.deltaY>0?0.9:1.1;
+    gZoom=Math.max(0.2,Math.min(5,gZoom*delta));
+  };
+  // Touch support
+  let touchDist=0;
+  c.ontouchstart=function(ev){
+    if(ev.touches.length===1){
+      const t=ev.touches[0];const rect=c.getBoundingClientRect();
+      const sx=(t.clientX-rect.left)*2,sy=(t.clientY-rect.top)*2;
+      const wx=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;
+      const wy=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;
+      const n=findNode(wx,wy);
+      if(n){gDrag=n;}else{gPanning=true;gPanStart={x:t.clientX-gPanX,y:t.clientY-gPanY};}
+    }else if(ev.touches.length===2){
+      touchDist=Math.hypot(ev.touches[0].clientX-ev.touches[1].clientX,ev.touches[0].clientY-ev.touches[1].clientY);
+    }
+  };
+  c.ontouchmove=function(ev){
+    ev.preventDefault();
+    if(ev.touches.length===2&&touchDist){
+      const d=Math.hypot(ev.touches[0].clientX-ev.touches[1].clientX,ev.touches[0].clientY-ev.touches[1].clientY);
+      gZoom=Math.max(0.2,Math.min(5,gZoom*(d/touchDist)));touchDist=d;return;
+    }
+    if(ev.touches.length!==1)return;
+    const t=ev.touches[0];
+    if(gDrag){const rect=c.getBoundingClientRect();const sx=(t.clientX-rect.left)*2,sy=(t.clientY-rect.top)*2;
+      gDrag.x=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;gDrag.y=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;gDrag.vx=0;gDrag.vy=0;}
+    else if(gPanning&&gPanStart){gPanX=t.clientX-gPanStart.x;gPanY=t.clientY-gPanStart.y;}
+  };
+  c.ontouchend=function(){gDrag=null;gPanning=false;gPanStart=null;touchDist=0;};
 }
 
 // Compile
