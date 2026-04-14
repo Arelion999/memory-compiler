@@ -242,3 +242,7 @@ git log --format="%H|%s|%an|%aI" --numstat --since="7 days ago"
 ```
 
 Повторные вызовы с `repo_path` автоматически обрабатывают только новые коммиты.
+
+## Лицензия
+
+[MIT](LICENSE)
