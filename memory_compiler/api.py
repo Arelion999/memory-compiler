@@ -196,6 +196,22 @@ async def web_graph(request: Request):
                     edges.append({"source": a, "target": b, "weight": 0.3})
                     edge_set.add((a, b))
 
+    # Limit edges per node — keep only top-K strongest connections
+    MAX_EDGES_PER_NODE = 8
+    node_edges = defaultdict(list)
+    for e in edges:
+        node_edges[e["source"]].append(e)
+        node_edges[e["target"]].append(e)
+
+    kept_edges = set()  # edge ids to keep
+    for nid, node_edge_list in node_edges.items():
+        # Sort by weight desc, keep top K
+        node_edge_list.sort(key=lambda e: -e["weight"])
+        for e in node_edge_list[:MAX_EDGES_PER_NODE]:
+            kept_edges.add((e["source"], e["target"]))
+
+    edges = [e for e in edges if (e["source"], e["target"]) in kept_edges]
+
     # Mark orphans (no edges) — UI can dim them
     connected = set()
     for e in edges:
