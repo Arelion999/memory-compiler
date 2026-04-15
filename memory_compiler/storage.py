@@ -255,23 +255,44 @@ def update_active_context(project: str, topic: str, content: str):
 
 # ─── Contradiction detection ─────────────────────────────────────────────────
 
-_FACT_PATTERNS = [
-    (r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', "IP"),
-    (r'\bv?(\d+\.\d+\.\d+)\b', "версия"),
+# Порядок важен: сначала извлекаем структурные факты (URL, IP, порты),
+# потом из остатка — версии. Это предотвращает ложные срабатывания
+# когда regex версии ловит кусок IP (192.168.1.20 → "168.1.20")
+# или порт-подобное ":80" внутри URL.
+_FACT_PATTERNS_PRIMARY = [
     (r'(https?://[^\s\)]+)', "URL"),
-    (r':(\d{2,5})\b', "порт"),
+    (r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', "IP"),
 ]
+_FACT_PATTERNS_SECONDARY = [
+    # Версия: должна быть префикс v/V или слово "верси"/"version" рядом,
+    # чтобы не ловить случайные X.Y.Z (даты, числа).
+    (r'(?:(?<=[vV])|(?<=верси[ияю] )|(?<=version )|(?<=release )|(?<=v\.))(\d+\.\d+\.\d+)\b', "версия"),
+    (r'(?<!:)(?<!\d)\b(?:port|порт)\s*[:=]?\s*(\d{2,5})\b', "порт"),
+]
+
+
+def _extract_facts(text: str) -> dict[str, set[str]]:
+    """Извлечь факты из текста, избегая пересечений между паттернами."""
+    facts: dict[str, set[str]] = {}
+    remaining = text
+    # 1. Primary: URL, IP — удаляем найденное из текста
+    for pattern, label in _FACT_PATTERNS_PRIMARY:
+        found = set(re.findall(pattern, remaining))
+        if found:
+            facts[label] = found
+            remaining = re.sub(pattern, " ", remaining)
+    # 2. Secondary: версии, порты — ищем в остатке
+    for pattern, label in _FACT_PATTERNS_SECONDARY:
+        found = set(re.findall(pattern, remaining, re.IGNORECASE))
+        if found:
+            facts[label] = found
+    return facts
 
 
 def detect_contradictions(new_content: str, project: str, exclude_path: Optional[str] = None) -> list[str]:
     """Найти возможные противоречия с существующими статьями."""
     warnings = []
-    # Извлечь факты из нового контента
-    new_facts: dict[str, set[str]] = {}
-    for pattern, label in _FACT_PATTERNS:
-        found = set(re.findall(pattern, new_content))
-        if found:
-            new_facts[label] = found
+    new_facts = _extract_facts(new_content)
 
     if not new_facts:
         return []
@@ -285,8 +306,9 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
         if exclude_path and rel_path == exclude_path:
             continue
         text = md.read_text(encoding="utf-8")
-        for pattern, label in _FACT_PATTERNS:
-            existing = set(re.findall(pattern, text))
+        existing_facts = _extract_facts(text)
+        for label in new_facts:
+            existing = existing_facts.get(label, set())
             new_vals = new_facts.get(label, set())
             if not new_vals or not existing:
                 continue
