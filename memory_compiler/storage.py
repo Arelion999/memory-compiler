@@ -1010,3 +1010,281 @@ def fetch_url(url: str, timeout: int = 15) -> tuple:
         raise ValueError(f"URL error: {e.reason}")
     except Exception as e:
         raise ValueError(f"Fetch error: {e}")
+
+
+# ─── Tracking articles (bi-temporal frontmatter) ───────────────────────────
+#
+# Tracking statья — снимок текущего состояния сущности (версия, IP, и т.д.).
+# Хранит structured facts в YAML frontmatter:
+#   ---
+#   type: tracking
+#   project: niksdesk
+#   entity: release
+#   current:
+#     version: "1.3.50"
+#     since: "2026-04-15"
+#   history:
+#     - version: "1.3.47"
+#       from: "2026-04-11"
+#       to: "2026-04-15"
+#       changes: "fix #258"
+#   ---
+# Body — человекочитаемое описание, автогенерируется при update.
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter (limited subset).
+    Supports:
+      - top-level scalars: key: value
+      - nested dicts 1 level: key: \\n  sub: value
+      - lists of dicts: key: \\n  - sub1: a \\n    sub2: b
+      - lists of scalars: key: \\n  - item
+    Returns (data, body).
+    """
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}, text
+    fm_text = text[4:end]
+    body = text[end + 5:]
+
+    data: dict = {}
+    current_key: Optional[str] = None  # top-level key whose block we're filling
+    block_type: Optional[str] = None  # "dict" | "list"
+    current_list_item: Optional[dict] = None
+
+    for raw_line in fm_text.splitlines():
+        if not raw_line.strip():
+            continue
+        stripped = raw_line.lstrip()
+        indent = len(raw_line) - len(stripped)
+
+        if indent == 0:
+            # Top-level: key: val OR key: (start block)
+            if ":" in stripped:
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip()
+                if val:
+                    data[key] = _parse_scalar(val)
+                    current_key = None
+                    block_type = None
+                else:
+                    current_key = key
+                    block_type = None  # resolved on next line
+                    data[key] = None
+                    current_list_item = None
+        elif current_key is not None:
+            # Inside block for current_key
+            if stripped.startswith("- "):
+                # List item
+                if block_type != "list":
+                    data[current_key] = []
+                    block_type = "list"
+                content = stripped[2:].strip()
+                if ":" in content and not content.startswith('"'):
+                    k, _, v = content.partition(":")
+                    item = {k.strip(): _parse_scalar(v.strip())}
+                    data[current_key].append(item)
+                    current_list_item = item
+                else:
+                    data[current_key].append(_parse_scalar(content))
+                    current_list_item = None
+            elif ":" in stripped:
+                k, _, v = stripped.partition(":")
+                k = k.strip()
+                v = v.strip()
+                if block_type == "list" and current_list_item is not None:
+                    # continuation of list item dict
+                    current_list_item[k] = _parse_scalar(v)
+                else:
+                    # nested dict under current_key
+                    if block_type != "dict":
+                        data[current_key] = {}
+                        block_type = "dict"
+                    data[current_key][k] = _parse_scalar(v)
+
+    return data, body
+
+
+def _parse_scalar(s: str):
+    """Parse YAML scalar: string, number, bool, null."""
+    s = s.strip()
+    if s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+    if s.startswith("'") and s.endswith("'"):
+        return s[1:-1]
+    if s.lower() in ("null", "none", "~", ""):
+        return None
+    if s.lower() in ("true", "yes"):
+        return True
+    if s.lower() in ("false", "no"):
+        return False
+    # Don't try to parse numbers — keep as string for version consistency
+    return s
+
+
+def _fix_pending_dicts(obj):
+    """Convert None values that should be dicts/lists after sub-parsing. Simple pass."""
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, (dict, list)):
+                _fix_pending_dicts(v)
+
+
+def _write_frontmatter(data: dict) -> str:
+    """Serialize dict to YAML-like frontmatter. Simple subset."""
+    lines = ["---"]
+    _write_yaml_dict(data, lines, 0)
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def _write_yaml_dict(d: dict, lines: list, indent: int):
+    pad = " " * indent
+    for k, v in d.items():
+        if isinstance(v, dict):
+            lines.append(f"{pad}{k}:")
+            _write_yaml_dict(v, lines, indent + 2)
+        elif isinstance(v, list):
+            lines.append(f"{pad}{k}:")
+            for item in v:
+                if isinstance(item, dict):
+                    # First field inline with dash
+                    keys = list(item.keys())
+                    if not keys:
+                        continue
+                    lines.append(f"{pad}  - {keys[0]}: {_fmt_scalar(item[keys[0]])}")
+                    for ik in keys[1:]:
+                        lines.append(f"{pad}    {ik}: {_fmt_scalar(item[ik])}")
+                else:
+                    lines.append(f"{pad}  - {_fmt_scalar(item)}")
+        else:
+            lines.append(f"{pad}{k}: {_fmt_scalar(v)}")
+
+
+def _fmt_scalar(v) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        # Quote if contains special YAML chars
+        if any(c in v for c in ":#[]{}&*!|>'%@`") or v.strip() != v:
+            return f'"{v.replace(chr(92), chr(92)+chr(92)).replace(chr(34), chr(92)+chr(34))}"'
+        return v
+    return str(v)
+
+
+def load_tracking(project: str, entity: str) -> Optional[dict]:
+    """Load tracking article for a project/entity. Returns full parsed frontmatter or None."""
+    proj_dir = project_dir(project)
+    fname = f"tracking_{entity}.md"
+    fpath = proj_dir / fname
+    if not fpath.exists():
+        return None
+    text = fpath.read_text(encoding="utf-8")
+    data, _ = _parse_frontmatter(text)
+    return data if data.get("type") == "tracking" else None
+
+
+def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "") -> dict:
+    """Create or update tracking article with bi-temporal frontmatter.
+
+    new_facts: dict of fields to set in 'current' (e.g. {"version": "1.3.50"}).
+    Existing 'current' moves to 'history[]' with to=now. New 'current.since' = now.
+    Returns: {"path": str, "action": "created"|"updated", "old_current": dict, "new_current": dict}
+    """
+    proj_dir = project_dir(project)
+    fname = f"tracking_{entity}.md"
+    fpath = proj_dir / fname
+    now_iso = datetime.now().date().isoformat()
+
+    if fpath.exists():
+        text = fpath.read_text(encoding="utf-8")
+        data, _ = _parse_frontmatter(text)
+        action = "updated"
+    else:
+        data = {
+            "type": "tracking",
+            "project": project,
+            "entity": entity,
+            "current": {},
+            "history": [],
+        }
+        action = "created"
+
+    old_current = dict(data.get("current") or {})
+
+    # Check if facts actually changed
+    if old_current and all(old_current.get(k) == v for k, v in new_facts.items()):
+        # No change — don't touch
+        return {"path": str(fpath.relative_to(KNOWLEDGE_DIR)), "action": "unchanged",
+                "old_current": old_current, "new_current": old_current}
+
+    # Archive old current to history
+    if old_current:
+        hist_entry = dict(old_current)
+        # Ensure 'from' set (fallback to 'since' or today)
+        if "from" not in hist_entry:
+            hist_entry["from"] = old_current.get("since", now_iso)
+        hist_entry["to"] = now_iso
+        if "since" in hist_entry:
+            del hist_entry["since"]
+        if not isinstance(data.get("history"), list):
+            data["history"] = []
+        data["history"].append(hist_entry)
+
+    # Set new current
+    new_current = dict(new_facts)
+    new_current["since"] = now_iso
+    data["current"] = new_current
+
+    # Render body
+    title = f"{project.title()} — current state ({entity})"
+    if narrative:
+        body = narrative
+    else:
+        body = _render_tracking_body(data)
+
+    text = _write_frontmatter(data) + f"\n# {title}\n\n{body}\n"
+    fpath.write_text(text, encoding="utf-8")
+
+    return {
+        "path": str(fpath.relative_to(KNOWLEDGE_DIR)),
+        "action": action,
+        "old_current": old_current,
+        "new_current": new_current,
+    }
+
+
+def _render_tracking_body(data: dict) -> str:
+    """Render human-readable body from tracking frontmatter."""
+    lines = []
+    current = data.get("current") or {}
+    if current:
+        lines.append("## Текущее состояние\n")
+        for k, v in current.items():
+            lines.append(f"- **{k}:** {v}")
+        lines.append("")
+
+    history = data.get("history") or []
+    if history:
+        lines.append("## История")
+        for entry in reversed(history):  # newest-first
+            keys = list(entry.keys())
+            if not keys:
+                continue
+            # Prefer showing 'version' or first key + from/to
+            main_key = "version" if "version" in entry else keys[0]
+            val = entry.get(main_key, "?")
+            from_d = entry.get("from", "?")
+            to_d = entry.get("to", "текущий")
+            line = f"- **{val}** ({from_d} → {to_d})"
+            extra = [f"{k}: {v}" for k, v in entry.items() if k not in {main_key, "from", "to"}]
+            if extra:
+                line += " — " + ", ".join(extra)
+            lines.append(line)
+
+    return "\n".join(lines)

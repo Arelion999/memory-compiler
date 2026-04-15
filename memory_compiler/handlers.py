@@ -117,15 +117,41 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     # 9. Track access
     track_access([saved_key])
 
-    # 10. Git commit
+    # 10. Auto-update tracking article if this is a release
+    tracking_update = None
+    tags_lower = {t.lower() for t in tags}
+    if "release" in tags_lower or "релиз" in tags_lower:
+        import re as _re
+        m = _re.search(r'v?(\d+\.\d+\.\d+)', topic) or _re.search(r'v?(\d+\.\d+\.\d+)', content)
+        if m:
+            version = m.group(1)
+            from memory_compiler.storage import save_tracking_article
+            tracking_update = save_tracking_article(project, "release", {"version": version})
+            if tracking_update["action"] != "unchanged":
+                # Index updated tracking article
+                fpath = KNOWLEDGE_DIR / tracking_update["path"]
+                if fpath.exists():
+                    updated_text = fpath.read_text(encoding="utf-8")
+                    index_document(updated_text, fpath.name, project)
+                    embed_document(updated_text, fpath.name, project)
+
+    # 11. Git commit
     git_commit(f"save: {topic} [{project}]")
 
     result = action
     if git_refs:
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
         result += f"\n\U0001f517 Git: {refs_summary}"
+    if tracking_update and tracking_update["action"] != "unchanged":
+        old_v = tracking_update["old_current"].get("version", "—")
+        new_v = tracking_update["new_current"].get("version")
+        result += f"\n🔄 tracking/release: {old_v} → {new_v}"
     if contradictions:
-        result += "\n\n\u26a0\ufe0f Возможные противоречия:\n" + "\n".join(f"  - {c}" for c in contradictions)
+        # Filter version-contradictions for releases (handled by tracking)
+        if tracking_update and tracking_update["action"] != "unchanged":
+            contradictions = [c for c in contradictions if "версия" not in c.lower() and "version" not in c.lower()]
+        if contradictions:
+            result += "\n\n\u26a0\ufe0f Возможные противоречия:\n" + "\n".join(f"  - {c}" for c in contradictions)
     return [TextContent(type="text", text=result)]
 
 
@@ -1243,6 +1269,51 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
     git_commit(f"secret: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f512 Секрет сохранён: {project}/{article_path.name}")]
+
+
+# ─── Tracking (bi-temporal current state) ────────────────────────────────
+
+
+async def save_tracking(project: str, entity: str, facts: dict, narrative: str = "") -> list[TextContent]:
+    """Save/update tracking article (current state snapshot with history)."""
+    from memory_compiler.storage import save_tracking_article
+    result = save_tracking_article(project, entity, facts, narrative)
+
+    if result["action"] == "unchanged":
+        return [TextContent(type="text", text=f"ℹ️ tracking/{entity} не изменился")]
+
+    if result["action"] == "created":
+        msg = f"✅ tracking/{entity} создан в {project}"
+    else:
+        old_s = ", ".join(f"{k}={v}" for k, v in result["old_current"].items() if k != "since")
+        new_s = ", ".join(f"{k}={v}" for k, v in result["new_current"].items() if k != "since")
+        msg = f"🔄 tracking/{entity} в {project}\n  было: {old_s}\n  стало: {new_s}"
+
+    fpath = KNOWLEDGE_DIR / result["path"]
+    if fpath.exists():
+        text = fpath.read_text(encoding="utf-8")
+        index_document(text, fpath.name, project)
+        embed_document(text, fpath.name, project)
+
+    git_commit(f"tracking: {project}/{entity} {result['action']}")
+    return [TextContent(type="text", text=msg)]
+
+
+async def get_current(project: str, entity: str) -> list[TextContent]:
+    """Get current state from tracking article."""
+    from memory_compiler.storage import load_tracking
+    data = load_tracking(project, entity)
+    if not data:
+        return [TextContent(type="text", text=f"tracking/{entity} не найден в {project}")]
+
+    current = data.get("current") or {}
+    history = data.get("history") or []
+    lines = [f"# {project}/{entity} — текущее состояние\n"]
+    for k, v in current.items():
+        lines.append(f"- **{k}:** {v}")
+    if history:
+        lines.append(f"\n**История:** {len(history)} записей")
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 # ─── Git capture ──────────────────────────────────────────────────────────

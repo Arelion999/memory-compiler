@@ -277,3 +277,61 @@ def test_parse_obsidian_alias_link():
     r = parse_obsidian_note(note)
     assert "**display text**" in r["body"]
     assert "Target Page" in r["wiki_links"]
+
+
+# ─── Tracking articles ──────────────────────────────────────────────────
+
+def test_tracking_create_and_update(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    r1 = save_tracking_article("testproj", "release", {"version": "1.0.0"})
+    assert r1["action"] == "created"
+    assert r1["new_current"]["version"] == "1.0.0"
+
+    # Same version → unchanged
+    r2 = save_tracking_article("testproj", "release", {"version": "1.0.0"})
+    assert r2["action"] == "unchanged"
+
+    # New version → updated, old goes to history
+    r3 = save_tracking_article("testproj", "release", {"version": "1.1.0"})
+    assert r3["action"] == "updated"
+    assert r3["old_current"]["version"] == "1.0.0"
+    assert r3["new_current"]["version"] == "1.1.0"
+
+    data = load_tracking("testproj", "release")
+    assert data["current"]["version"] == "1.1.0"
+    assert len(data["history"]) == 1
+    assert data["history"][0]["version"] == "1.0.0"
+    assert data["type"] == "tracking"
+
+
+def test_tracking_multiple_facts(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "deploy", {"host": "10.0.0.1", "port": "8080"})
+    save_tracking_article("testproj", "deploy", {"host": "10.0.0.2", "port": "8080"})
+    data = load_tracking("testproj", "deploy")
+    assert data["current"]["host"] == "10.0.0.2"
+    assert len(data["history"]) == 1
+    assert data["history"][0]["host"] == "10.0.0.1"
+
+
+def test_frontmatter_parser(knowledge_dir):
+    from memory_compiler.storage import _parse_frontmatter
+    text = """---
+type: tracking
+project: foo
+current:
+  version: "1.0"
+  active: true
+history:
+  - version: "0.9"
+    from: 2026-01-01
+---
+Body text"""
+    data, body = _parse_frontmatter(text)
+    assert data["type"] == "tracking"
+    assert data["project"] == "foo"
+    assert data["current"]["version"] == "1.0"
+    assert data["current"]["active"] is True
+    assert len(data["history"]) == 1
+    assert data["history"][0]["version"] == "0.9"
+    assert body.strip() == "Body text"
