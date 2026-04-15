@@ -11,6 +11,7 @@ services:
       - ./knowledge:/knowledge
       - ./server.py:/app/server.py:ro
       - ./memory_compiler:/app/memory_compiler:ro
+      - ./VERSION:/app/VERSION:ro
       - ${GIT_REPOS_PATH:-/dev/null}:/repos:ro
       - ${OBSIDIAN_VAULT_PATH:-/dev/null}:/vault:ro
       - hf_cache:/root/.cache/huggingface

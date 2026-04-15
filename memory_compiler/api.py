@@ -13,7 +13,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
-    _discover_projects, MC_API_KEY,
+    _discover_projects, MC_API_KEY, VERSION,
 )
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
@@ -157,6 +157,7 @@ async def web_health(request: Request):
     daily_count = len(list(daily_dir.glob("*.md"))) if daily_dir.exists() else 0
     return JSONResponse({
         "status": "ok",
+        "version": VERSION,
         "documents": ix.doc_count(),
         "embeddings": len(_search_mod._embeddings),
         "total_articles": total_articles,
@@ -165,6 +166,11 @@ async def web_health(request: Request):
         "projects": project_stats,
         "usage": stats,
     })
+
+
+async def web_version(request: Request):
+    """Simple version endpoint."""
+    return JSONResponse({"version": VERSION})
 
 
 async def web_graph(request: Request):
@@ -527,6 +533,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/audit", endpoint=web_audit),
             Route("/", endpoint=web_index),
             Route("/api/health", endpoint=web_health),
+            Route("/api/version", endpoint=web_version),
             Route("/api/search", endpoint=web_search),
             Route("/api/save", endpoint=web_save, methods=["POST"]),
             Route("/api/article/{project}/{filename}", endpoint=web_article),
