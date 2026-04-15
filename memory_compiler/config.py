@@ -21,6 +21,24 @@ MC_API_KEY = os.environ.get("MC_API_KEY", "")
 MC_ENCRYPT_KEY = os.environ.get("MC_ENCRYPT_KEY", "")
 
 
+# ─── Version ─────────────────────────────────────────────────────────────────
+
+def _read_version() -> str:
+    for candidate in [
+        Path(__file__).parent.parent / "VERSION",  # repo root
+        Path("/app/VERSION"),  # docker container
+    ]:
+        try:
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return "0.0.0-unknown"
+
+
+VERSION = _read_version()
+
+
 def _discover_projects() -> list[str]:
     """Collect project list from existing folders + initial."""
     found = set(_INITIAL_PROJECTS)

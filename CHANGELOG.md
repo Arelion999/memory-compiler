@@ -1,6 +1,61 @@
 # Changelog
 
-## v12.0.0 — 2026-04-15
+Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
+
+## v1.0.0 — 2026-04-15
+
+Первый production-готовый релиз. 38 MCP tools, 54 теста. Полный auto-memory pipeline.
+
+### Новое
+
+- **VERSION file + /api/version endpoint** — версия видна в health, UI show badge, scripts/release.sh для auto-bump
+- **Tracking articles (bi-temporal)** — snapshot current state с history (YAML frontmatter, type: tracking). 2 tool: `save_tracking`, `get_current`
+- **Auto-extract facts при finish_task** — сервер сканирует content на regex (version/IP/port/URL), обновляет существующие tracking. Historical markers фильтруют прошлое. Safe (no auto-create)
+- **Auto-update tracking/release** при теге `release` — из topic извлекается версия, обновляется tracking
+
+### Из pre-release (v8 — v12)
+
+#### Поиск
+- Hybrid retrieval (BM25F + semantic + temporal decay)
+- Cross-encoder reranking (BAAI/bge-reranker-base, 280MB, multilingual)
+- start_task — фильтрация блоков по релевантности темы
+
+#### Интеграции
+- `ingest` — загрузка из URL или raw_text (HTML→markdown, без внешних deps)
+- `import_obsidian` — импорт vault (frontmatter, теги, wiki-ссылки)
+- `git_capture` — автосбор знаний из git-коммитов (dual mode: repo_path или git_log_raw)
+- `knowledge_gap` — темы активные в git без покрытия в KB
+
+#### Web UI
+- Obsidian-style animated graph (drag/zoom/pan, top-K edges per node, orphan marker)
+- Snippets с подсветкой совпадений в поиске
+- Auto-scroll к первому match при expand
+- Расшифровка ENC: на лету
+
+#### Инфраструктура
+- **Автодеплой на NAS** — cron + mtime watcher, container restart на изменение кода
+- **Daily backup** — 7-day rotation tar.gz
+- **Auto-lint weekly** — воскресенье 3 AM
+- **Auto-compile daily** — 2 AM
+- Security hardening (path traversal, since validation, DoS limits)
+
+#### Безопасность
+- MC_API_KEY auth (Bearer + cookie + query param)
+- MC_ENCRYPT_KEY AES-256 для secret articles
+- Audit log всех MCP tool calls
+- Confirm required для destructive operations
+
+#### Прочее
+- set_project_deps — зависимости между проектами
+- PostToolUse hook matcher для всех save_* tools
+- 3 runbook'а в memory-compiler project
+
+### Сломано намеренно
+
+- Версии в CHANGELOG переименованы: было v8.0.0-v12.0.0 → теперь pre-release `0.8.0`-`0.12.0` (или просто исторические этапы до v1.0.0)
+- Git history очищена от утечек через `git filter-repo`
+
+## v0.12.0 (pre-release) — 2026-04-15
 
 Search quality + UX. 36 MCP tools, 49 тестов.
 

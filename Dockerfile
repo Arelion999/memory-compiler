@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout=120 -r requirements.txt
 
 COPY memory_compiler/ memory_compiler/
-COPY server.py .
+COPY server.py VERSION ./
 
 ENV KNOWLEDGE_DIR=/knowledge
 ENV MCP_TRANSPORT=sse

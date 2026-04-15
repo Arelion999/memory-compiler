@@ -56,7 +56,7 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 </head>
 <body>
 <div class="header">
-<h1>Memory Compiler</h1>
+<h1>Memory Compiler <span id="version-badge" style="font-size:0.55em;color:var(--text2);font-weight:400;margin-left:6px"></span></h1>
 <button class="theme-toggle" onclick="toggleTheme()">&#9728;/&#9790;</button>
 </div>
 <div class="tab-bar">
@@ -113,6 +113,7 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <script>
 let PROJECTS=[];
 fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
+if(d.version){$("version-badge").textContent="v"+d.version;}
 $("f-project").innerHTML=PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
 $("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
 const $=id=>document.getElementById(id);
