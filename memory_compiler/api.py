@@ -389,7 +389,7 @@ class AuthMiddleware:
         query = scope.get("query_string", b"").decode()
 
         # Public routes
-        if path in ("/login", "/api/auth/login", "/api/health"):
+        if path in ("/login", "/api/auth/login", "/api/health", "/api/version"):
             return await self.app(scope, receive, send)
 
         # OAuth discovery (mcp-remote probes this) — return 404
