@@ -388,6 +388,32 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="save_tracking",
+            description="Создать или обновить tracking-статью (снимок текущего состояния). Старое значение → history[], новое → current. Используй для 'текущая версия', 'текущий деплой' и т.д.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "entity": {"type": "string", "description": "Название сущности: release, deployment, config"},
+                    "facts": {"type": "object", "description": "Факты: {version: '1.3.50', url: ...}"},
+                    "narrative": {"type": "string", "description": "Опциональное описание (иначе автогенерация)"}
+                },
+                "required": ["project", "entity", "facts"]
+            }
+        ),
+        Tool(
+            name="get_current",
+            description="Получить текущее состояние из tracking-статьи.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "entity": {"type": "string"}
+                },
+                "required": ["project", "entity"]
+            }
+        ),
+        Tool(
             name="save_secret",
             description="Сохранить зашифрованную секретную статью (пароли, ключи, credentials).",
             inputSchema={
@@ -543,6 +569,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.import_obsidian(**arguments)
     elif name == "knowledge_gap":
         result = await handlers.knowledge_gap(**arguments)
+    elif name == "save_tracking":
+        result = await handlers.save_tracking(**arguments)
+    elif name == "get_current":
+        result = await handlers.get_current(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size
