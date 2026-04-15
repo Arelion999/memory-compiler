@@ -117,23 +117,38 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     # 9. Track access
     track_access([saved_key])
 
-    # 10. Auto-update tracking article if this is a release
-    tracking_update = None
+    # 10. Auto-update existing tracking articles (version, IP, port, URL)
+    tracking_updates = []
     tags_lower = {t.lower() for t in tags}
+
+    # Release tag → ensure tracking/release exists and update
     if "release" in tags_lower or "релиз" in tags_lower:
         import re as _re
         m = _re.search(r'v?(\d+\.\d+\.\d+)', topic) or _re.search(r'v?(\d+\.\d+\.\d+)', content)
         if m:
             version = m.group(1)
             from memory_compiler.storage import save_tracking_article
-            tracking_update = save_tracking_article(project, "release", {"version": version})
-            if tracking_update["action"] != "unchanged":
-                # Index updated tracking article
-                fpath = KNOWLEDGE_DIR / tracking_update["path"]
-                if fpath.exists():
-                    updated_text = fpath.read_text(encoding="utf-8")
-                    index_document(updated_text, fpath.name, project)
-                    embed_document(updated_text, fpath.name, project)
+            r = save_tracking_article(project, "release", {"version": version})
+            if r["action"] != "unchanged":
+                tracking_updates.append({
+                    "entity": "release",
+                    "old": r["old_current"],
+                    "new": r["new_current"],
+                    "path": r["path"],
+                })
+
+    # General auto-update: scan content for facts matching existing tracking
+    from memory_compiler.storage import auto_update_tracking
+    auto_updates = auto_update_tracking(project, content, topic)
+    tracking_updates.extend(auto_updates)
+
+    # Re-index updated tracking articles
+    for upd in tracking_updates:
+        fpath = KNOWLEDGE_DIR / upd["path"]
+        if fpath.exists():
+            updated_text = fpath.read_text(encoding="utf-8")
+            index_document(updated_text, fpath.name, project)
+            embed_document(updated_text, fpath.name, project)
 
     # 11. Git commit
     git_commit(f"save: {topic} [{project}]")
@@ -142,14 +157,19 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     if git_refs:
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
         result += f"\n\U0001f517 Git: {refs_summary}"
-    if tracking_update and tracking_update["action"] != "unchanged":
-        old_v = tracking_update["old_current"].get("version", "—")
-        new_v = tracking_update["new_current"].get("version")
-        result += f"\n🔄 tracking/release: {old_v} → {new_v}"
+    for upd in tracking_updates:
+        # Show what changed
+        old = upd["old"]
+        new = upd["new"]
+        changed_keys = [k for k in new if k != "since" and old.get(k) != new.get(k)]
+        if changed_keys:
+            diff = ", ".join(f"{k}: {old.get(k, '—')} → {new.get(k)}" for k in changed_keys)
+            result += f"\n🔄 tracking/{upd['entity']}: {diff}"
     if contradictions:
-        # Filter version-contradictions for releases (handled by tracking)
-        if tracking_update and tracking_update["action"] != "unchanged":
-            contradictions = [c for c in contradictions if "версия" not in c.lower() and "version" not in c.lower()]
+        # Filter contradictions that were auto-resolved
+        if tracking_updates:
+            bad_words = ["версия", "version", "ip", "порт", "port", "url"]
+            contradictions = [c for c in contradictions if not any(w in c.lower() for w in bad_words)]
         if contradictions:
             result += "\n\n\u26a0\ufe0f Возможные противоречия:\n" + "\n".join(f"  - {c}" for c in contradictions)
     return [TextContent(type="text", text=result)]

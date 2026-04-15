@@ -314,6 +314,37 @@ def test_tracking_multiple_facts(knowledge_dir):
     assert data["history"][0]["host"] == "10.0.0.1"
 
 
+def test_extract_facts(knowledge_dir):
+    from memory_compiler.storage import extract_facts_from_text
+    # Version + IP in current context
+    facts = extract_facts_from_text("Deployed server 10.0.0.5 with version 2.3.1")
+    assert "2.3.1" in facts.get("version", [])
+    assert "10.0.0.5" in facts.get("ip", [])
+
+    # Historical markers should skip
+    facts = extract_facts_from_text("Ранее был IP 192.168.1.1. Переехали со старого 10.0.0.1")
+    # Those IPs are in historical sentences — shouldn't appear
+    assert "192.168.1.1" not in facts.get("ip", [])
+    assert "10.0.0.1" not in facts.get("ip", [])
+
+
+def test_auto_update_tracking(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    # Setup: existing tracking with version and host
+    save_tracking_article("testproj", "deploy", {"version": "1.0.0", "host": "10.0.0.1"})
+
+    # New text mentions updated values
+    updates = auto_update_tracking("testproj", "Выкатили 1.1.0 на 10.0.0.2", "Deploy update")
+    assert len(updates) == 1
+    data = load_tracking("testproj", "deploy")
+    assert data["current"]["version"] == "1.1.0"
+    assert data["current"]["host"] == "10.0.0.2"
+
+    # Project without any tracking — no auto-create
+    updates2 = auto_update_tracking("otherproj", "Новый сервер 10.0.0.3", "Random note")
+    assert len(updates2) == 0
+
+
 def test_frontmatter_parser(knowledge_dir):
     from memory_compiler.storage import _parse_frontmatter
     text = """---

@@ -1259,6 +1259,128 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     }
 
 
+_FACT_PATTERNS = {
+    "version": re.compile(r'\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)\b', re.IGNORECASE),
+    "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?::(\d{2,5}))?\b'),
+    "port": re.compile(r':(\d{2,5})\b'),
+    "url": re.compile(r'(https?://[^\s\)"\']+)'),
+}
+
+# Skip patterns that indicate historical context (don't update current)
+_HISTORICAL_MARKERS = re.compile(
+    r'(было|ранее|раньше|старый|старая|переехал[иа]?\s+с|мигриров|архив|history|was|previously|old)',
+    re.IGNORECASE,
+)
+
+
+def extract_facts_from_text(text: str, topic: str = "") -> dict:
+    """Extract structural facts from free text. Returns {kind: [values]}.
+    Only returns values that appear in non-historical context.
+    """
+    facts = {}
+    combined = f"{topic}\n{text}"
+
+    # Split into sentences (by . followed by space or newline) and lines; filter historical
+    parts = re.split(r'(?:\.\s+|\n)', combined)
+    relevant_text = " ".join(p for p in parts if not _HISTORICAL_MARKERS.search(p))
+
+    for kind, pattern in _FACT_PATTERNS.items():
+        matches = pattern.findall(relevant_text)
+        if not matches:
+            continue
+        # Dedupe while preserving order
+        seen = set()
+        values = []
+        for m in matches:
+            v = m if isinstance(m, str) else m[0]
+            if v and v not in seen:
+                seen.add(v)
+                values.append(v)
+        if values:
+            facts[kind] = values
+    return facts
+
+
+def list_tracking_articles(project: str) -> list[dict]:
+    """List all tracking articles in project. Returns [{entity, current, path}, ...]."""
+    proj = project_dir(project)
+    if not proj.exists():
+        return []
+    result = []
+    for md in proj.glob("tracking_*.md"):
+        try:
+            data, _ = _parse_frontmatter(md.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("type") != "tracking":
+            continue
+        result.append({
+            "entity": data.get("entity", md.stem.replace("tracking_", "")),
+            "current": data.get("current") or {},
+            "path": str(md.relative_to(KNOWLEDGE_DIR)),
+        })
+    return result
+
+
+def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]:
+    """Scan text for facts and update existing tracking articles safely.
+    Rules:
+      - Only updates existing tracking (no auto-create to avoid noise)
+      - Match by fact type (version, ip, port, url) with existing current keys
+      - Skip if new value same as current
+    Returns list of updates performed: [{entity, key, old, new, path}]
+    """
+    facts = extract_facts_from_text(text, topic)
+    if not facts:
+        return []
+
+    existing = list_tracking_articles(project)
+    if not existing:
+        return []
+
+    updates = []
+    for track in existing:
+        current = track["current"] or {}
+        entity = track["entity"]
+        new_current = dict(current)
+        changed = False
+
+        # Match fact types to existing keys (by name substring)
+        for key, value in current.items():
+            if key == "since":
+                continue
+            key_lower = key.lower()
+            # Map key → fact pattern type
+            fact_type = None
+            if "version" in key_lower or "ver" == key_lower:
+                fact_type = "version"
+            elif "ip" in key_lower or "host" in key_lower or "server" in key_lower:
+                fact_type = "ip"
+            elif "port" in key_lower:
+                fact_type = "port"
+            elif "url" in key_lower or "link" in key_lower:
+                fact_type = "url"
+
+            if fact_type and fact_type in facts:
+                candidate = facts[fact_type][0]  # first match in text
+                if str(candidate) != str(value):
+                    new_current[key] = candidate
+                    changed = True
+
+        if changed:
+            # Remove 'since' — save_tracking_article regenerates it
+            new_facts = {k: v for k, v in new_current.items() if k != "since"}
+            result = save_tracking_article(project, entity, new_facts)
+            if result["action"] == "updated":
+                updates.append({
+                    "entity": entity,
+                    "old": track["current"],
+                    "new": result["new_current"],
+                    "path": result["path"],
+                })
+    return updates
+
+
 def _render_tracking_body(data: dict) -> str:
     """Render human-readable body from tracking frontmatter."""
     lines = []
