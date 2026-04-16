@@ -33,13 +33,13 @@ docker-compose up -d --build
 }
 ```
 
-### Подключение к Claude Desktop
+### Подключение к Claude Code Desktop
 
-Полная инструкция: [docs/claude-desktop-setup.md](docs/claude-desktop-setup.md) — MCP, hooks, правила выбора проекта/tool, настройка зависимостей.
+Полная инструкция: [docs/claude-desktop-setup.md](docs/claude-desktop-setup.md) — MCP, скил memory-autopilot, hooks, настройка зависимостей.
 
 ## Возможности
 
-### 36 MCP-инструментов
+### 38 MCP-инструментов
 
 **Поиск и чтение:**
 
@@ -76,6 +76,13 @@ docker-compose up -d --build
 | `save_session(project, summary, ...)` | Сохранить контекст для следующей сессии |
 | `load_session(project)` | Загрузить контекст + уведомления об устаревших статьях |
 | `get_active_context(project)` | Лента последних 10 действий |
+
+**Temporal state:**
+
+| Инструмент | Описание |
+|------------|----------|
+| `save_tracking(project, entity, facts)` | Bi-temporal снимок: текущее состояние + история (версии, деплои, конфиги) |
+| `get_current(project, entity)` | Получить текущий статус из tracking-статьи |
 
 **Комбинированные:**
 
@@ -189,6 +196,9 @@ memory-compiler/
 │   ├── test_storage.py
 │   ├── test_search.py
 │   └── test_handlers.py
+├── skills/
+│   └── memory-autopilot/
+│       └── SKILL.md           # Скил автоуправления памятью для Claude Code
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -211,6 +221,14 @@ pytest tests/ -v
 | Хранилище | Markdown + Git |
 
 ## Рабочий процесс
+
+### С memory-autopilot (рекомендуется)
+
+Скил `memory-autopilot` автоматизирует весь цикл — ищет контекст, выбирает tool, сохраняет результат. Пользователь просто работает, память управляется невидимо.
+
+Установка: скопируйте `skills/memory-autopilot/SKILL.md` в `~/.claude/skills/memory-autopilot/SKILL.md`.
+
+### Ручной режим
 
 ```
 1. Начало задачи    → start_task("тема")       ← поиск + сессия + контекст

@@ -2,6 +2,28 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.1.0 — 2026-04-16
+
+Скил memory-autopilot, консолидация систем памяти, lint auto-fix.
+
+### Новое
+
+- **Скил memory-autopilot** — автоматическое управление памятью без ручных команд. Дерево решений для выбора tool (save_lesson/save_decision/save_runbook/save_from_template), автоопределение проекта, 4 фазы (старт → работа → сохранение → завершение). Устанавливается в `~/.claude/skills/memory-autopilot/`
+- **Фаза 0 — классификация входа** — скил автоматически определяет тип сообщения (задача, факт, вопрос, ошибка) и выбирает действие
+- **skills/ директория** — скилы поставляются с проектом, копируются в `~/.claude/skills/`
+
+### Улучшено
+
+- **CLAUDE.md упрощён** — правила выбора проекта/tool перенесены в скил, CLAUDE.md содержит только ссылку
+- **Hooks сокращены** — SessionStart, UserPromptSubmit, PostToolUse удалены (заменены скилом). Остались Stop и PostCompact как страховка
+- **docs/claude-desktop-setup.md** — обновлена документация: скил вместо ручных правил и хуков
+- **Lint auto-fix** — нормализация 82 статей с разным регистром тегов (obsidian-import)
+
+### Удалено
+
+- Скилы start-task и done-task (заменены memory-autopilot)
+- Хуки SessionStart, UserPromptSubmit, PostToolUse (заменены скилом)
+
 ## v1.0.0 — 2026-04-15
 
 Первый production-готовый релиз. 38 MCP tools, 54 теста. Полный auto-memory pipeline.
