@@ -2,9 +2,9 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
-## v1.1.0 — 2026-04-16
+## v1.1.0 — 2026-04-18
 
-Скил memory-autopilot, консолидация систем памяти, lint auto-fix.
+Скил memory-autopilot, консолидация систем памяти, оптимизация базы знаний.
 
 ### Новое
 
@@ -18,6 +18,17 @@ Semantic versioning: major.minor.patch. Versions below 1.0 were development mile
 - **Hooks сокращены** — SessionStart, UserPromptSubmit, PostToolUse удалены (заменены скилом). Остались Stop и PostCompact как страховка
 - **docs/claude-desktop-setup.md** — обновлена документация: скил вместо ручных правил и хуков
 - **Lint auto-fix** — нормализация 82 статей с разным регистром тегов (obsidian-import)
+
+### Безопасность
+
+- **Шифрование паролей** — 13 plain-text статей с паролями из Obsidian-импорта пересохранены через `save_secret` (AES-256), открытые версии удалены
+- **MCP Memory очистка** — удалены plain-text пароли из встроенного knowledge graph, удалены дубли сущностей
+
+### Оптимизация базы знаний
+
+- **Перераспределение work** — 22 статьи из свалки `work` (88 шт) перемещены в профильные проекты: mot_ut, antilopa_unf, hzti_ut, zarina-khv, 1c
+- **edit_article в скиле** — перед созданием новой статьи скил проверяет существование похожей, дописывает вместо дублирования
+- **git_capture** — первый запуск для niksdesk (16 коммитов → 3 статьи) и memory-compiler (8 коммитов → 4 статьи)
 
 ### Удалено
 
