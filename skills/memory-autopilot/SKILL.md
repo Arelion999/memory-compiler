@@ -116,6 +116,20 @@ get_current(project, entity="release") или get_current(project, entity="deplo
 
 ## Фаза 3: Сохранение результатов
 
+### Обновление vs создание — ВАЖНО
+
+Перед save_lesson ВСЕГДА проверяй: может статья уже существует?
+
+```
+search(query="тема которую хочешь сохранить", project)
+  → если нашёл статью с очень похожей темой (score > 35):
+    → edit_article(project, filename, content, append=true)  ← ДОПИСАТЬ, не дублировать
+  → если не нашёл:
+    → save_lesson / save_decision / save_runbook (создать новую)
+```
+
+Это предотвращает дубли. save_lesson тоже делает автомерж, но edit_article точнее когда знаешь конкретный файл.
+
 ### Дерево выбора tool
 
 ```dot
