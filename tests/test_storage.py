@@ -44,6 +44,62 @@ def test_detect_contradictions_no_facts(knowledge_dir):
     assert warnings == []
 
 
+def test_detect_contradictions_different_subnets_no_warning(knowledge_dir):
+    """IP в разных /24 подсетях — не конфликт (разные сервера)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nas.md").write_text(
+        "NAS Synology IP: 192.168.250.100", encoding="utf-8"
+    )
+    # Новая запись про 1С сервер в другой подсети
+    warnings = detect_contradictions(
+        "Сервер 1С на 192.168.25.55 (PROD)", "testproj"
+    )
+    assert warnings == []
+
+
+def test_detect_contradictions_same_subnet_different_entity_no_warning(knowledge_dir):
+    """Одна подсеть, но разные сущности — не конфликт."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx.md").write_text(
+        "Nginx reverse proxy на 192.168.1.10", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Postgres database на 192.168.1.20", "testproj"
+    )
+    assert warnings == []
+
+
+def test_detect_contradictions_same_entity_same_subnet_warning(knowledge_dir):
+    """Одна сущность, одна подсеть, разные IP — реальный конфликт (миграция)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx.md").write_text(
+        "Nginx сервер на 192.168.1.10", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Nginx переехал на 192.168.1.50", "testproj"
+    )
+    assert len(warnings) > 0
+    assert "192.168.1.10" in warnings[0]
+    assert "192.168.1.50" in warnings[0]
+
+
+def test_detect_contradictions_same_entity_cross_subnet_warning(knowledge_dir):
+    """Одна сущность, РАЗНЫЕ подсети — ВАЖНОЕ предупреждение (переезд в другую сеть)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx_old.md").write_text(
+        "Nginx reverse proxy был на 10.0.5.20", encoding="utf-8"
+    )
+    # Тот же nginx, переехал в другую сеть
+    warnings = detect_contradictions(
+        "Nginx теперь на 192.168.1.100", "testproj"
+    )
+    assert len(warnings) > 0, "Переезд nginx в другую подсеть должен вызвать предупреждение"
+
+
 def test_project_dir_creates(knowledge_dir):
     p = project_dir("newproj")
     assert p.exists()

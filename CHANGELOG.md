@@ -2,6 +2,19 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.1.1 — 2026-04-18
+
+Умный детектор противоречий.
+
+### Fixed
+
+- **detect_contradictions** теперь учитывает:
+  - **/24 подсеть** — IP в разных подсетях без общих сущностей = разные сервера (не конфликт)
+  - **контекст сущности** — если в статьях упоминаются разные сущности (nginx vs postgres), одна подсеть с разными IP = не конфликт
+  - **переезд между подсетями** с той же сущностью (nginx был 10.x, стал 192.168.x) → **предупреждение** (важный случай миграции)
+- Добавлен список `_ENTITY_KEYWORDS` (nas, nginx, mikrotik, postgres, redis, memory-compiler, niksdesk, prod/dev и т.д.)
+- 4 новых теста на детектор противоречий
+
 ## v1.1.0 — 2026-04-18
 
 Скил memory-autopilot, консолидация систем памяти, оптимизация базы знаний.

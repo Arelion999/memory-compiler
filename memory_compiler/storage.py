@@ -289,13 +289,51 @@ def _extract_facts(text: str) -> dict[str, set[str]]:
     return facts
 
 
+def _ip_subnet(ip: str) -> str:
+    """Вернуть /24 подсеть IP: 192.168.25.55 → 192.168.25"""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return ".".join(parts[:3])
+    return ip
+
+
+# Известные сущности — слова рядом с IP/URL указывают на конкретный сервер/сервис.
+# Если в новой и старой статьях упоминается ОДНА И ТА ЖЕ сущность, и факты разные —
+# это реальное противоречие. Если сущности разные — это разные сервера, не конфликт.
+_ENTITY_KEYWORDS = [
+    'nas', 'synology', 'nginx', 'mikrotik', 'roteros', 'router',
+    'memory-compiler', 'niksdesk', 'postgres', 'redis', 'docker',
+    'хранилище', 'cfstorage', 'wireguard', 'vpn', 'ssh',
+    'prod', 'dev', 'stage', 'production', 'staging',
+]
+
+
+def _entities_in_text(text: str) -> set[str]:
+    """Извлечь известные сущности из текста (lowercase)."""
+    text_lower = text.lower()
+    found = set()
+    for kw in _ENTITY_KEYWORDS:
+        if kw in text_lower:
+            found.add(kw)
+    return found
+
+
 def detect_contradictions(new_content: str, project: str, exclude_path: Optional[str] = None) -> list[str]:
-    """Найти возможные противоречия с существующими статьями."""
+    """Найти возможные противоречия с существующими статьями.
+
+    Логика умного детектора:
+    1. IP в разных /24 подсетях — НЕ конфликт (разные сегменты сети = разные сервера)
+    2. Если в обеих статьях упоминаются разные сущности (NAS vs nginx) — НЕ конфликт
+    3. Конфликт только если: одна сущность ИЛИ одна подсеть И значения разные
+    4. Версии и порты сравниваются как раньше (точное совпадение типа)
+    """
     warnings = []
     new_facts = _extract_facts(new_content)
 
     if not new_facts:
         return []
+
+    new_entities = _entities_in_text(new_content)
 
     # Проверить против существующих статей проекта
     proj_path = project_dir(project)
@@ -307,21 +345,39 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
             continue
         text = md.read_text(encoding="utf-8")
         existing_facts = _extract_facts(text)
+        existing_entities = _entities_in_text(text)
+
         for label in new_facts:
             existing = existing_facts.get(label, set())
             new_vals = new_facts.get(label, set())
             if not new_vals or not existing:
                 continue
-            # Если и в старом и в новом есть факты одного типа, но разные
-            overlap = new_vals & existing
+
             diff = new_vals - existing
-            if diff and existing:
-                # Есть новые значения которых нет в старой статье — возможное обновление
-                for d in list(diff)[:2]:
-                    for e in list(existing)[:2]:
-                        if d != e:
-                            warnings.append(f"В {md.name} {label}: {e}, а в новой записи: {d}")
-                            break
+            if not diff:
+                continue
+
+            for d in list(diff)[:2]:
+                for e in list(existing)[:2]:
+                    if d == e:
+                        continue
+
+                    # Умная фильтрация: для IP смотрим на подсеть и сущность
+                    if label == "IP":
+                        same_subnet = _ip_subnet(d) == _ip_subnet(e)
+                        shared_entities = new_entities & existing_entities
+
+                        # Случай 1: разные подсети + нет общих сущностей → разные сервера
+                        if not same_subnet and not shared_entities:
+                            continue
+                        # Случай 2: одна подсеть + явно разные сущности → разные сервера в одной сети
+                        if same_subnet and new_entities and existing_entities and not shared_entities:
+                            continue
+                        # Иначе: одна подсеть ИЛИ общая сущность — возможный реальный конфликт
+                        # (миграция в другую сеть с тем же именем — ВАЖНОЕ предупреждение)
+
+                    warnings.append(f"В {md.name} {label}: {e}, а в новой записи: {d}")
+                    break
 
     return warnings[:5]  # макс 5 предупреждений
 
