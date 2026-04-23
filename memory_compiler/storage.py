@@ -1088,13 +1088,23 @@ def fetch_url(url: str, timeout: int = 15) -> tuple:
 # Body — человекочитаемое описание, автогенерируется при update.
 
 
+try:
+    import yaml as _yaml  # type: ignore
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse YAML frontmatter (limited subset).
-    Supports:
-      - top-level scalars: key: value
-      - nested dicts 1 level: key: \\n  sub: value
-      - lists of dicts: key: \\n  - sub1: a \\n    sub2: b
-      - lists of scalars: key: \\n  - item
+    """Parse YAML frontmatter.
+
+    Prefers PyYAML for correct parsing at any depth (nested lists inside nested dicts, etc).
+    Falls back to custom parser if PyYAML unavailable — supports limited subset:
+      - top-level scalars
+      - nested dicts (1 level deep)
+      - lists of dicts / lists of scalars
+      - lists nested inside nested dicts (tracks last_nested_key)
+
     Returns (data, body).
     """
     if not text.startswith("---\n"):
@@ -1105,10 +1115,23 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     fm_text = text[4:end]
     body = text[end + 5:]
 
+    # Primary path: PyYAML (correct at any depth)
+    if _HAS_YAML:
+        try:
+            data = _yaml.safe_load(fm_text) or {}
+            if not isinstance(data, dict):
+                data = {}
+            return data, body
+        except Exception:
+            # Malformed YAML — fall through to custom parser
+            pass
+
+    # Fallback custom parser
     data: dict = {}
     current_key: Optional[str] = None  # top-level key whose block we're filling
     block_type: Optional[str] = None  # "dict" | "list"
     current_list_item: Optional[dict] = None
+    last_nested_dict_key: Optional[str] = None  # for lists inside nested dicts
 
     for raw_line in fm_text.splitlines():
         if not raw_line.strip():
@@ -1126,19 +1149,28 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
                     data[key] = _parse_scalar(val)
                     current_key = None
                     block_type = None
+                    last_nested_dict_key = None
                 else:
                     current_key = key
                     block_type = None  # resolved on next line
                     data[key] = None
                     current_list_item = None
+                    last_nested_dict_key = None
         elif current_key is not None:
             # Inside block for current_key
             if stripped.startswith("- "):
-                # List item
+                content = stripped[2:].strip()
+                # List nested inside a nested dict (indent > 2 and we're in dict mode)
+                if indent > 2 and block_type == "dict" and last_nested_dict_key is not None:
+                    nested = data[current_key]
+                    if not isinstance(nested.get(last_nested_dict_key), list):
+                        nested[last_nested_dict_key] = []
+                    nested[last_nested_dict_key].append(_parse_scalar(content))
+                    continue
+                # Top-level list item under current_key
                 if block_type != "list":
                     data[current_key] = []
                     block_type = "list"
-                content = stripped[2:].strip()
                 if ":" in content and not content.startswith('"'):
                     k, _, v = content.partition(":")
                     item = {k.strip(): _parse_scalar(v.strip())}
@@ -1160,6 +1192,9 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
                         data[current_key] = {}
                         block_type = "dict"
                     data[current_key][k] = _parse_scalar(v)
+                    # Track key — it might start a nested list on next lines
+                    if not v:
+                        last_nested_dict_key = k
 
     return data, body
 
@@ -1271,7 +1306,12 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         }
         action = "created"
 
-    old_current = dict(data.get("current") or {})
+    # Defensive: if parse corrupted 'current' into non-dict (legacy parser bug),
+    # skip old_current rather than crash. Will be regenerated fresh.
+    raw_current = data.get("current")
+    old_current = dict(raw_current) if isinstance(raw_current, dict) else {}
+    if not isinstance(data.get("history"), list):
+        data["history"] = []
 
     # Check if facts actually changed
     if old_current and all(old_current.get(k) == v for k, v in new_facts.items()):
@@ -1370,9 +1410,13 @@ def list_tracking_articles(project: str) -> list[dict]:
             continue
         if data.get("type") != "tracking":
             continue
+        # Defensive: skip articles where 'current' is corrupted (not a dict)
+        current = data.get("current")
+        if current is not None and not isinstance(current, dict):
+            continue
         result.append({
             "entity": data.get("entity", md.stem.replace("tracking_", "")),
-            "current": data.get("current") or {},
+            "current": current or {},
             "path": str(md.relative_to(KNOWLEDGE_DIR)),
         })
     return result

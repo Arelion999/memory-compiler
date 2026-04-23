@@ -422,3 +422,83 @@ Body text"""
     assert len(data["history"]) == 1
     assert data["history"][0]["version"] == "0.9"
     assert body.strip() == "Body text"
+
+
+def test_parse_frontmatter_nested_list_in_nested_dict():
+    """Regression: list inside nested dict must NOT overwrite the nested dict."""
+    from memory_compiler.storage import _parse_frontmatter
+    text = """---
+type: tracking
+project: myproj
+entity: release
+current:
+  version: 0.29.1
+  deployed_to_prod: true
+  apk_files:
+    - myapp-0.29.1-arm64-v8a.apk
+    - myapp-0.29.1-armeabi-v7a.apk
+history: []
+---
+body text
+"""
+    data, body = _parse_frontmatter(text)
+    assert isinstance(data["current"], dict), "current must remain a dict"
+    assert data["current"]["version"] == "0.29.1"
+    assert data["current"]["deployed_to_prod"] is True
+    assert data["current"]["apk_files"] == [
+        "myapp-0.29.1-arm64-v8a.apk",
+        "myapp-0.29.1-armeabi-v7a.apk",
+    ]
+    assert data["history"] == []
+    assert body.strip() == "body text"
+
+
+def test_save_tracking_survives_corrupted_current(knowledge_dir):
+    """If existing tracking file has corrupted current (not a dict),
+    save_tracking_article must not crash — it regenerates fresh."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    # Simulate a file corrupted by legacy parser (current is a list of strings)
+    corrupted = """---
+type: tracking
+project: testproj
+entity: release
+current:
+  - file1.apk
+  - file2.apk
+history: []
+---
+"""
+    (proj / "tracking_release.md").write_text(corrupted, encoding="utf-8")
+    # With pyyaml current will be a list; this must not crash save.
+    result = save_tracking_article("testproj", "release", {"version": "1.0.0"})
+    assert result["action"] in ("created", "updated")
+    data = load_tracking("testproj", "release")
+    assert data["current"]["version"] == "1.0.0"
+
+
+def test_list_tracking_skips_corrupted_current(knowledge_dir):
+    """list_tracking_articles must skip entries where current is not a dict."""
+    from memory_compiler.storage import list_tracking_articles, save_tracking_article
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    # Create one valid tracking
+    save_tracking_article("testproj", "good", {"version": "1.0.0"})
+    # Create corrupted tracking file
+    corrupted = """---
+type: tracking
+project: testproj
+entity: bad
+current:
+  - just
+  - list
+history: []
+---
+"""
+    (proj / "tracking_bad.md").write_text(corrupted, encoding="utf-8")
+    # list_tracking_articles should return only good one
+    listed = list_tracking_articles("testproj")
+    entities = [t["entity"] for t in listed]
+    assert "good" in entities
+    assert "bad" not in entities

@@ -2,6 +2,26 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.1.2 — 2026-04-18
+
+Fix YAML frontmatter parser — nested lists inside nested dicts.
+
+### Fixed
+
+- **_parse_frontmatter** теперь использует PyYAML (yaml.safe_load) — корректный парсинг на любой глубине вложенности
+- Fallback custom-парсер улучшен: отслеживает `last_nested_dict_key`, корректно обрабатывает списки внутри вложенных словарей (раньше перезаписывал весь dict пустым list-ом)
+- **save_tracking_article / list_tracking_articles** защищены от корруптных tracking-файлов: если `current` не dict — пропускается / регенерируется вместо краха
+- Репродюсер бага: tracking-статья с `current.apk_files: [- file1, - file2]` раньше крашила `finish_task` с ошибкой `dictionary update sequence element #0 has length N; 2 is required`
+
+### Added
+
+- `pyyaml>=6.0` в requirements.txt
+- 3 новых теста: nested list in nested dict, corrupted current survival, list_tracking skips corrupted
+
+### Credit
+
+Bug report + root-cause analysis — @Arelion999 (внутренний фикс).
+
 ## v1.1.1 — 2026-04-18
 
 Умный детектор противоречий.
