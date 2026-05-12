@@ -1058,30 +1058,30 @@ async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextC
     if not _smod._embeddings:
         return [TextContent(type="text", text="# Consolidate\n\n*Embeddings ещё не построены. Запусти reindex().*")]
 
-    # Фильтр путей по проекту
-    paths = []
-    for p in _smod._embeddings.keys():
-        # Skip chunk-paths (содержат #)
-        if "#" in p:
+    # Аггрегация: для статей с ### секциями хранятся chunk-keys (path#chunk0).
+    # Берём MEAN-vector по всем chunks статьи как её представление.
+    # Параллельно фильтруем по проекту и сервисным файлам.
+    article_chunks: dict[str, list] = {}  # parent_path -> list of vectors
+    for k, v in _smod._embeddings.items():
+        parent = k.split("#", 1)[0]
+        if "/" not in parent:
             continue
-        if "/" not in p:
-            continue
-        proj = p.split("/", 1)[0]
-        # Service files
-        fname = p.split("/", 1)[1]
+        proj = parent.split("/", 1)[0]
+        fname = parent.split("/", 1)[1]
         if fname.startswith("_"):
             continue
         if project != "all" and proj != project:
             continue
-        paths.append(p)
+        article_chunks.setdefault(parent, []).append(v)
 
-    if len(paths) < 2:
+    if len(article_chunks) < 2:
         return [TextContent(type="text", text=(
             f"# Consolidate ({project})\n\n*Меньше 2 статей в выборке — нечего сравнивать.*"
         ))]
 
-    # Векторы
-    vectors = np.array([_smod._embeddings[p] for p in paths])
+    paths = list(article_chunks.keys())
+    # Mean-vector per article
+    vectors = np.array([np.mean(article_chunks[p], axis=0) for p in paths])
     # Нормализация для cosine = dot product
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1
