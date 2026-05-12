@@ -507,6 +507,16 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         git_init()
+        # One-time migration: merge case-variant project dirs (e.g. MyProj → myproj).
+        # Safe to call every startup — does nothing when no duplicates exist.
+        from memory_compiler.storage import merge_case_duplicates
+        merges = merge_case_duplicates()
+        if merges:
+            for m in merges:
+                print(f"Project case-merge: {m['from']} → {m['to']} ({m['files_moved']} files)")
+            # Re-discover after merge
+            import memory_compiler.config as _cfg
+            _cfg.PROJECTS = _cfg._discover_projects()
         load_article_meta()
         count = rebuild_index()
         print(f"Whoosh index built: {count} documents")

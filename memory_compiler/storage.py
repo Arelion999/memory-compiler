@@ -25,13 +25,95 @@ def today_log_path() -> Path:
     return p
 
 
+def normalize_project(project: str) -> str:
+    """Normalize project name to canonical form (Jira pattern: lowercase + trim).
+
+    All project lookups go through this. Eliminates MyProj vs myproj duplication.
+    Whitespace-only or empty names default to 'general'.
+    """
+    if not project:
+        return "general"
+    return project.strip().lower()
+
+
 def project_dir(project: str) -> Path:
+    """Get project directory, normalizing the name first.
+
+    If a directory with the original (non-normalized) case exists alongside a normalized one,
+    prefer the normalized version. Migration of legacy mixed-case dirs is handled by
+    a one-time merge_case_duplicates() call at startup.
+    """
     import memory_compiler.config as _cfg
-    p = KNOWLEDGE_DIR / project
+    norm = normalize_project(project)
+    p = KNOWLEDGE_DIR / norm
     p.mkdir(parents=True, exist_ok=True)
-    if project not in _cfg.PROJECTS:
+    if norm not in _cfg.PROJECTS:
         _cfg.PROJECTS = _discover_projects()
     return p
+
+
+def merge_case_duplicates() -> list[dict]:
+    """One-time migration: merge case-variant project dirs into normalized lowercase form.
+
+    Example: MyProj/ → myproj/, files moved, source dir removed.
+    Returns list of merges performed: [{from, to, files_moved}].
+    Safe to call multiple times — does nothing if no duplicates exist.
+    """
+    import shutil
+    if not KNOWLEDGE_DIR.exists():
+        return []
+    merges = []
+    # Group dirs by lowercase name
+    seen: dict[str, list[Path]] = {}
+    for p in KNOWLEDGE_DIR.iterdir():
+        if not p.is_dir() or p.name.startswith(".") or p.name == "daily":
+            continue
+        seen.setdefault(p.name.lower(), []).append(p)
+
+    for norm_name, paths in seen.items():
+        # Single dir with non-canonical name (e.g. UPPERPROJ, no upperproj) — rename
+        if len(paths) == 1:
+            single = paths[0]
+            if single.name == norm_name:
+                continue  # already canonical
+            target = KNOWLEDGE_DIR / norm_name
+            try:
+                single.rename(target)
+                merges.append({"from": single.name, "to": norm_name, "files_moved": -1})
+            except OSError:
+                pass
+            continue
+
+        # Multiple case variants — merge non-canonical into canonical (lowercase)
+        canonical = next((p for p in paths if p.name == norm_name), None)
+        if canonical is None:
+            # No existing lowercase — pick first variant and rename it
+            canonical = KNOWLEDGE_DIR / norm_name
+            paths[0].rename(canonical)
+            merges.append({"from": paths[0].name, "to": norm_name, "files_moved": -1})
+            paths = paths[1:]
+        for src in paths:
+            if src == canonical or not src.exists():
+                continue
+            moved = 0
+            for f in src.iterdir():
+                dst = canonical / f.name
+                if dst.exists():
+                    # Conflict: keep newer file
+                    if f.stat().st_mtime > dst.stat().st_mtime:
+                        dst.unlink()
+                        shutil.move(str(f), str(dst))
+                    else:
+                        f.unlink()
+                else:
+                    shutil.move(str(f), str(dst))
+                moved += 1
+            try:
+                src.rmdir()
+            except OSError:
+                pass
+            merges.append({"from": src.name, "to": canonical.name, "files_moved": moved})
+    return merges
 
 
 # ─── Article finding ─────────────────────────────────────────────────────────
@@ -300,11 +382,15 @@ def _ip_subnet(ip: str) -> str:
 # Известные сущности — слова рядом с IP/URL указывают на конкретный сервер/сервис.
 # Если в новой и старой статьях упоминается ОДНА И ТА ЖЕ сущность, и факты разные —
 # это реальное противоречие. Если сущности разные — это разные сервера, не конфликт.
+# Только generic infra-термины — никаких имён конкретных приложений/клиентов.
 _ENTITY_KEYWORDS = [
-    'nas', 'synology', 'nginx', 'mikrotik', 'roteros', 'router',
-    'memory-compiler', 'niksdesk', 'postgres', 'redis', 'docker',
-    'хранилище', 'cfstorage', 'wireguard', 'vpn', 'ssh',
+    'nas', 'synology', 'nginx', 'mikrotik', 'routeros', 'router',
+    'postgres', 'mysql', 'redis', 'docker', 'kubernetes', 'k8s',
+    'hypervisor', 'esxi', 'proxmox',
+    'wireguard', 'vpn', 'ssh', 'ftp', 'sftp',
+    'haproxy', 'traefik', 'apache',
     'prod', 'dev', 'stage', 'production', 'staging',
+    'cfstorage', 'хранилище',
 ]
 
 
@@ -1074,7 +1160,7 @@ def fetch_url(url: str, timeout: int = 15) -> tuple:
 # Хранит structured facts в YAML frontmatter:
 #   ---
 #   type: tracking
-#   project: niksdesk
+#   project: myapp
 #   entity: release
 #   current:
 #     version: "1.3.50"

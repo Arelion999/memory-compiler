@@ -414,6 +414,18 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="route_project",
+            description="Авто-определение лучшего проекта по тексту запроса. Используй когда пользователь не указал проект явно — вернёт top-3 кандидата с confidence score, без хардкода имён клиентов в скиле.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Запрос/описание задачи/упоминаемая сущность"},
+                    "top_k": {"type": "integer", "default": 3, "description": "Сколько кандидатов вернуть (default 3)"}
+                },
+                "required": ["text"]
+            }
+        ),
+        Tool(
             name="save_secret",
             description="Сохранить зашифрованную секретную статью (пароли, ключи, credentials).",
             inputSchema={
@@ -494,6 +506,16 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Count every tool call (not only predefined keys)
     stats[name] = stats.get(name, 0) + 1
+
+    # Normalize project name in arguments — single source of truth.
+    # Eliminates MyProj vs myproj splits regardless of how the caller spelled it.
+    # 'all' is a special filter sentinel — preserve as-is.
+    if "project" in arguments and isinstance(arguments["project"], str):
+        from memory_compiler.storage import normalize_project
+        proj = arguments["project"]
+        if proj and proj.lower() != "all":
+            arguments["project"] = normalize_project(proj)
+
     if name == "save_lesson":
         result = await handlers.save_lesson(**arguments)
     elif name == "get_context":
@@ -573,6 +595,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.save_tracking(**arguments)
     elif name == "get_current":
         result = await handlers.get_current(**arguments)
+    elif name == "route_project":
+        result = await handlers.route_project(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size

@@ -478,6 +478,37 @@ history: []
     assert data["current"]["version"] == "1.0.0"
 
 
+def test_normalize_project_basic():
+    from memory_compiler.storage import normalize_project
+    assert normalize_project("MyProj_X") == "myproj_x"
+    assert normalize_project("  Backend_Service  ") == "backend_service"
+    assert normalize_project("infra") == "infra"
+    assert normalize_project("") == "general"
+    assert normalize_project(None) == "general"
+
+
+def test_merge_case_duplicates(knowledge_dir):
+    """Migration: rename uppercase dir to lowercase if no lowercase exists,
+    or merge files into lowercase if both exist (Linux only — Windows FS is case-insensitive)."""
+    import platform, sys
+    if platform.system() == "Windows":
+        # Windows NTFS treats UPPER and lower as same dir — case-merge can't be tested locally.
+        # Skip; the migration code is exercised on Linux container in production.
+        return
+    from memory_compiler.storage import merge_case_duplicates
+    upper = knowledge_dir / "UPPERPROJ"
+    upper.mkdir(exist_ok=True)
+    (upper / "article.md").write_text("uppercase content", encoding="utf-8")
+
+    merges = merge_case_duplicates()
+    # Renamed/merged into lowercase
+    assert any(m["from"] == "UPPERPROJ" and m["to"] == "upperproj" for m in merges)
+    lower = knowledge_dir / "upperproj"
+    assert lower.exists()
+    assert (lower / "article.md").exists()
+    assert not upper.exists()
+
+
 def test_list_tracking_skips_corrupted_current(knowledge_dir):
     """list_tracking_articles must skip entries where current is not a dict."""
     from memory_compiler.storage import list_tracking_articles, save_tracking_article
