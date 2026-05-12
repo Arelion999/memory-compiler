@@ -2,6 +2,14 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.5.2 — 2026-05-12
+
+Hotfix.
+
+### Fixed
+
+- **`consolidate` пропускал длинные статьи** — embeddings для статей с `###`-секциями хранятся как chunk-ключи (`path#chunk0`). Старая фильтрация `if "#" in p: continue` отбрасывала такие статьи целиком — проекты типа `mireks_ut` (длинные статьи) показывали «меньше 2 статей в выборке». Теперь chunks агрегируются в mean-vector на parent-статью.
+
 ## v1.5.1 — 2026-05-12
 
 Hotfix.
