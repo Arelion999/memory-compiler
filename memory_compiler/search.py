@@ -432,22 +432,46 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         merged.append(info)
 
     merged.sort(key=lambda x: x["score"], reverse=True)
-    # Remove internal fields, filter low relevance
+    # Remove internal fields
     for m in merged:
         m.pop("bm25", None)
 
-    # Confidence gating (industry pattern: don't return noise on weak matches).
-    # Three filters:
-    #   1. Low-confidence query (mostly stopwords) → empty result
-    #   2. Top score below absolute floor (35) → empty result
-    #   3. Otherwise: relative threshold = max(top * 0.5, 32) — stricter than before
     if not merged:
         return []
     if is_low_confidence_query(query_str):
         return []
+
     top_score = merged[0]["score"]
-    if top_score < 35:
-        return []
-    threshold = max(top_score * 0.5, 32)
-    merged = [m for m in merged if m["score"] >= threshold]
-    return merged[:limit]
+    HIGH_CONF = 35  # confident retrieval — clean results
+    LOW_CONF = 18   # soft fallback — low confidence but worth showing
+
+    # High-confidence path: standard relative cutoff
+    if top_score >= HIGH_CONF:
+        threshold = max(top_score * 0.5, 32)
+        return [m for m in merged if m["score"] >= threshold][:limit]
+
+    # Soft-fallback path: top result is weak. Show up to 3 with `confidence: low`
+    # marker IF they share at least one query token with title/preview.
+    # Avoids returning silent emptiness when something semi-related exists.
+    if top_score >= LOW_CONF:
+        q_tokens = set(_content_tokens(query_str))
+        if not q_tokens:
+            return []
+        soft_results = []
+        for m in merged[:5]:
+            haystack = (m.get("title", "") + " " + m.get("preview", "")).lower()
+            haystack_tokens = set(re.findall(r"[\wа-яё-]{3,}", haystack))
+            # Either direct token overlap OR via stems (lemma collision)
+            from memory_compiler.config import _bilingual_stem
+            q_stems = {_bilingual_stem(t) for t in q_tokens}
+            h_stems = {_bilingual_stem(t) for t in haystack_tokens}
+            if q_tokens & haystack_tokens or q_stems & h_stems:
+                m_copy = dict(m)
+                m_copy["confidence"] = "low"
+                soft_results.append(m_copy)
+                if len(soft_results) >= min(3, limit):
+                    break
+        return soft_results
+
+    # Below LOW_CONF — truly nothing relevant
+    return []

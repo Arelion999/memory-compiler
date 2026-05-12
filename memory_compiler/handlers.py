@@ -1036,6 +1036,89 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
     return [TextContent(type="text", text="\n".join(parts))]
 
 
+async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextContent]:
+    """Найти семантически похожие статьи в проекте — кандидаты на слияние.
+
+    Использует кэшированные embeddings: попарное cosine similarity между всеми
+    статьями проекта. Возвращает группы где sim >= min_sim. НЕ мержит автоматически
+    (слияние требует ручной проверки — статьи могут быть тонко разные).
+
+    Параметры:
+      project — фильтр ("all" = все)
+      min_sim — порог similarity (0.78 — найти близкие но не дубли,
+                0.85+ — почти точные дубли)
+    """
+    from memory_compiler.search import _embeddings, _embed_texts
+    import numpy as np
+    import memory_compiler.config as _cfg
+
+    if not _embeddings:
+        return [TextContent(type="text", text="# Consolidate\n\n*Embeddings ещё не построены. Запусти reindex().*")]
+
+    # Фильтр путей по проекту
+    paths = []
+    for p in _embeddings.keys():
+        # Skip chunk-paths (содержат #)
+        if "#" in p:
+            continue
+        if "/" not in p:
+            continue
+        proj = p.split("/", 1)[0]
+        # Service files
+        fname = p.split("/", 1)[1]
+        if fname.startswith("_"):
+            continue
+        if project != "all" and proj != project:
+            continue
+        paths.append(p)
+
+    if len(paths) < 2:
+        return [TextContent(type="text", text=(
+            f"# Consolidate ({project})\n\n*Меньше 2 статей в выборке — нечего сравнивать.*"
+        ))]
+
+    # Векторы
+    vectors = np.array([_embeddings[p] for p in paths])
+    # Нормализация для cosine = dot product
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    vectors = vectors / norms
+
+    # Попарная similarity matrix
+    sim_matrix = vectors @ vectors.T
+    # Upper triangle (i < j)
+    pairs = []
+    n = len(paths)
+    for i in range(n):
+        for j in range(i + 1, n):
+            sim = float(sim_matrix[i, j])
+            if sim >= min_sim:
+                pairs.append({"a": paths[i], "b": paths[j], "sim": sim})
+
+    pairs.sort(key=lambda p: -p["sim"])
+
+    parts = [f"# Consolidate report ({project})\n"]
+    parts.append(f"*Порог similarity: {min_sim}, найдено пар: {len(pairs)}*\n")
+
+    if not pairs:
+        parts.append("\n*Нет дублей выше порога. База чистая.*")
+        return [TextContent(type="text", text="\n".join(parts))]
+
+    parts.append(f"\n## Топ кандидатов на слияние\n")
+    parts.append("Каждая строка = пара статей с близкой темой. Проверь вручную — мерж через `edit_article(append=true)` + `delete_article` для дубликата.\n")
+    for p in pairs[:25]:
+        title_a = _embed_texts.get(p["a"], p["a"]).split("\n")[0][:60]
+        title_b = _embed_texts.get(p["b"], p["b"]).split("\n")[0][:60]
+        parts.append(f"\n**sim {p['sim']:.2f}**")
+        parts.append(f"- A: `{p['a']}` — {title_a}")
+        parts.append(f"- B: `{p['b']}` — {title_b}")
+
+    if len(pairs) > 25:
+        parts.append(f"\n*…и ещё {len(pairs) - 25} пар.*")
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
 async def save_compact(project: str, summary: str) -> list[TextContent]:
     """Сохранить промежуточный summary при сжатии контекста (PostCompact event).
 
@@ -1289,27 +1372,49 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
     if not queries:
         return [TextContent(type="text", text=f"# Knowledge Gap Report\n\n*За {days} дн нет поисковых запросов{(' для проекта ' + project) if project != 'all' else ''}.*")]
 
-    # 1. Найти запросы с пустым / слабым результатом
+    # 1. Найти запросы с пустым / слабым результатом.
+    # Дополнительная фильтрация: даже если whoosh_search вернул пусто, проверяем
+    # semantic cosine — статья по этой теме могла появиться позже, после промаха.
+    # Такие «решённые» gaps не показываем — фокусируемся на актуальных.
+    from memory_compiler.search import semantic_search
+    SOLVED_THRESHOLD = 0.55  # cosine sim к существующим статьям
+
     empty_queries: list[dict] = []
     seen_queries: set[str] = set()  # дедупликация по тексту
     for item in queries:
         q = item["q"].strip()
-        # Пропустить low-confidence (это не gap, это просто continuation)
         if is_low_confidence_query(q):
             continue
-        # Дедуп — один и тот же запрос считаем один раз
         if q.lower() in seen_queries:
             continue
         seen_queries.add(q.lower())
-        # Реальный поиск
         try:
             results = whoosh_search(q, project=item["project"] if item["project"] != "all" else "all", limit=3)
         except Exception:
             continue
-        if not results:
-            empty_queries.append({**item, "top_score": 0})
-        elif results[0].get("score", 0) < 35:
-            empty_queries.append({**item, "top_score": results[0]["score"]})
+        # whoosh_search вернул что-то с приличным score — это НЕ gap
+        if results and results[0].get("score", 0) >= 35 and results[0].get("confidence") != "low":
+            continue
+        # Решён? Проверяем чисто semantic similarity к ближайшей статье
+        # (даже если её BM25-rank низкий — embedding может показать что тема покрыта)
+        try:
+            sem_hits = semantic_search(q, limit=1)
+            if sem_hits and sem_hits[0][1] >= SOLVED_THRESHOLD:
+                # Если фильтр по проекту — учитываем только в этом проекте
+                hit_path, sim = sem_hits[0]
+                if item["project"] != "all":
+                    if not hit_path.startswith(item["project"] + "/"):
+                        # Решение в другом проекте — не считается решённым здесь
+                        pass
+                    else:
+                        continue  # solved within target project
+                else:
+                    continue  # solved somewhere
+        except Exception:
+            pass
+        # Реальный gap
+        top_score = results[0].get("score", 0) if results else 0
+        empty_queries.append({**item, "top_score": top_score})
 
     # 2. Топ часто-запрашиваемые темы (по content tokens)
     from memory_compiler.search import _content_tokens
@@ -1339,9 +1444,9 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
     parts = [f"# Knowledge Gap Report ({days} дн{', проект: ' + project if project != 'all' else ''})\n"]
     parts.append(f"*Проанализировано {len(queries)} поисковых запросов.*\n")
 
-    parts.append(f"\n## 1. Запросы без релевантного ответа ({len(empty_queries)})\n")
+    parts.append(f"\n## 1. Реальные gaps — запросы без покрытия ({len(empty_queries)})\n")
     if empty_queries:
-        parts.append("Что ищут, но не находят (top_score < 35) — кандидаты на новые статьи:\n")
+        parts.append(f"Запросы где НИ BM25 (>=35), НИ semantic-similarity к существующим статьям (>=`{SOLVED_THRESHOLD}`) не нашли ничего. Это актуальные пробелы — кандидаты на новые статьи:\n")
         for item in empty_queries[:limit]:
             score_info = f"score: {item['top_score']:.0f}" if item['top_score'] > 0 else "пусто"
             parts.append(f"- «{item['q'][:80]}» ({item['tool']}, {item['project']}, {score_info})")
