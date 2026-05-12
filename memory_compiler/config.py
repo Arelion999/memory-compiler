@@ -40,12 +40,16 @@ VERSION = _read_version()
 
 
 def _discover_projects() -> list[str]:
-    """Collect project list from existing folders + initial."""
-    found = set(_INITIAL_PROJECTS)
+    """Collect project list from existing folders + initial.
+
+    Names are lowercased — case-variant duplicates collapse to one entry.
+    Use storage.merge_case_duplicates() at startup to migrate filesystem.
+    """
+    found = set(p.strip().lower() for p in _INITIAL_PROJECTS if p.strip())
     if KNOWLEDGE_DIR.exists():
         for d in KNOWLEDGE_DIR.iterdir():
             if d.is_dir() and d.name not in _HIDDEN_DIRS and not d.name.startswith("."):
-                found.add(d.name)
+                found.add(d.name.lower())
     return sorted(found)
 
 

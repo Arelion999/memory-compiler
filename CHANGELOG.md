@@ -2,6 +2,44 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.2.0 — 2026-05-12
+
+Качество поиска контекста — case-insensitive проекты, confidence-aware search, continuation intent, авто-роутинг проекта.
+
+### Проблема
+
+При возврате в проект терялся контекст:
+- Project с разным регистром (`MyProj` vs `myproj`) создавался как два разных проекта, контекст разделялся
+- Search на стоп-фразы вроде «давай продолжим» возвращал случайные статьи — top-совпадение по семантической близости общеязыковых слов
+- В новой сессии при continuation-фразе ассистент получал нерелевантную сессию из соседнего проекта вместо последней активности
+
+### Fixed
+
+- **Case-insensitive проекты (Jira-pattern)** — `normalize_project()` приводит имена к lowercase + trim. Применяется централизованно в диспетчере `tools.py` для всех MCP-tools.
+- **Auto-migration на startup** — `merge_case_duplicates()` в lifespan: переименовывает / сливает case-варианты директорий при первом запуске, идемпотентно.
+- **Confidence-aware search**:
+  - Стоп-список (RU+EN, ~80 слов) включая continuation-глаголы.
+  - `is_low_confidence_query()` — отбрасывает запросы с <2 content-токенами.
+  - Search возвращает пустой результат вместо мусора: top-score < 35 → empty; relative threshold ужесточён 0.4 → 0.5.
+- **Continuation intent в `start_task`** — если topic классифицирован как continuation: пропускает RAG, показывает топ-5 активного контекста + последнюю сессию проекта целиком (industry pattern: session restoration ≠ semantic search).
+
+### Added
+
+- `is_low_confidence_query()` + `_content_tokens()` + `_STOPWORDS` в search.py
+- `normalize_project()` + `merge_case_duplicates()` в storage.py
+- Новый tool `route_project(text)` — авто-определение проекта по тексту запроса (BM25 по именам и контенту, без хардкода в клиентах)
+- 8 новых тестов
+
+### Skill memory-autopilot
+
+- Удалена статичная таблица проектов — клиент сам выбирает через `route_project()` или `list_projects()`
+- Добавлено правило continuation: «продолжим по X» → start_task, НЕ search
+- Подчёркнут lowercase-стиль
+
+### Industry references
+
+Cohere rerank thresholds, LangChain similarity_score_threshold retriever, REIC/Adaptive RAG (CRAG), OpenAI Agents SDK Sessions, Jira project key normalization.
+
 ## v1.1.2 — 2026-04-18
 
 Fix YAML frontmatter parser — nested lists inside nested dicts.
@@ -32,7 +70,7 @@ Bug report + root-cause analysis — @Arelion999 (внутренний фикс)
   - **/24 подсеть** — IP в разных подсетях без общих сущностей = разные сервера (не конфликт)
   - **контекст сущности** — если в статьях упоминаются разные сущности (nginx vs postgres), одна подсеть с разными IP = не конфликт
   - **переезд между подсетями** с той же сущностью (nginx был 10.x, стал 192.168.x) → **предупреждение** (важный случай миграции)
-- Добавлен список `_ENTITY_KEYWORDS` (nas, nginx, mikrotik, postgres, redis, memory-compiler, project-1, prod/dev и т.д.)
+- Добавлен список `_ENTITY_KEYWORDS` (nas, nginx, mikrotik, postgres, redis, memory-compiler, prod/dev и т.д.)
 - 4 новых теста на детектор противоречий
 
 ## v1.1.0 — 2026-04-18
@@ -59,9 +97,9 @@ Bug report + root-cause analysis — @Arelion999 (внутренний фикс)
 
 ### Оптимизация базы знаний
 
-- **Перераспределение work** — 22 статьи из свалки `work` (88 шт) перемещены в профильные проекты: project-2, project-5, project-4, project-7, 1c
+- **Перераспределение work** — 22 статьи из свалки `work` (88 шт) перемещены в профильные клиентские проекты
 - **edit_article в скиле** — перед созданием новой статьи скил проверяет существование похожей, дописывает вместо дублирования
-- **git_capture** — первый запуск для project-1 (16 коммитов → 3 статьи) и memory-compiler (8 коммитов → 4 статьи)
+- **git_capture** — первый запуск для двух проектов (24 коммита → 7 статей)
 
 ### Удалено
 
@@ -148,7 +186,7 @@ Search quality + UX. 36 MCP tools, 49 тестов.
 - **Stats fix** — `tools.py` инкрементировал счётчик только для 5 legacy ключей. Теперь учитываются все 36 tools.
 - **PostToolUse hook matcher** — расширен с `(save_lesson|finish_task)` до полного списка: `save_decision`, `save_runbook`, `save_from_template`, `save_secret`, `ingest`, `import_obsidian`, `git_capture`, `edit_article`.
 - **CLAUDE.md правила** — добавлены таблицы выбора проекта (9 проектов) и tool (8 типов).
-- **Project deps** — настроены: `project-1/work` → `[infra, ...]`, `1c-clients` → `[work, infra]`.
+- **Project deps** — настроены примерные зависимости между проектами.
 - **3 runbook'a** в `memory-compiler`: деплой на NAS, рестарт контейнера, ручной backup.
 - **MIT License** добавлен.
 - **docs/claude-desktop-setup.md** — гайд настройки Desktop.

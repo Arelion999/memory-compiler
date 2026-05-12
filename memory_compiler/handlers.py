@@ -764,8 +764,13 @@ async def article_history(project: str, filename: str) -> list[TextContent]:
 
 
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
-    """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance."""
-    from memory_compiler.search import rerank
+    """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance.
+
+    Continuation intent: if topic is a generic "continue" phrase (mostly stopwords),
+    skip semantic search entirely — load active context + last session for the project.
+    Industry pattern: continuation is session restoration, not RAG.
+    """
+    from memory_compiler.search import rerank, is_low_confidence_query
     MIN_SCORE = 15  # min hybrid score
     MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
@@ -773,55 +778,73 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     # Topic words for relevance checks
     topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
 
-    # 1. Hybrid retrieval — берём top-20, ререйнкер выбирает top-3
-    candidates = whoosh_search(topic, project=project, limit=20)
-    candidates = [r for r in candidates if r.get("score", 0) >= MIN_SCORE]
-    reranked = rerank(topic, candidates, top_k=5)
-    # Final filter by rerank_score (reranker may say all are weak)
-    relevant = [r for r in reranked if r.get("rerank_score", 1.0) >= MIN_RERANK]
-    if not relevant and reranked:
-        relevant = reranked[:1]  # at least show top-1 even if low
+    # Continuation intent — skip RAG, go straight to session restoration
+    is_continuation = is_low_confidence_query(topic)
 
     parts.append(f"# Контекст для: {topic}\n")
-    if relevant:
-        track_access([f"{r['project']}/{r['file']}" for r in relevant])
-        parts.append(f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)\n")
-        for r in relevant[:3]:
-            preview = "\n".join(r["preview"].splitlines()[:4])
-            scores = f"hybrid: {r.get('score', 0)}"
-            if "rerank_score" in r:
-                scores += f", rerank: {r['rerank_score']:.2f}"
-            parts.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
+
+    if is_continuation:
+        parts.append("*Запрос распознан как «продолжить работу» — показываю недавнюю активность по проекту.*\n")
+        relevant = []
     else:
-        parts.append("*Похожих кейсов не найдено в базе.*\n")
+        # 1. Hybrid retrieval — берём top-20, ререйнкер выбирает top-3
+        candidates = whoosh_search(topic, project=project, limit=20)
+        candidates = [r for r in candidates if r.get("score", 0) >= MIN_SCORE]
+        reranked = rerank(topic, candidates, top_k=5)
+        # Final filter by rerank_score (reranker may say all are weak)
+        relevant = [r for r in reranked if r.get("rerank_score", 1.0) >= MIN_RERANK]
+        if not relevant and reranked:
+            relevant = reranked[:1]  # at least show top-1 even if low
+
+        if relevant:
+            track_access([f"{r['project']}/{r['file']}" for r in relevant])
+            parts.append(f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)\n")
+            for r in relevant[:3]:
+                preview = "\n".join(r["preview"].splitlines()[:4])
+                scores = f"hybrid: {r.get('score', 0)}"
+                if "rerank_score" in r:
+                    scores += f", rerank: {r['rerank_score']:.2f}"
+                parts.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
+        else:
+            parts.append("*Похожих кейсов не найдено в базе.*\n")
 
     # 2. Determine target project
     target_project = project if project != "all" else (relevant[0]["project"] if relevant else "general")
 
-    # 3. Active context — только записи где title пересекается с темой
+    # 3. Active context — на continuation показываем всё, иначе фильтр по topic_words
     ctx_path = KNOWLEDGE_DIR / target_project / "_active_context.md"
-    if ctx_path.exists() and topic_words:
+    if ctx_path.exists():
         ctx_text = ctx_path.read_text(encoding="utf-8")
-        relevant_lines = []
-        for line in ctx_text.splitlines():
-            if not line.startswith("- ["):
-                continue
-            line_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', line.lower()))
-            # match if at least one topic word appears
-            if topic_words & line_words:
-                relevant_lines.append(line)
-        if relevant_lines:
-            parts.append(f"\n## Связанные действия в {target_project}\n")
-            parts.extend(relevant_lines[:3])
-            parts.append("")
+        if is_continuation:
+            # Continuation intent → recent activity wholesale (top 5)
+            ctx_lines = [l for l in ctx_text.splitlines() if l.startswith("- [")]
+            if ctx_lines:
+                parts.append(f"\n## Недавняя активность в {target_project}\n")
+                parts.extend(ctx_lines[:5])
+                parts.append("")
+        elif topic_words:
+            relevant_lines = []
+            for line in ctx_text.splitlines():
+                if not line.startswith("- ["):
+                    continue
+                line_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', line.lower()))
+                if topic_words & line_words:
+                    relevant_lines.append(line)
+            if relevant_lines:
+                parts.append(f"\n## Связанные действия в {target_project}\n")
+                parts.extend(relevant_lines[:3])
+                parts.append("")
 
-    # 4. Session — только если содержит слова темы
+    # 4. Session — на continuation показываем всегда, иначе фильтр по словам
     session_path = KNOWLEDGE_DIR / target_project / "_session.md"
-    if session_path.exists() and topic_words:
+    if session_path.exists():
         session_text = session_path.read_text(encoding="utf-8")
-        session_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', session_text.lower()))
-        if topic_words & session_words:
-            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:400]}{'...' if len(session_text) > 400 else ''}\n")
+        if is_continuation:
+            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:600]}{'...' if len(session_text) > 600 else ''}\n")
+        elif topic_words:
+            session_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', session_text.lower()))
+            if topic_words & session_words:
+                parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:400]}{'...' if len(session_text) > 400 else ''}\n")
 
     # 5. Search in dependent projects (только релевантные)
     deps = read_project_deps(target_project)
@@ -887,6 +910,82 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(parts))]
 
 
+async def route_project(text: str, top_k: int = 3) -> list[TextContent]:
+    """Авто-определение лучших проектов под текст запроса.
+
+    Возвращает top_k проектов с confidence score [0..100].
+    Алгоритм:
+      1. Substring match — имя проекта целиком встречается в тексте (вес: 50)
+      2. Token overlap — слова из имени проекта встречаются в тексте (вес: 30)
+      3. Content match — поиск text в статьях каждого проекта, сумма top-3 hybrid scores (вес: 20)
+
+    Используется клиентом (скил/CLI) когда нет явного project и нужно подсказать роутинг.
+    Не делает хардкод имён клиентов — работает только с тем, что реально в KB.
+    """
+    import memory_compiler.config as _cfg
+    text_lower = (text or "").lower()
+    if not text_lower.strip():
+        return [TextContent(type="text", text="# Route project\n\n*Пустой запрос — нечего роутить.*")]
+
+    text_tokens = set(re.findall(r"[\wа-яё-]{3,}", text_lower))
+
+    # Получить актуальный список проектов
+    projects = [p for p in _cfg.PROJECTS if p not in ("daily",)]
+    scores: dict[str, float] = {}
+
+    for proj in projects:
+        proj_lower = proj.lower()
+        s = 0.0
+
+        # 1. Substring — имя проекта целиком
+        if proj_lower in text_lower:
+            s += 50
+
+        # 2. Token overlap — части имени проекта (по - и _)
+        proj_tokens = set(re.split(r"[-_]", proj_lower))
+        proj_tokens.discard("")
+        # filter out stop-tokens
+        proj_tokens -= {"ut", "buh", "site", "ru", "khv"}  # generic suffixes
+        overlap = proj_tokens & text_tokens
+        if proj_tokens:
+            s += 30 * (len(overlap) / len(proj_tokens))
+
+        # 3. Content match — есть ли в проекте статьи на тему текста
+        try:
+            results = whoosh_search(text, project=proj, limit=3)
+            content_score = sum(r.get("score", 0) for r in results) / 100  # normalize
+            s += min(20, content_score * 2)  # cap at 20
+        except Exception:
+            pass
+
+        if s > 0:
+            scores[proj] = round(s, 1)
+
+    if not scores:
+        proj_list = ", ".join(projects[:10]) + ("..." if len(projects) > 10 else "")
+        return [TextContent(type="text", text=(
+            f"# Route project\n\n"
+            f"*Не удалось подобрать проект для: «{text[:100]}»*\n\n"
+            f"Доступные проекты: {proj_list}\n\n"
+            f"Если уверен — передай `project=` явно. Иначе используй `general`."
+        ))]
+
+    sorted_scores = sorted(scores.items(), key=lambda kv: -kv[1])[:top_k]
+    parts = [f"# Route project\n\n*Запрос:* «{text[:120]}»\n"]
+    parts.append("\n## Топ кандидатов\n")
+    for proj, sc in sorted_scores:
+        confidence = "высокая" if sc >= 50 else ("средняя" if sc >= 25 else "низкая")
+        parts.append(f"- **{proj}** — score {sc} ({confidence})")
+
+    best, best_score = sorted_scores[0]
+    if best_score >= 25:
+        parts.append(f"\n→ Используй `project=\"{best}\"` для save/start_task.")
+    else:
+        parts.append("\n→ Все совпадения слабые — лучше уточнить у пользователя или использовать `general`.")
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
 async def finish_task(topic: str, content: str, project: str, tags: list = None,
                       session_summary: str = "", open_questions: str = "") -> list[TextContent]:
     """Завершить задачу: save_lesson + save_session. Один вызов вместо двух."""
@@ -924,7 +1023,8 @@ async def add_project(name: str) -> list[TextContent]:
 
 async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     import memory_compiler.config as _cfg
-    name = name.strip()
+    from memory_compiler.storage import normalize_project
+    name = normalize_project(name)
     proj_path = KNOWLEDGE_DIR / name
     if not proj_path.exists():
         return [TextContent(type="text", text=f"Проект '{name}' не найден.")]

@@ -2,7 +2,61 @@
 Hybrid search: Whoosh BM25F + sentence-transformers semantic search.
 """
 import pickle
+import re
 from typing import Optional
+
+
+# ─── Query confidence ────────────────────────────────────────────────────────
+# Industry pattern (LangChain/LlamaIndex/Cohere): don't run RAG on generic queries —
+# they return semantically-related noise. Detect and reject upstream.
+
+# Russian + English stopwords + continuation/meta verbs that should never trigger
+# semantic retrieval on their own.
+_STOPWORDS = frozenset([
+    # Russian basics
+    "и", "в", "на", "с", "к", "по", "из", "за", "для", "от", "до", "о", "об",
+    "у", "при", "под", "над", "что", "как", "это", "то", "тот", "та", "те",
+    "так", "не", "ни", "же", "ли", "бы", "если", "или", "а", "но", "да", "нет",
+    # Russian continuation / meta verbs (common false-trigger source)
+    "продолжим", "продолжаем", "продолжай", "продолжить", "давай", "давайте",
+    "дальше", "ещё", "еще", "помоги", "сделай", "пожалуйста", "теперь", "сейчас",
+    "вот", "там", "тут", "здесь", "хочу", "надо", "нужно", "можно",
+    "проект", "проекту", "работа", "работу", "работе", "работаем", "работать",
+    # English basics
+    "the", "a", "an", "is", "are", "was", "were", "of", "to", "in", "on", "at",
+    "for", "with", "by", "from", "and", "or", "but", "not", "this", "that",
+    "these", "those", "be", "been", "being", "have", "has", "had", "do", "does",
+    "did", "will", "would", "should", "could", "may", "might", "can",
+    # English continuation / meta
+    "continue", "resume", "let", "lets", "now", "please", "help", "make", "do",
+    "next", "more", "still", "also", "project",
+])
+
+
+def _content_tokens(query: str) -> list[str]:
+    """Extract content tokens (>= 3 chars, not stopwords) from a query."""
+    tokens = re.findall(r"\b[\w-]{3,}\b", query.lower())
+    return [t for t in tokens if t not in _STOPWORDS]
+
+
+def is_low_confidence_query(query: str, min_content_tokens: int = 2) -> bool:
+    """Detect generic / continuation / meta queries that won't yield meaningful RAG hits.
+
+    Examples flagged:
+      - "let's continue" / "давай продолжим"
+      - "what's next?"
+      - "help me"
+      - "ok"
+
+    Examples NOT flagged:
+      - "nginx ssl prod config"
+      - "POST /v1/orders endpoint"
+      - "deploy backend service"
+    """
+    if not query or not query.strip():
+        return True
+    content = _content_tokens(query)
+    return len(content) < min_content_tokens
 
 import numpy as np
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -365,9 +419,19 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     # Remove internal fields, filter low relevance
     for m in merged:
         m.pop("bm25", None)
-    # Keep only results with meaningful relevance
-    if merged:
-        top_score = merged[0]["score"]
-        threshold = max(top_score * 0.4, 25)  # min 25% absolute score
-        merged = [m for m in merged if m["score"] >= threshold]
+
+    # Confidence gating (industry pattern: don't return noise on weak matches).
+    # Three filters:
+    #   1. Low-confidence query (mostly stopwords) → empty result
+    #   2. Top score below absolute floor (35) → empty result
+    #   3. Otherwise: relative threshold = max(top * 0.5, 32) — stricter than before
+    if not merged:
+        return []
+    if is_low_confidence_query(query_str):
+        return []
+    top_score = merged[0]["score"]
+    if top_score < 35:
+        return []
+    threshold = max(top_score * 0.5, 32)
+    merged = [m for m in merged if m["score"] >= threshold]
     return merged[:limit]
