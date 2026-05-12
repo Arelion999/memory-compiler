@@ -471,20 +471,55 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
 # ─── Auto-tagging ────────────────────────────────────────────────────────────
 
 _AUTO_TAG_RULES = [
-    (r'\b(?:docker|dockerfile|docker-compose|контейнер)\b', 'docker'),
-    (r'\b(?:nginx|reverse.proxy|ssl|https)\b', 'nginx'),
-    (r'\b(?:1[cсС]|1С|bsl|epf|обработк[аи]|конфигурац)\b', '1c'),
-    (r'\b(?:postgres|postgresql|pgdump|pg_dump|миграци[яи]|alembic)\b', 'postgres'),
-    (r'\b(?:ssh|paramiko|scp|sftp)\b', 'ssh'),
-    (r'\b(?:react|typescript|tsx|vite|shadcn)\b', 'frontend'),
-    (r'\b(?:fastapi|uvicorn|pydantic|sqlalchemy)\b', 'backend'),
-    (r'\b(?:redis|celery|celery.beat)\b', 'redis'),
-    (r'\b(?:mikrotik|firewall|фаервол|маршрут)\b', 'mikrotik'),
-    (r'\b(?:nas|synology|dsm)\b', 'nas'),
-    (r'\b(?:git|commit|merge|branch|rebase)\b', 'git'),
-    (r'\b(?:mcp|claude|anthropic)\b', 'mcp'),
-    (r'\b(?:деплой|deploy|прод|production)\b', 'deploy'),
-    (r'\b(?:bug|баг|fix|исправлен|ошибк[аи])\b', 'bugfix'),
+    # Containerization
+    (r'\b(?:docker|dockerfile|docker-compose|контейнер|kubernetes|k8s|helm|podman)\b', 'docker'),
+    # Web servers / SSL
+    (r'\b(?:nginx|reverse.proxy|ssl|https|tls|certbot|letsencrypt|cert)\b', 'nginx'),
+    # 1C
+    (r'\b(?:1[cсС]|1С|bsl|epf|erf|обработк[аи]|конфигурац|расширен)\b', '1c'),
+    # Databases
+    (r'\b(?:postgres|postgresql|pgdump|pg_dump|миграци[яи]|alembic|psql|pgadmin)\b', 'postgres'),
+    (r'\b(?:mysql|mariadb|mysqldump)\b', 'mysql'),
+    (r'\b(?:mssql|sqlserver|sql.server|t-sql)\b', 'mssql'),
+    (r'\b(?:mongodb|mongo|nosql)\b', 'mongodb'),
+    # Network
+    (r'\b(?:ssh|paramiko|scp|sftp|sshfs|openssh)\b', 'ssh'),
+    (r'\b(?:vpn|wireguard|openvpn|ipsec|l2tp|туннел[ьие])\b', 'vpn'),
+    (r'\b(?:dns|hosts|named|bind|cloudflare|регистратор)\b', 'dns'),
+    # Frontend
+    (r'\b(?:react|typescript|tsx|vite|shadcn|tailwind|next\.?js|vue|svelte)\b', 'frontend'),
+    # Backend
+    (r'\b(?:fastapi|uvicorn|pydantic|sqlalchemy|django|flask|express|asyncio)\b', 'backend'),
+    # Caching / queue
+    (r'\b(?:redis|celery|celery.beat|rabbitmq|kafka|memcached)\b', 'redis'),
+    # Network equipment
+    (r'\b(?:mikrotik|routeros|cisco|firewall|фаервол|маршрут|роутер|router)\b', 'mikrotik'),
+    # Storage
+    (r'\b(?:nas|synology|dsm|truenas|raid|zfs|btrfs)\b', 'nas'),
+    # Git
+    (r'\b(?:git|commit|merge|branch|rebase|pull.request|github|gitlab)\b', 'git'),
+    # AI / MCP
+    (r'\b(?:mcp|claude|anthropic|openai|gpt|llm)\b', 'mcp'),
+    # Deployment
+    (r'\b(?:деплой|deploy|deploy[a-z]*|прод|production|stage|staging|релиз|release)\b', 'deploy'),
+    # Bugfix
+    (r'\b(?:bug|баг|fix|исправлен|ошибк[аи]|exception|traceback|crash|stacktrace)\b', 'bugfix'),
+    # Performance
+    (r'\b(?:performance|производительн|оптимизац|медленн|slow|latency|задержк|profiler)\b', 'performance'),
+    # Security
+    (r'\b(?:security|безопасн|уязвим|vulnerability|cve|exploit|injection|xss|csrf|auth|авториз|пароль|secret)\b', 'security'),
+    # Testing
+    (r'\b(?:test|тест|pytest|jest|mocha|unittest|integration.test|e2e|coverage)\b', 'testing'),
+    # API / integration
+    (r'\b(?:api|rest|graphql|endpoint|webhook|интеграц|integration|swagger|openapi)\b', 'api'),
+    # Monitoring / logging
+    (r'\b(?:monitoring|мониторинг|grafana|prometheus|zabbix|kibana|elastic|loki|sentry|логирован|logging)\b', 'monitoring'),
+    # Backup
+    (r'\b(?:backup|бэкап|бекап|восстановлен|восстанов|снапшот|snapshot|rsync|borg)\b', 'backup'),
+    # Refactoring
+    (r'\b(?:refactor|рефакторинг|cleanup|очист|архитектур|architecture)\b', 'refactor'),
+    # Documentation
+    (r'\b(?:docs?|документац|readme|changelog|wiki|инструкц)\b', 'docs'),
 ]
 
 

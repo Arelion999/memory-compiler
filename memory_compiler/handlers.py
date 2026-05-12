@@ -5,7 +5,7 @@ All async functions return list[TextContent].
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from typing import Optional
 
 import numpy as np
@@ -910,22 +910,60 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(parts))]
 
 
-async def route_project(text: str, top_k: int = 3) -> list[TextContent]:
-    """Авто-определение лучших проектов под текст запроса.
+def _project_from_cwd(cwd: str) -> Optional[str]:
+    """Сопоставить cwd с существующим проектом по имени директории.
 
-    Возвращает top_k проектов с confidence score [0..100].
-    Алгоритм:
-      1. Substring match — имя проекта целиком встречается в тексте (вес: 50)
-      2. Token overlap — слова из имени проекта встречаются в тексте (вес: 30)
-      3. Content match — поиск text в статьях каждого проекта, сумма top-3 hybrid scores (вес: 20)
-
-    Используется клиентом (скил/CLI) когда нет явного project и нужно подсказать роутинг.
-    Не делает хардкод имён клиентов — работает только с тем, что реально в KB.
+    Алгоритм: ищем по компонентам пути (от глубокого к мелкому) первое
+    совпадение с проектом из list_projects. Например:
+      cwd = /home/user/dev/myapp/backend → проверяем 'backend', потом 'myapp', потом 'dev'
+    Возвращает первое найденное имя проекта (lowercase) или None.
     """
     import memory_compiler.config as _cfg
+    if not cwd:
+        return None
+    # Нормализуем разделители (Windows / Unix)
+    parts = re.split(r"[/\\]", cwd.strip())
+    parts = [p for p in parts if p]  # strip empty
+    projects_set = set(p.lower() for p in _cfg.PROJECTS)
+    # Iterate from deepest dir towards root — last (most specific) match wins
+    for component in reversed(parts):
+        normalized = component.lower().strip()
+        if normalized in projects_set:
+            return normalized
+    return None
+
+
+async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[TextContent]:
+    """Авто-определение лучших проектов под текст запроса.
+
+    Параметры:
+      text  — описание задачи / упоминание сущности (опционально)
+      cwd   — текущий рабочий каталог клиента (опционально, СИЛЬНЫЙ сигнал)
+      top_k — сколько кандидатов вернуть
+
+    Алгоритм:
+      0. Если cwd содержит имя существующего проекта → возвращаем его с score 100 (override)
+      1. Substring match — имя проекта целиком в тексте (вес: 50)
+      2. Token overlap — слова из имени проекта в тексте (вес: 30)
+      3. Content match — поиск text в статьях проекта (вес: 20)
+
+    Используется клиентом (скил/CLI) когда нет явного project. Без хардкода клиентов.
+    """
+    import memory_compiler.config as _cfg
+
+    # 0. CWD override — сильнейший сигнал. Если рабочий каталог совпадает с проектом, берём его.
+    if cwd:
+        cwd_proj = _project_from_cwd(cwd)
+        if cwd_proj:
+            return [TextContent(type="text", text=(
+                f"# Route project\n\n"
+                f"*cwd:* `{cwd}` → проект `{cwd_proj}` (score: 100, источник: cwd-match)\n\n"
+                f"→ Используй `project=\"{cwd_proj}\"`."
+            ))]
+
     text_lower = (text or "").lower()
-    if not text_lower.strip():
-        return [TextContent(type="text", text="# Route project\n\n*Пустой запрос — нечего роутить.*")]
+    if not text_lower.strip() and not cwd:
+        return [TextContent(type="text", text="# Route project\n\n*Пустой запрос и нет cwd — нечего роутить.*")]
 
     text_tokens = set(re.findall(r"[\wа-яё-]{3,}", text_lower))
 
@@ -944,19 +982,19 @@ async def route_project(text: str, top_k: int = 3) -> list[TextContent]:
         # 2. Token overlap — части имени проекта (по - и _)
         proj_tokens = set(re.split(r"[-_]", proj_lower))
         proj_tokens.discard("")
-        # filter out stop-tokens
         proj_tokens -= {"ut", "buh", "site", "ru", "khv"}  # generic suffixes
         overlap = proj_tokens & text_tokens
         if proj_tokens:
             s += 30 * (len(overlap) / len(proj_tokens))
 
         # 3. Content match — есть ли в проекте статьи на тему текста
-        try:
-            results = whoosh_search(text, project=proj, limit=3)
-            content_score = sum(r.get("score", 0) for r in results) / 100  # normalize
-            s += min(20, content_score * 2)  # cap at 20
-        except Exception:
-            pass
+        if text_lower.strip():
+            try:
+                results = whoosh_search(text, project=proj, limit=3)
+                content_score = sum(r.get("score", 0) for r in results) / 100
+                s += min(20, content_score * 2)
+            except Exception:
+                pass
 
         if s > 0:
             scores[proj] = round(s, 1)
@@ -982,6 +1020,292 @@ async def route_project(text: str, top_k: int = 3) -> list[TextContent]:
         parts.append(f"\n→ Используй `project=\"{best}\"` для save/start_task.")
     else:
         parts.append("\n→ Все совпадения слабые — лучше уточнить у пользователя или использовать `general`.")
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
+async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextContent]:
+    """Найти статьи с устаревающими фактами: SSL-сертификаты, версии, expiration dates.
+
+    Сканирует статьи на:
+      1. Даты «valid until», «до», «expires», «истекает»
+      2. Tracking-статьи с полями `until`, `expires`, `valid_to`
+      3. Статьи старше 180 дней с тегами ssl/cert/password/license — кандидаты на ротацию
+
+    Параметры:
+      project   — фильтр по проекту ("all" = все)
+      warn_days — за сколько дней начинать предупреждать (default 30)
+    """
+    from memory_compiler.storage import _parse_frontmatter
+    import memory_compiler.config as _cfg
+
+    today = datetime.now().date()
+    warn_until = today + timedelta(days=warn_days)
+    stale_180 = today - timedelta(days=180)
+
+    # Regex для дат вида: "valid until 2026-10-11", "до 11.10.2026", "expires 2026/10/11"
+    DATE_PATTERNS = [
+        # ISO YYYY-MM-DD with prefix
+        re.compile(r'(?:valid\s*(?:until|to|till)|до|expires?|истекает|действителен\s*до|valid_to)\s*[:=]?\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})', re.IGNORECASE),
+        # DD.MM.YYYY with prefix
+        re.compile(r'(?:valid\s*(?:until|to|till)|до|expires?|истекает|действителен\s*до)\s*[:=]?\s*(\d{1,2})[./](\d{1,2})[./](\d{4})', re.IGNORECASE),
+    ]
+
+    # Список проектов для скана
+    projects = []
+    for p in _cfg.PROJECTS:
+        if p == "daily":
+            continue
+        if project != "all" and p != project:
+            continue
+        projects.append(p)
+
+    expired = []      # дата уже прошла
+    expiring = []     # < warn_days
+    stale_secrets = []  # старше 180 дней + тег ssl/cert/password/license
+
+    for proj in projects:
+        proj_path = project_dir(proj)
+        for md in proj_path.glob("*.md"):
+            if md.name.startswith("_"):
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            # Title (первая # строка)
+            title = md.stem
+            for line in text.splitlines()[:5]:
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
+
+            # 1. Поиск дат-expirations в тексте + tracking frontmatter
+            found_dates = []
+            for pat in DATE_PATTERNS:
+                for m in pat.finditer(text):
+                    g = m.groups()
+                    try:
+                        if pat is DATE_PATTERNS[0]:
+                            y, mo, d = int(g[0]), int(g[1]), int(g[2])
+                        else:
+                            d, mo, y = int(g[0]), int(g[1]), int(g[2])
+                        dt = date(y, mo, d)
+                        # Sanity: ignore years <2020 or >2050
+                        if 2020 <= y <= 2050:
+                            found_dates.append(dt)
+                    except (ValueError, TypeError):
+                        continue
+
+            # Tracking frontmatter: current.until / expires / valid_to
+            try:
+                fm, _ = _parse_frontmatter(text)
+                if isinstance(fm, dict):
+                    current = fm.get("current") if isinstance(fm.get("current"), dict) else {}
+                    for key in ("until", "expires", "valid_to", "valid_until"):
+                        v = current.get(key) or fm.get(key)
+                        if isinstance(v, str):
+                            for pat in DATE_PATTERNS:
+                                m = pat.search(f"until {v}")
+                                if m:
+                                    g = m.groups()
+                                    try:
+                                        if pat is DATE_PATTERNS[0]:
+                                            dt = date(int(g[0]), int(g[1]), int(g[2]))
+                                        else:
+                                            dt = date(int(g[2]), int(g[1]), int(g[0]))
+                                        found_dates.append(dt)
+                                    except Exception:
+                                        pass
+            except Exception:
+                pass
+
+            # Классифицировать
+            for dt in found_dates:
+                rel = f"{proj}/{md.name}"
+                days_left = (dt - today).days
+                entry = {"path": rel, "title": title, "date": dt.isoformat(), "days_left": days_left}
+                if days_left < 0:
+                    expired.append(entry)
+                elif days_left <= warn_days:
+                    expiring.append(entry)
+
+            # 2. Старые secret/ssl/cert/license статьи (по тегам)
+            for line in text.splitlines()[:15]:
+                if not line.lower().startswith("**теги:**") and not line.lower().startswith("теги:"):
+                    continue
+                tags_lower = line.lower()
+                if any(t in tags_lower for t in ("ssl", "cert", "password", "creds", "license", "лицензи", "секрет", "secret")):
+                    mtime = date.fromtimestamp(md.stat().st_mtime)
+                    if mtime < stale_180:
+                        days_old = (today - mtime).days
+                        stale_secrets.append({"path": f"{proj}/{md.name}", "title": title, "age_days": days_old})
+                    break
+
+    # Дедуп
+    def dedup(items, key="path"):
+        seen = set()
+        out = []
+        for it in items:
+            k = (it[key], it.get("date", ""))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(it)
+        return out
+
+    expired = sorted(dedup(expired), key=lambda x: x["days_left"])
+    expiring = sorted(dedup(expiring), key=lambda x: x["days_left"])
+    stale_secrets = sorted({s["path"]: s for s in stale_secrets}.values(),
+                            key=lambda x: -x["age_days"])
+
+    parts = [f"# Stale Facts Report{(' (' + project + ')') if project != 'all' else ''}\n"]
+
+    parts.append(f"\n## ⚠️ Уже истекло ({len(expired)})\n")
+    if expired:
+        for e in expired[:15]:
+            parts.append(f"- **{e['title']}** ({e['path']}) — {e['date']}, {-e['days_left']} дн назад")
+    else:
+        parts.append("*Нет истёкших фактов.*")
+
+    parts.append(f"\n## 🔔 Истекает в ближайшие {warn_days} дн ({len(expiring)})\n")
+    if expiring:
+        for e in expiring[:15]:
+            parts.append(f"- **{e['title']}** ({e['path']}) — {e['date']}, осталось {e['days_left']} дн")
+    else:
+        parts.append("*Ничего не истекает в ближайшее время. 👍*")
+
+    parts.append(f"\n## 🕰️ Секреты/сертификаты старше 180 дней — рассмотреть ротацию ({len(stale_secrets)})\n")
+    if stale_secrets:
+        for s in stale_secrets[:15]:
+            parts.append(f"- **{s['title']}** ({s['path']}) — {s['age_days']} дн без обновления")
+    else:
+        parts.append("*Все секреты свежие.*")
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
+async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> list[TextContent]:
+    """Knowledge gap report — выявить чего не хватает в базе знаний.
+
+    Анализирует audit-лог за последние N дней и находит:
+      1. Поиски с пустыми / слабыми результатами (top_score < 35) — что ищут, но не находят
+      2. Топ часто-запрашиваемые темы — нагрузка на каждый проект
+      3. Проекты-сироты — мало статей или мало внешних обращений
+
+    Параметры:
+      project  — фильтр по проекту ("all" = все)
+      days     — окно в днях (default 30)
+      limit    — top-N результатов в каждой секции
+    """
+    from memory_compiler.storage import read_audit_log
+    from memory_compiler.search import is_low_confidence_query
+    import memory_compiler.config as _cfg
+
+    # Берём с большим запасом — фильтруем по дате потом
+    entries = read_audit_log(limit=5000)
+    if not entries:
+        return [TextContent(type="text", text="# Knowledge Gap Report\n\n*Audit-лог пуст — нет данных для анализа.*")]
+
+    cutoff_dt = datetime.now() - timedelta(days=days)
+    cutoff_ts = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Извлечь поисковые запросы (search, start_task, ask, search_error, search_decisions, search_snippets)
+    SEARCH_TOOLS = {"search", "start_task", "ask", "search_error", "search_decisions", "search_snippets", "get_context"}
+    queries: list[dict] = []  # {q, tool, project, ts}
+    for e in entries:
+        if e.get("ts", "") < cutoff_ts:
+            continue
+        if e.get("tool") not in SEARCH_TOOLS:
+            continue
+        args = e.get("args", {})
+        # Разные tools называют запрос по-разному
+        q = args.get("query") or args.get("topic") or args.get("question") or args.get("error_text", "")
+        if not q or not isinstance(q, str):
+            continue
+        proj = args.get("project", "all")
+        if project != "all" and proj != "all" and proj != project:
+            continue
+        queries.append({"q": q, "tool": e["tool"], "project": proj, "ts": e["ts"]})
+
+    if not queries:
+        return [TextContent(type="text", text=f"# Knowledge Gap Report\n\n*За {days} дн нет поисковых запросов{(' для проекта ' + project) if project != 'all' else ''}.*")]
+
+    # 1. Найти запросы с пустым / слабым результатом
+    empty_queries: list[dict] = []
+    seen_queries: set[str] = set()  # дедупликация по тексту
+    for item in queries:
+        q = item["q"].strip()
+        # Пропустить low-confidence (это не gap, это просто continuation)
+        if is_low_confidence_query(q):
+            continue
+        # Дедуп — один и тот же запрос считаем один раз
+        if q.lower() in seen_queries:
+            continue
+        seen_queries.add(q.lower())
+        # Реальный поиск
+        try:
+            results = whoosh_search(q, project=item["project"] if item["project"] != "all" else "all", limit=3)
+        except Exception:
+            continue
+        if not results:
+            empty_queries.append({**item, "top_score": 0})
+        elif results[0].get("score", 0) < 35:
+            empty_queries.append({**item, "top_score": results[0]["score"]})
+
+    # 2. Топ часто-запрашиваемые темы (по content tokens)
+    from memory_compiler.search import _content_tokens
+    topic_freq: dict[str, int] = {}
+    for item in queries:
+        for tok in _content_tokens(item["q"]):
+            if len(tok) >= 4:  # фильтр коротких токенов
+                topic_freq[tok] = topic_freq.get(tok, 0) + 1
+    top_topics = sorted(topic_freq.items(), key=lambda kv: -kv[1])[:limit]
+
+    # 3. Проекты-сироты — проекты с малым числом статей
+    project_stats = []
+    for proj in _cfg.PROJECTS:
+        if proj == "daily":
+            continue
+        if project != "all" and proj != project:
+            continue
+        try:
+            count = len(list(project_dir(proj).glob("*.md")))
+        except Exception:
+            count = 0
+        project_stats.append((proj, count))
+    project_stats.sort(key=lambda kv: kv[1])
+    orphan_projects = [(p, c) for p, c in project_stats if c <= 2][:limit]
+
+    # Формируем отчёт
+    parts = [f"# Knowledge Gap Report ({days} дн{', проект: ' + project if project != 'all' else ''})\n"]
+    parts.append(f"*Проанализировано {len(queries)} поисковых запросов.*\n")
+
+    parts.append(f"\n## 1. Запросы без релевантного ответа ({len(empty_queries)})\n")
+    if empty_queries:
+        parts.append("Что ищут, но не находят (top_score < 35) — кандидаты на новые статьи:\n")
+        for item in empty_queries[:limit]:
+            score_info = f"score: {item['top_score']:.0f}" if item['top_score'] > 0 else "пусто"
+            parts.append(f"- «{item['q'][:80]}» ({item['tool']}, {item['project']}, {score_info})")
+    else:
+        parts.append("*Все запросы получали релевантные ответы. 👍*")
+
+    parts.append(f"\n## 2. Топ темы в запросах\n")
+    if top_topics:
+        parts.append("Слова которые чаще всего ищут — проверь покрытие в базе:\n")
+        for tok, freq in top_topics:
+            parts.append(f"- **{tok}** — {freq} раз")
+    else:
+        parts.append("*Недостаточно данных для топа.*")
+
+    parts.append(f"\n## 3. Проекты-сироты (≤2 статей)\n")
+    if orphan_projects:
+        parts.append("Малонаполненные проекты — возможно стоит влить в соседние:\n")
+        for proj, count in orphan_projects:
+            parts.append(f"- `{proj}` — {count} статей")
+    else:
+        parts.append("*Все проекты заполнены нормально.*")
 
     return [TextContent(type="text", text="\n".join(parts))]
 
