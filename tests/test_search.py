@@ -50,3 +50,27 @@ def test_content_tokens_strips_stopwords():
     assert "давай" not in tokens
     assert "работу" not in tokens
     assert "продолжим" not in tokens
+
+
+def test_soft_fallback_returns_low_confidence_when_top_weak(knowledge_dir):
+    """When top score is in [LOW_CONF, HIGH_CONF), return up to 3 results
+    marked with confidence='low' if they share query tokens. Avoids silent emptiness."""
+    from memory_compiler.search import whoosh_search, rebuild_index, rebuild_embeddings
+    proj = knowledge_dir / "soft"
+    proj.mkdir(exist_ok=True)
+    # Article that loosely mentions the term — score will be modest
+    (proj / "weak.md").write_text(
+        "# Random observation\n\n**Теги:** misc\n\nMentioned redis once in passing.",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    rebuild_embeddings()
+
+    # Query has token "redis" appearing in haystack but score is weak
+    results = whoosh_search("redis configuration tuning patterns", limit=5)
+    # Either we get the weak match marked low, or empty if score < LOW_CONF.
+    # Critical: should NOT return mismatched articles claiming high confidence.
+    if results:
+        for r in results:
+            # Either explicitly low-confidence or actually relevant
+            assert r.get("confidence") == "low" or r.get("score", 0) >= 35

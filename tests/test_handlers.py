@@ -30,6 +30,46 @@ def test_project_from_cwd_match(knowledge_dir):
     assert _project_from_cwd(None) is None
 
 
+def test_consolidate_finds_similar_articles(knowledge_dir):
+    """Two near-duplicate articles should appear in consolidate output."""
+    from memory_compiler.handlers import consolidate
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+    import memory_compiler.config as _cfg
+    import memory_compiler.search as _smod
+    proj = knowledge_dir / "myapp"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx_a.md").write_text(
+        "# Nginx reverse proxy setup\n\n**Теги:** nginx, ssl\n\n"
+        "Настроить nginx как обратный прокси. proxy_pass на backend, X-Forwarded-Proto.",
+        encoding="utf-8")
+    (proj / "nginx_b.md").write_text(
+        "# Configure nginx as reverse proxy\n\n**Теги:** nginx, ssl\n\n"
+        "Настройка nginx обратного прокси: proxy_pass, заголовок X-Forwarded-Proto.",
+        encoding="utf-8")
+    (proj / "unrelated.md").write_text(
+        "# Recipe for tea\n\nBoil water, add tea leaves.", encoding="utf-8")
+    # rebuild_embeddings iterates over search.py's PROJECTS — refresh it
+    _cfg.PROJECTS = _cfg._discover_projects()
+    _smod.PROJECTS = _cfg.PROJECTS
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(consolidate(project="myapp", min_sim=0.6))
+    text = result[0].text
+    # Both nginx articles should appear as a pair
+    assert "nginx_a.md" in text and "nginx_b.md" in text
+    # Tea article — not in similarity pairs (too different)
+    # (it might still appear if all 3 happen to cluster, but typically not)
+
+
+def test_consolidate_empty_when_no_embeddings(knowledge_dir):
+    from memory_compiler.handlers import consolidate
+    from memory_compiler.search import _embeddings
+    _embeddings.clear()
+    result = asyncio.run(consolidate(project="all"))
+    assert "Embeddings" in result[0].text or "нечего сравнивать" in result[0].text
+
+
 def test_save_compact_creates_and_fifo(knowledge_dir):
     from memory_compiler.handlers import save_compact
     proj = knowledge_dir / "myapp"

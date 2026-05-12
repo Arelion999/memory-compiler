@@ -414,6 +414,18 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="consolidate",
+            description="Найти семантически похожие статьи в проекте — кандидаты на слияние. Использует embeddings (cosine similarity). НЕ мержит автоматически — возвращает список пар для ручной проверки.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "default": "all"},
+                    "min_sim": {"type": "number", "default": 0.78, "description": "Порог similarity. 0.78 — близкие но разные; 0.85+ — почти точные дубли"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
             name="save_compact",
             description="Сохранить summary при сжатии контекста (PostCompact event). Записывает в _compact_history.md проекта (FIFO 5). Подтягивается в start_task — даёт continuous memory через compact-границы. Используй когда контекст сжимается и важно сохранить контекст работы.",
             inputSchema={
@@ -641,6 +653,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.stale_facts(**arguments)
     elif name == "save_compact":
         result = await handlers.save_compact(**arguments)
+    elif name == "consolidate":
+        result = await handlers.consolidate(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size
