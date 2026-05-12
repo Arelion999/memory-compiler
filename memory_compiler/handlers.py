@@ -1048,16 +1048,19 @@ async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextC
       min_sim — порог similarity (0.78 — найти близкие но не дубли,
                 0.85+ — почти точные дубли)
     """
-    from memory_compiler.search import _embeddings, _embed_texts
+    # ВАЖНО: импортируем модуль, не значения. _embeddings в search.py
+    # переприсваивается (rebuild/load), а импорт `from search import _embeddings`
+    # сохранил бы ссылку на устаревший dict.
+    import memory_compiler.search as _smod
     import numpy as np
     import memory_compiler.config as _cfg
 
-    if not _embeddings:
+    if not _smod._embeddings:
         return [TextContent(type="text", text="# Consolidate\n\n*Embeddings ещё не построены. Запусти reindex().*")]
 
     # Фильтр путей по проекту
     paths = []
-    for p in _embeddings.keys():
+    for p in _smod._embeddings.keys():
         # Skip chunk-paths (содержат #)
         if "#" in p:
             continue
@@ -1078,7 +1081,7 @@ async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextC
         ))]
 
     # Векторы
-    vectors = np.array([_embeddings[p] for p in paths])
+    vectors = np.array([_smod._embeddings[p] for p in paths])
     # Нормализация для cosine = dot product
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1
@@ -1107,8 +1110,8 @@ async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextC
     parts.append(f"\n## Топ кандидатов на слияние\n")
     parts.append("Каждая строка = пара статей с близкой темой. Проверь вручную — мерж через `edit_article(append=true)` + `delete_article` для дубликата.\n")
     for p in pairs[:25]:
-        title_a = _embed_texts.get(p["a"], p["a"]).split("\n")[0][:60]
-        title_b = _embed_texts.get(p["b"], p["b"]).split("\n")[0][:60]
+        title_a = _smod._embed_texts.get(p["a"], p["a"]).split("\n")[0][:60]
+        title_b = _smod._embed_texts.get(p["b"], p["b"]).split("\n")[0][:60]
         parts.append(f"\n**sim {p['sim']:.2f}**")
         parts.append(f"- A: `{p['a']}` — {title_a}")
         parts.append(f"- B: `{p['b']}` — {title_b}")
@@ -1395,21 +1398,14 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
         # whoosh_search вернул что-то с приличным score — это НЕ gap
         if results and results[0].get("score", 0) >= 35 and results[0].get("confidence") != "low":
             continue
-        # Решён? Проверяем чисто semantic similarity к ближайшей статье
-        # (даже если её BM25-rank низкий — embedding может показать что тема покрыта)
+        # Решён? Semantic similarity к ближайшей статье в КАКОМ-ЛИБО проекте.
+        # Даже если запрос делался с project=infra, статья может быть в memory-compiler —
+        # для целей gap-анализа это означает «знание есть, просто scope неверный»,
+        # что является retrieval-проблемой, а не gap.
         try:
             sem_hits = semantic_search(q, limit=1)
             if sem_hits and sem_hits[0][1] >= SOLVED_THRESHOLD:
-                # Если фильтр по проекту — учитываем только в этом проекте
-                hit_path, sim = sem_hits[0]
-                if item["project"] != "all":
-                    if not hit_path.startswith(item["project"] + "/"):
-                        # Решение в другом проекте — не считается решённым здесь
-                        pass
-                    else:
-                        continue  # solved within target project
-                else:
-                    continue  # solved somewhere
+                continue  # solved somewhere — not a real gap
         except Exception:
             pass
         # Реальный gap
