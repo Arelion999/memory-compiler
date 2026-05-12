@@ -2,6 +2,27 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.3.0 — 2026-05-12
+
+Качество retrieval, расширенное автотегирование, observability базы знаний.
+
+### Added
+
+- **`route_project(text, cwd)`** — cwd теперь СИЛЬНЫЙ override-сигнал. Если basename рабочего каталога совпадает с существующим проектом → возвращается сразу со score 100, без content-match.
+- **Reciprocal Rank Fusion (RRF)** в hybrid search — заменил weighted sum (0.4*BM25 + 0.6*semantic) на rank-based RRF (k=60). Не требует ручной калибровки весов, устойчив к выбросам шкал. Industry standard (Cormack et al., 2009; Microsoft, Vespa).
+- **`gap_report(project, days, limit)`** — анализ audit-лога: запросы с пустым/слабым результатом (top_score<35), топ-темы по частоте, проекты-сироты (≤2 статей).
+- **`stale_facts(project, warn_days)`** — поиск истекающих фактов: SSL-сертификаты по «valid until DATE», tracking-frontmatter (current.until/expires/valid_to), плюс секреты/cert/license старше 180 дней без обновления.
+- **+14 правил автотегирования** (было 14, стало 28): добавлены `mysql`, `mssql`, `mongodb`, `vpn`, `dns`, `performance`, `security`, `testing`, `api`, `monitoring`, `backup`, `refactor`, `docs`. Расширена поддержка русского языка во всех правилах.
+
+### Changed
+
+- **`route_project`** — параметры `text` и `cwd` теперь оба опциональные (раньше требовался text). Минимум один.
+- **Auto-tagging** активен в save_lesson (через который проходит и finish_task) — теги добавляются к переданным пользователем, а не заменяют их.
+
+### Tests
+
+- 71/71 pass (было 67). +4 новых теста: cwd-match, route_project с cwd, gap_report, stale_facts.
+
 ## v1.2.0 — 2026-05-12
 
 Качество поиска контекста — case-insensitive проекты, confidence-aware search, continuation intent, авто-роутинг проекта.

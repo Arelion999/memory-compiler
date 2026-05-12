@@ -414,15 +414,41 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="route_project",
-            description="Авто-определение лучшего проекта по тексту запроса. Используй когда пользователь не указал проект явно — вернёт top-3 кандидата с confidence score, без хардкода имён клиентов в скиле.",
+            name="stale_facts",
+            description="Stale fact watcher — найти статьи с устаревающими фактами: SSL-сертификаты с близким expiration, истёкшие, секреты/cert старше 180 дней. Источники: regex 'valid until / до DATE' в тексте, tracking-frontmatter (current.until/expires), теги ssl/cert/password/license + age статьи.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Запрос/описание задачи/упоминаемая сущность"},
+                    "project": {"type": "string", "default": "all"},
+                    "warn_days": {"type": "integer", "default": 30, "description": "За сколько дней предупреждать"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="gap_report",
+            description="Knowledge gap report — что чаще всего ищут но не находят. Анализирует audit-лог: запросы с пустым / слабым результатом (top_score<35), топ-темы по частоте, проекты-сироты (≤2 статей).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "default": "all", "description": "Фильтр по проекту, 'all' = все"},
+                    "days": {"type": "integer", "default": 30, "description": "Окно анализа в днях"},
+                    "limit": {"type": "integer", "default": 10, "description": "Top-N в каждой секции"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="route_project",
+            description="Авто-определение лучшего проекта. Передай cwd (рабочий каталог) И/ИЛИ text (описание задачи). Если cwd содержит имя существующего проекта — используется СРАЗУ (override). Иначе ранжирует через substring/token/content match.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Запрос/описание задачи/упоминаемая сущность (опционально)"},
+                    "cwd": {"type": "string", "description": "Текущий рабочий каталог клиента (СИЛЬНЫЙ сигнал; если содержит имя проекта — используется как override)"},
                     "top_k": {"type": "integer", "default": 3, "description": "Сколько кандидатов вернуть (default 3)"}
                 },
-                "required": ["text"]
+                "required": []
             }
         ),
         Tool(
@@ -597,6 +623,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.get_current(**arguments)
     elif name == "route_project":
         result = await handlers.route_project(**arguments)
+    elif name == "gap_report":
+        result = await handlers.gap_report(**arguments)
+    elif name == "stale_facts":
+        result = await handlers.stale_facts(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size

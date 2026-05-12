@@ -386,13 +386,27 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             continue
         sem_scores[path] = max(sim, 0)  # cosine sim, already 0-1
 
-    # 3. Merge: 0.4 * BM25 + 0.6 * semantic
+    # 3. Merge via Reciprocal Rank Fusion (RRF) — industry standard for hybrid retrieval.
+    # Formula: score(d) = Σ_q 1 / (k + rank_q(d))
+    # Не требует калибровки между BM25 и cosine, устойчив к выбросам.
+    # k=60 — общепринятая константа (Cormack et al., 2009).
+    RRF_K = 60
+
+    bm25_ranked = sorted(bm25_scores.keys(),
+                         key=lambda p: -bm25_scores[p]["bm25"])
+    sem_ranked = sorted(sem_scores.keys(),
+                        key=lambda p: -sem_scores[p])
+    bm25_rank = {p: i + 1 for i, p in enumerate(bm25_ranked)}
+    sem_rank = {p: i + 1 for i, p in enumerate(sem_ranked)}
+
     all_paths = set(bm25_scores.keys()) | set(sem_scores.keys())
     merged = []
     for path in all_paths:
-        bm25_norm = bm25_scores[path]["bm25"] if path in bm25_scores else 0
-        sem_norm = sem_scores.get(path, 0)
-        combined = 0.4 * bm25_norm + 0.6 * sem_norm
+        rrf = 0.0
+        if path in bm25_rank:
+            rrf += 1.0 / (RRF_K + bm25_rank[path])
+        if path in sem_rank:
+            rrf += 1.0 / (RRF_K + sem_rank[path])
 
         if path in bm25_scores:
             info = bm25_scores[path]
@@ -401,7 +415,6 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             proj = path.split("/", 1)[0] if "/" in path else "unknown"
             fname = path.split("/", 1)[-1] if "/" in path else path
             title = _embed_texts.get(path, fname)
-            # Read preview from file
             fpath = KNOWLEDGE_DIR / path
             preview = ""
             if fpath.exists():
@@ -411,8 +424,11 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
 
         # Apply temporal decay
         decay = decay_factor(path)
-        combined = combined * (0.7 + 0.3 * decay)  # 70% base + 30% recency bonus
-        info["score"] = round(combined * 100, 1)
+        # Scale RRF to a comparable 0..100 range:
+        # max possible RRF for two-source merge ≈ 2/(K+1) = 2/61 ≈ 0.0328
+        # multiply by 3000 → top result lands around 100, comfortable for thresholds.
+        rrf_scaled = rrf * 3000 * (0.7 + 0.3 * decay)
+        info["score"] = round(rrf_scaled, 1)
         merged.append(info)
 
     merged.sort(key=lambda x: x["score"], reverse=True)

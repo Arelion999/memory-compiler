@@ -1,4 +1,5 @@
 """Tests for handler functions."""
+import asyncio
 import pytest
 from memory_compiler.search import rebuild_index
 from memory_compiler.handlers import (
@@ -7,7 +8,78 @@ from memory_compiler.handlers import (
     save_runbook, get_runbook, save_decision,
     list_templates, save_from_template,
     set_project_deps, get_project_deps,
+    _project_from_cwd, route_project,
 )
+
+
+def test_project_from_cwd_match(knowledge_dir):
+    import memory_compiler.config as _cfg
+    (knowledge_dir / "myapp").mkdir(exist_ok=True)
+    (knowledge_dir / "backend").mkdir(exist_ok=True)
+    _cfg.PROJECTS = _cfg._discover_projects()
+    # Direct match
+    assert _project_from_cwd("/home/user/dev/myapp") == "myapp"
+    # Nested — most specific (deepest matching) wins
+    assert _project_from_cwd("/home/user/dev/myapp/src") == "myapp"
+    # Windows paths
+    assert _project_from_cwd(r"C:\Users\areli\dev\backend") == "backend"
+    # No match
+    assert _project_from_cwd("/random/unknown/path") is None
+    # Empty
+    assert _project_from_cwd("") is None
+    assert _project_from_cwd(None) is None
+
+
+def test_stale_facts_finds_expired_and_expiring(knowledge_dir):
+    from memory_compiler.handlers import stale_facts
+    import memory_compiler.config as _cfg
+    proj = knowledge_dir / "infra"
+    proj.mkdir(exist_ok=True)
+    # Expired cert
+    (proj / "cert_old.md").write_text(
+        "# Old SSL cert\n\n**Теги:** ssl\n\nSSL valid until 2024-01-01.", encoding="utf-8")
+    # Expiring soon (15 days from now)
+    from datetime import datetime, timedelta
+    future_date = (datetime.now() + timedelta(days=15)).strftime("%Y-%m-%d")
+    (proj / "cert_new.md").write_text(
+        f"# New SSL cert\n\n**Теги:** ssl\n\nSSL valid until {future_date}.", encoding="utf-8")
+    # Far future
+    far = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+    (proj / "cert_far.md").write_text(
+        f"# Far SSL cert\n\n**Теги:** ssl\n\nValid until {far}.", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    result = asyncio.run(stale_facts(project="infra", warn_days=30))
+    text = result[0].text
+    # Expired
+    assert "Old SSL cert" in text
+    assert "2024-01-01" in text
+    # Expiring (within 30 days)
+    assert "New SSL cert" in text
+    # Far future — should NOT appear in expiring list (but may show in headers)
+    assert "Far SSL cert" not in text
+
+
+def test_gap_report_empty_audit(knowledge_dir):
+    from memory_compiler.handlers import gap_report
+    result = asyncio.run(gap_report(project="all", days=30))
+    text = result[0].text
+    # Should not crash even with no audit data
+    assert "Knowledge Gap Report" in text or "Audit-лог пуст" in text
+
+
+def test_route_project_cwd_override(knowledge_dir):
+    import memory_compiler.config as _cfg
+    (knowledge_dir / "myapp").mkdir(exist_ok=True)
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    result = asyncio.run(route_project(text="random query about other things",
+                                        cwd="/home/user/dev/myapp"))
+    text = result[0].text
+    # cwd override even when text is unrelated
+    assert "myapp" in text
+    assert "score: 100" in text
+    assert "cwd-match" in text
 
 
 @pytest.fixture(autouse=True)
