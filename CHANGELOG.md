@@ -2,6 +2,25 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.4.0 — 2026-05-12
+
+Continuous memory через compact-границы, морфология поиска для русского, e2e-тесты.
+
+### Added
+
+- **`save_compact(project, summary)`** — новый MCP-tool для сохранения промежуточного резюме при сжатии контекста. Запись в `<project>/_compact_history.md` (FIFO 5). Подтягивается автоматически в `start_task` при continuation-запросах — даёт **continuous memory** через compact-границы.
+- **PostCompact hook улучшен** — вместо «не забудь finish_task» теперь предписывает: определить проект → `save_compact(summary)` → finish_task если задача завершена. Минимизирует потерю контекста при сжатии.
+- **Bilingual Snowball stemmer** в Whoosh-анализаторе — русские и английские словоформы редуцируются к базовым основам. `настройка/настройки/настроить → настр`, `deploys/deploying/deploy → deploy`. Boost recall для inflected запросов без false-positives. Нет внешних зависимостей (Whoosh уже включает Snowball).
+- **End-to-end интеграционные тесты** — новый `tests/test_e2e.py`: full task lifecycle, secret roundtrip, case-insensitive project, continuation intent, route_project с cwd, compact history persists, tracking nested list. Защита от регрессий типа v1.1.2 YAML и v1.2.0 case-merge.
+
+### Changed
+
+- **Анализатор Whoosh:** `RegexTokenizer | LowercaseFilter` → `RegexTokenizer | LowercaseFilter | _BilingualStemFilter`. Старые индексы — нужен `reindex()` после деплоя для использования стемминга.
+
+### Tests
+
+- 82/82 pass (было 71). +11: 4 для config (стеммер), 7 e2e.
+
 ## v1.3.0 — 2026-05-12
 
 Качество retrieval, расширенное автотегирование, observability базы знаний.

@@ -846,6 +846,18 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
             if topic_words & session_words:
                 parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:400]}{'...' if len(session_text) > 400 else ''}\n")
 
+    # 4b. Compact history — резюме сжатий контекста (новое в v1.4.0)
+    # Continuous memory через compact-границы. Показываем только при continuation
+    # или явных topic_words (не засорять обычный поиск).
+    compact_path = KNOWLEDGE_DIR / target_project / "_compact_history.md"
+    if compact_path.exists() and (is_continuation or topic_words):
+        compact_text = compact_path.read_text(encoding="utf-8")
+        # Парсим первый ## блок (самый свежий)
+        blocks = re.split(r"^## ", compact_text, flags=re.MULTILINE)
+        recent_block = blocks[1].strip() if len(blocks) > 1 else ""
+        if recent_block:
+            parts.append(f"\n## Compact history ({target_project}) — последний сжатый контекст\n## {recent_block[:600]}{'...' if len(recent_block) > 600 else ''}\n")
+
     # 5. Search in dependent projects (только релевантные)
     deps = read_project_deps(target_project)
     if deps:
@@ -1022,6 +1034,51 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
         parts.append("\n→ Все совпадения слабые — лучше уточнить у пользователя или использовать `general`.")
 
     return [TextContent(type="text", text="\n".join(parts))]
+
+
+async def save_compact(project: str, summary: str) -> list[TextContent]:
+    """Сохранить промежуточный summary при сжатии контекста (PostCompact event).
+
+    Используется когда контекст разговора был сжат и Claude хочет сохранить
+    краткое описание ТОГО ЧТО БЫЛО до сжатия (чтобы не потерялось).
+
+    Файл: <project>/_compact_history.md — FIFO из 5 последних event'ов.
+    Подтягивается в start_task — даёт continuous memory через compact-границы.
+    """
+    proj_dir = project_dir(project)
+    cpath = proj_dir / "_compact_history.md"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    new_block = f"## {now}\n{summary.strip()}\n"
+
+    existing_blocks: list[str] = []
+    if cpath.exists():
+        text = cpath.read_text(encoding="utf-8")
+        # Парсим существующие ## блоки
+        current_block = []
+        for line in text.splitlines():
+            if line.startswith("## ") and current_block:
+                existing_blocks.append("\n".join(current_block))
+                current_block = [line]
+            elif line.startswith("## "):
+                current_block = [line]
+            elif current_block:
+                current_block.append(line)
+        if current_block:
+            existing_blocks.append("\n".join(current_block))
+
+    # FIFO: новый сверху, всего 5
+    all_blocks = [new_block] + existing_blocks
+    all_blocks = all_blocks[:5]
+
+    header = f"# Compact history: {project}\n\nКраткие резюме до сжатия контекста (FIFO 5):\n"
+    cpath.write_text(header + "\n" + "\n".join(all_blocks) + "\n", encoding="utf-8")
+
+    return [TextContent(type="text", text=(
+        f"💾 Compact summary сохранён: {project}/_compact_history.md\n"
+        f"({len(all_blocks)} последних резюме хранится).\n"
+        f"При следующем start_task этого проекта будет подтянут."
+    ))]
 
 
 async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextContent]:

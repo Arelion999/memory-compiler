@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 from whoosh.fields import Schema, TEXT, ID, STORED
-from whoosh.analysis import RegexTokenizer, LowercaseFilter
+from whoosh.analysis import RegexTokenizer, LowercaseFilter, StemFilter
+from whoosh.lang.snowball import russian as ru_snowball, english as en_snowball
 
 # ─── Paths & constants ───────────────────────────────────────────────────────
 
@@ -58,7 +59,33 @@ PROJECTS = _discover_projects()
 
 # ─── Whoosh schema ───────────────────────────────────────────────────────────
 
-analyzer = RegexTokenizer(r'[\w]{2,}') | LowercaseFilter()
+def _bilingual_stem(word: str) -> str:
+    """Stem token using Russian or English Snowball based on character set.
+
+    Snowball stemmers reduce inflected forms to a common base — boosts recall
+    for query/document vocabulary mismatch (настройка ↔ настроить, deploys ↔ deploy).
+    """
+    if not word:
+        return word
+    # Detect Cyrillic — apply Russian Snowball
+    has_cyrillic = any('Ѐ' <= ch <= 'ӿ' for ch in word)
+    try:
+        if has_cyrillic:
+            return ru_snowball.RussianStemmer().stem(word)
+        return en_snowball.EnglishStemmer().stem(word)
+    except Exception:
+        return word
+
+
+class _BilingualStemFilter(StemFilter):
+    """Custom StemFilter routing each token to ru/en stemmer by script."""
+    def __init__(self):
+        super().__init__(stemfn=_bilingual_stem, ignore=None, cachesize=50000)
+
+
+# Bilingual analyzer: tokenize → lowercase → stem (RU + EN).
+# Whoosh Snowball stemmers reduce inflected forms — cross-form recall for free.
+analyzer = RegexTokenizer(r'[\w]{2,}') | LowercaseFilter() | _BilingualStemFilter()
 SCHEMA = Schema(
     path=ID(stored=True, unique=True),
     project=ID(stored=True),

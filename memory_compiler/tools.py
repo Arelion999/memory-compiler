@@ -414,6 +414,18 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="save_compact",
+            description="Сохранить summary при сжатии контекста (PostCompact event). Записывает в _compact_history.md проекта (FIFO 5). Подтягивается в start_task — даёт continuous memory через compact-границы. Используй когда контекст сжимается и важно сохранить контекст работы.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "summary": {"type": "string", "description": "Краткое резюме того что было до сжатия (что делали, ключевые решения, открытые вопросы)"}
+                },
+                "required": ["project", "summary"]
+            }
+        ),
+        Tool(
             name="stale_facts",
             description="Stale fact watcher — найти статьи с устаревающими фактами: SSL-сертификаты с близким expiration, истёкшие, секреты/cert старше 180 дней. Источники: regex 'valid until / до DATE' в тексте, tracking-frontmatter (current.until/expires), теги ssl/cert/password/license + age статьи.",
             inputSchema={
@@ -627,6 +639,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.gap_report(**arguments)
     elif name == "stale_facts":
         result = await handlers.stale_facts(**arguments)
+    elif name == "save_compact":
+        result = await handlers.save_compact(**arguments)
     else:
         result = [TextContent(type="text", text=f"\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {name}")]
     # Track response size

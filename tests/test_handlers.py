@@ -30,6 +30,26 @@ def test_project_from_cwd_match(knowledge_dir):
     assert _project_from_cwd(None) is None
 
 
+def test_save_compact_creates_and_fifo(knowledge_dir):
+    from memory_compiler.handlers import save_compact
+    proj = knowledge_dir / "myapp"
+    proj.mkdir(exist_ok=True)
+    # Save 7 — should keep only 5 (FIFO)
+    for i in range(7):
+        asyncio.run(save_compact(project="myapp", summary=f"Summary number {i}"))
+    cpath = proj / "_compact_history.md"
+    assert cpath.exists()
+    text = cpath.read_text(encoding="utf-8")
+    # Newest (Summary number 6) at top
+    assert "Summary number 6" in text
+    # FIFO: oldest (Summary number 0, 1) dropped
+    assert "Summary number 0" not in text
+    assert "Summary number 1" not in text
+    # Recent ones kept
+    assert "Summary number 2" in text
+    assert "Summary number 5" in text
+
+
 def test_stale_facts_finds_expired_and_expiring(knowledge_dir):
     from memory_compiler.handlers import stale_facts
     import memory_compiler.config as _cfg
