@@ -2,6 +2,15 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.5.1 — 2026-05-12
+
+Hotfix.
+
+### Fixed
+
+- **`consolidate`** обращался к копии ссылки `_embeddings` сделанной во время import — после `load_embeddings()`/`rebuild_embeddings` ссылка устаревала, инструмент рапортовал «embeddings ещё не построены» при наличии данных. Теперь читает `_smod._embeddings` напрямую.
+- **`gap_report` cosine-фильтр** — раньше для `project="all"` пропускал «решено где-то ещё» только если решение было в проекте конкретного запроса. Теперь любой match cosine >= 0.55 в любом проекте считается «знание есть, retrieval не находит» и не показывается как gap. Чище отделяет реальные пробелы от проблем поиска.
+
 ## v1.5.0 — 2026-05-12
 
 Качество retrieval feedback loop — soft-fallback вместо тишины, актуальные gaps, дедупликация.
