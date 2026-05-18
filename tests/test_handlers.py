@@ -490,6 +490,65 @@ def test_lint_flags_dead_cross_reference(knowledge_dir):
     assert "dead" in text.lower() or "битая" in text.lower() or "broken" in text.lower()
 
 
+def test_lint_check2_skips_service_files(knowledge_dir):
+    """Service files (_active_context.md, _session.md, _log.md, tracking_*.md)
+    intentionally have no yaml header — they must NOT be flagged for missing
+    metadata."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    # Service files without metadata
+    (proj / "_active_context.md").write_text("# Active context\n\nrecent stuff", encoding="utf-8")
+    (proj / "_log.md").write_text("# Log\n\n- [...] event", encoding="utf-8")
+    (proj / "_reflections.md").write_text("# Reflections\n\n- atomic fact", encoding="utf-8")
+    (proj / "tracking_release.md").write_text("---\ncurrent:\n  version: 1.0\n---\n# tracking", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    # None of the service files should be flagged for missing metadata
+    metadata_lines = [l for l in text.splitlines() if "нет метаданных" in l]
+    flagged = " ".join(metadata_lines)
+    assert "_active_context.md" not in flagged
+    assert "_log.md" not in flagged
+    assert "_reflections.md" not in flagged
+    assert "tracking_release.md" not in flagged
+
+
+def test_lint_fix_removes_dead_refs(knowledge_dir):
+    """With fix=true, lint removes dead markdown-link references — keeps the
+    link text but drops the broken target."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "linker.md").write_text(
+        "# Linker\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### body\n"
+        "Existing: [target](./target.md) and ghost [missing](./ghost.md) and more.",
+        encoding="utf-8",
+    )
+    (proj / "target.md").write_text(
+        "# Target\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\nbody.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+    asyncio.run(lint_handler(project="testproj", fix=True))
+    new_text = (proj / "linker.md").read_text(encoding="utf-8")
+    # Dead link removed (text kept), existing link preserved
+    assert "[target](./target.md)" in new_text  # alive — preserved
+    assert "[missing](./ghost.md)" not in new_text  # dead — removed
+    assert "missing" in new_text  # link text preserved
+
+
 def test_lint_orphan_ignores_substring_false_positive(knowledge_dir):
     """An article mentioned only as raw text (not via markdown link) should still
     be flagged orphan if no real link points to it. Current substring-match
