@@ -320,6 +320,41 @@ def test_search_works_without_reranker(knowledge_dir, monkeypatch):
 # ─── lint orphans and dead cross-refs (Karpathy LLM Wiki pattern) ──────────
 
 
+# ─── Schema.md per-project (Karpathy: project conventions as artifact) ─────
+
+
+def test_init_schema_creates_file(knowledge_dir):
+    """init_schema must create <project>/_schema.md with template sections."""
+    import asyncio
+    from memory_compiler.handlers import init_schema
+    result = asyncio.run(init_schema(project="testproj"))
+    text = result[0].text
+    assert "testproj" in text
+    schema_path = knowledge_dir / "testproj" / "_schema.md"
+    assert schema_path.exists()
+    schema = schema_path.read_text(encoding="utf-8")
+    # Required template sections
+    assert "## Сущности" in schema or "## Entities" in schema
+    assert "## Связи" in schema or "## Relations" in schema
+    assert "## Stylistic" in schema or "## Стиль" in schema
+
+
+def test_init_schema_idempotent(knowledge_dir):
+    """init_schema on a project that already has _schema.md must NOT overwrite it."""
+    import asyncio
+    from memory_compiler.handlers import init_schema
+    proj = knowledge_dir / "testproj"
+    custom = "# My custom schema\n\nDo not overwrite!\n"
+    (proj / "_schema.md").write_text(custom, encoding="utf-8")
+    result = asyncio.run(init_schema(project="testproj"))
+    # File preserved
+    actual = (proj / "_schema.md").read_text(encoding="utf-8")
+    assert actual == custom, "init_schema must not overwrite existing schema"
+    # User notified
+    text = result[0].text
+    assert "already" in text.lower() or "уже" in text.lower() or "exist" in text.lower()
+
+
 # ─── Cascade-mark on edit_article (Karpathy: stale-reference flagging) ─────
 
 

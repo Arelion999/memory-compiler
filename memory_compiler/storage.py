@@ -788,6 +788,109 @@ def audit_log(tool_name: str, args: dict, result_size: int):
         pass
 
 
+# ─── Reflective Memory (RMM-lite: prospective reflection on finish_task) ──────
+#
+# Rule-based atomic-fact extraction from session content. Inspired by Reflective
+# Memory Management (arXiv 2503.08026): break a session into reusable units so
+# future retrieval can hit specific facts rather than buried prose paragraphs.
+# No external LLM — pattern matching on bullets, numbered lists, and Russian/English
+# action verbs.
+
+_REFLECTION_ACTION_VERBS = re.compile(
+    r'\b(?:настроил|настроили|исправил|исправили|добавил|добавили|обновил|обновили|'
+    r'реализовал|реализовали|решил|решили|подключил|подключили|удалил|удалили|'
+    r'configured|fixed|added|updated|implemented|resolved|connected|removed|'
+    r'deployed|зад\w*плои\w*|сд\w*елал\w*)\b',
+    re.IGNORECASE,
+)
+
+
+def extract_reflections(content: str) -> list[str]:
+    """Extract atomic facts from session content via rules.
+
+    Sources:
+      1. Top-level bullet items: '- X' or '* X'
+      2. Numbered list items: '1. X'
+      3. Sentences containing action verbs (настроил/fixed/added/...) — full sentence
+    Returns deduplicated list of fact strings (trimmed).
+    """
+    if not content or not content.strip():
+        return []
+
+    facts: list[str] = []
+
+    # 1+2. Bullets and numbered lists
+    for line in content.splitlines():
+        stripped = line.strip()
+        # Bullets: - foo, * foo
+        m_bullet = re.match(r'^[-*]\s+(.+)$', stripped)
+        if m_bullet:
+            fact = m_bullet.group(1).strip()
+            if len(fact) >= 6:
+                facts.append(fact)
+            continue
+        # Numbered: 1. foo, 2) foo
+        m_num = re.match(r'^\d+[.)]\s+(.+)$', stripped)
+        if m_num:
+            fact = m_num.group(1).strip()
+            if len(fact) >= 6:
+                facts.append(fact)
+
+    # 3. Sentences with action verbs (split content into sentences first)
+    sentences = re.split(r'(?<=[.!?])\s+', content)
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent or len(sent) < 12:
+            continue
+        # Skip if already added as a bullet
+        if any(sent in f or f in sent for f in facts):
+            continue
+        if _REFLECTION_ACTION_VERBS.search(sent):
+            # Cap at 200 chars
+            facts.append(sent[:200].rstrip(".!? "))
+
+    # Dedup preserving order
+    seen = set()
+    deduped = []
+    for f in facts:
+        key = f.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+    return deduped
+
+
+def append_reflections(project: str, facts: list[str], cap: int = 20) -> None:
+    """Append facts to <project>/_reflections.md, capping at `cap` entries (FIFO).
+    No-op if facts is empty.
+    """
+    if not facts:
+        return
+    proj = project_dir(project)
+    refl_path = proj / "_reflections.md"
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    new_lines = [f"- [{ts}] {f}" for f in facts]
+
+    existing: list[str] = []
+    if refl_path.exists():
+        text = refl_path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.startswith("- ["):
+                existing.append(line)
+
+    # Newest first, FIFO cap
+    combined = new_lines[::-1] + existing  # newest entries on top
+    combined = combined[:cap]
+
+    body = (
+        f"# Reflections: {normalize_project(project)}\n\n"
+        f"Atomic facts extracted from sessions (FIFO {cap}, newest first).\n\n"
+        + "\n".join(combined)
+        + "\n"
+    )
+    refl_path.write_text(body, encoding="utf-8")
+
+
 def mark_dependents(project: str, filename: str, timestamp: str) -> int:
     """Cascade-mark: when filename is edited, refresh a 🔄 marker on every line
     that links to it from another article in the same project. Idempotent —

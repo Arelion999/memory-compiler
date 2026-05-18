@@ -52,6 +52,158 @@ def test_content_tokens_strips_stopwords():
     assert "продолжим" not in tokens
 
 
+def test_splade_disabled_by_default():
+    """SPLADE 3-way hybrid is opt-in — default must be disabled."""
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import SPLADE_ENABLED
+    assert SPLADE_ENABLED is False
+
+
+def test_splade_env_enables(monkeypatch):
+    """SPLADE_ENABLED=true must flip the flag."""
+    monkeypatch.setenv("SPLADE_ENABLED", "true")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import SPLADE_ENABLED
+    assert SPLADE_ENABLED is True
+    monkeypatch.delenv("SPLADE_ENABLED", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
+def test_search_works_when_splade_enabled_but_model_missing(knowledge_dir, monkeypatch):
+    """Even with SPLADE_ENABLED=true, search must gracefully fall back if model unavailable."""
+    monkeypatch.setenv("SPLADE_ENABLED", "true")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    import memory_compiler.search as _smod
+    import memory_compiler.config as _cfg
+    # Re-patch knowledge_dir after reload
+    monkeypatch.setattr(_smod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(_smod, "INDEX_DIR", knowledge_dir / ".whoosh_index")
+    monkeypatch.setattr(_smod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
+    monkeypatch.setattr(_smod, "_ix", None)
+
+    proj = knowledge_dir / "testproj"
+    (proj / "thing.md").write_text(
+        "# Postgres backup\n\n**Дата:** 2026-01-01 10:00\n**Теги:** postgres\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nBackup procedure for postgres body line.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    _smod.rebuild_index()
+    _smod.rebuild_embeddings()
+
+    # Search must succeed even though SPLADE model not loaded
+    results = _smod.whoosh_search("postgres backup", project="testproj", limit=5)
+    assert results, "Search must return results even when SPLADE model is unavailable"
+
+    monkeypatch.delenv("SPLADE_ENABLED", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
+def test_late_chunking_disabled_by_default_produces_chunks(knowledge_dir):
+    """Default (LATE_CHUNKING=false): article with ### sections produces multiple chunk embeddings."""
+    import memory_compiler.config as _cfg
+    import memory_compiler.search as _smod
+
+    proj = knowledge_dir / "testproj"
+    (proj / "multi_section.md").write_text(
+        "# Big article\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n"
+        "### Section A\nContent of section A about nginx setup details.\n\n"
+        "### Section B\nContent of section B about postgres tuning details.\n\n"
+        "### Section C\nContent of section C about redis cache details.\n",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    _smod.rebuild_embeddings()
+
+    keys = [k for k in _smod._embeddings.keys() if "multi_section.md" in k]
+    # Default chunked mode: should have >1 keys for an article with 3 ### sections
+    chunk_keys = [k for k in keys if "#chunk" in k]
+    assert len(chunk_keys) >= 2, f"Default chunking should produce chunk keys, got: {keys}"
+
+
+def test_late_chunking_enabled_produces_single_embedding(knowledge_dir, monkeypatch):
+    """LATE_CHUNKING=true: article gets ONE whole-document embedding instead of N chunks."""
+    monkeypatch.setenv("LATE_CHUNKING", "true")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    import memory_compiler.config as _cfg
+    import memory_compiler.search as _smod
+    # Re-patch the just-reloaded module to use knowledge_dir
+    monkeypatch.setattr(_smod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(_smod, "INDEX_DIR", knowledge_dir / ".whoosh_index")
+    monkeypatch.setattr(_smod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
+    monkeypatch.setattr(_smod, "_ix", None)
+
+    proj = knowledge_dir / "testproj"
+    (proj / "multi_section2.md").write_text(
+        "# Big article 2\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n"
+        "### Section A\nContent of section A about nginx setup details.\n\n"
+        "### Section B\nContent of section B about postgres tuning details.\n\n",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    _smod.rebuild_embeddings()
+
+    keys = [k for k in _smod._embeddings.keys() if "multi_section2.md" in k]
+    chunk_keys = [k for k in keys if "#chunk" in k]
+    # Late chunking: NO chunk keys, just one whole-doc embedding
+    assert len(chunk_keys) == 0, f"Late chunking should NOT split into chunks, got chunks: {chunk_keys}"
+    assert len(keys) == 1, f"Late chunking should produce exactly 1 embedding per article, got: {keys}"
+
+    # Cleanup: reload module to restore default
+    monkeypatch.delenv("LATE_CHUNKING", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
+def test_embed_model_env_override(monkeypatch):
+    """EMBED_MODEL env var must override the default embedding model."""
+    monkeypatch.setenv("EMBED_MODEL", "BAAI/bge-m3")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import EMBED_MODEL_NAME
+    assert EMBED_MODEL_NAME == "BAAI/bge-m3"
+    monkeypatch.delenv("EMBED_MODEL", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
+def test_embeddings_pkl_stores_model_name(knowledge_dir):
+    """Saved .embeddings.pkl must include the model_name for cache invalidation."""
+    import pickle
+    from memory_compiler.search import rebuild_embeddings, EMBEDDINGS_PATH
+    rebuild_embeddings()
+    assert EMBEDDINGS_PATH.exists()
+    with open(EMBEDDINGS_PATH, "rb") as f:
+        data = pickle.load(f)
+    assert "model" in data, f"pkl must store 'model' field; got keys: {list(data.keys())}"
+    assert data["model"], "model field must be non-empty"
+
+
+def test_load_embeddings_invalidates_on_model_mismatch(knowledge_dir):
+    """If pkl was saved by a different model, load_embeddings must refuse to use it."""
+    import pickle
+    from memory_compiler.search import EMBEDDINGS_PATH, load_embeddings
+    # Write a pkl with mismatched model name
+    fake_pkl = {
+        "model": "totally-different-model-name",
+        "embeddings": {},
+        "texts": {},
+    }
+    EMBEDDINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(EMBEDDINGS_PATH, "wb") as f:
+        pickle.dump(fake_pkl, f)
+    assert load_embeddings() is False, "Cache from another model must be invalidated"
+
+
 def test_reranker_default_is_multilingual_v2():
     """Default reranker must be a multilingual model (bge-reranker-v2-m3 by default).
     Russian-heavy KB benefits from multilingual cross-encoder."""
