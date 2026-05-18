@@ -533,3 +533,69 @@ history: []
     entities = [t["entity"] for t in listed]
     assert "good" in entities
     assert "bad" not in entities
+
+
+# ─── Per-project _log.md (Karpathy LLM Wiki pattern) ────────────────────────
+
+
+def test_log_event_creates_file(knowledge_dir):
+    """log_event must create _log.md in project dir and append a line."""
+    from memory_compiler.storage import log_event
+    log_event("testproj", "ingest", "added 1 article from URL")
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    assert log_path.exists(), "_log.md should be created in project dir"
+    text = log_path.read_text(encoding="utf-8")
+    assert "ingest" in text
+    assert "added 1 article from URL" in text
+
+
+def test_log_event_appends(knowledge_dir):
+    """Successive log_event calls must append, not overwrite."""
+    from memory_compiler.storage import log_event
+    log_event("testproj", "ingest", "first entry")
+    log_event("testproj", "lint", "second entry — 3 orphans")
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    text = log_path.read_text(encoding="utf-8")
+    assert "first entry" in text
+    assert "second entry" in text
+    # Both events recorded as separate lines
+    lines = [l for l in text.splitlines() if l.startswith("- [")]
+    assert len(lines) >= 2
+
+
+def test_log_event_format_has_timestamp(knowledge_dir):
+    """Each log line must begin with '- [YYYY-MM-DD HH:MM] **action** — details'."""
+    import re
+    from memory_compiler.storage import log_event
+    log_event("testproj", "save_lesson", "topic: nginx ssl")
+    text = (knowledge_dir / "testproj" / "_log.md").read_text(encoding="utf-8")
+    pattern = re.compile(r"^- \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \*\*save_lesson\*\* — topic: nginx ssl")
+    assert any(pattern.match(line) for line in text.splitlines()), \
+        f"No line matched expected format. Got:\n{text}"
+
+
+def test_save_lesson_writes_log(knowledge_dir):
+    """save_lesson handler must log a 'save_lesson' event to project _log.md."""
+    import asyncio
+    from memory_compiler.handlers import save_lesson
+    asyncio.run(save_lesson(
+        topic="docker proxy fix",
+        content="Setting up reverse proxy in docker required setting headers.",
+        project="testproj",
+    ))
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert "save_lesson" in text
+    assert "docker proxy fix" in text
+
+
+def test_lint_writes_log(knowledge_dir):
+    """lint handler must log a 'lint' event with summary."""
+    import asyncio
+    from memory_compiler.handlers import lint as lint_handler
+    asyncio.run(lint_handler(project="testproj"))
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    assert log_path.exists()
+    text = log_path.read_text(encoding="utf-8")
+    assert "lint" in text

@@ -52,6 +52,29 @@ def test_content_tokens_strips_stopwords():
     assert "продолжим" not in tokens
 
 
+def test_reranker_default_is_multilingual_v2():
+    """Default reranker must be a multilingual model (bge-reranker-v2-m3 by default).
+    Russian-heavy KB benefits from multilingual cross-encoder."""
+    from memory_compiler.search import RERANKER_MODEL_NAME
+    # v2-m3 = multilingual (BGE-M3 base), large quality jump over -base for RU
+    assert "v2" in RERANKER_MODEL_NAME or "m3" in RERANKER_MODEL_NAME, \
+        f"Default reranker should be multilingual v2/m3, got: {RERANKER_MODEL_NAME}"
+
+
+def test_reranker_model_env_override(monkeypatch):
+    """RERANKER_MODEL env var must override the default model name."""
+    monkeypatch.setenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    # Re-import to pick up env var
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import RERANKER_MODEL_NAME
+    assert RERANKER_MODEL_NAME == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Restore default (other tests rely on it)
+    monkeypatch.delenv("RERANKER_MODEL", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
 def test_soft_fallback_returns_low_confidence_when_top_weak(knowledge_dir):
     """When top score is in [LOW_CONF, HIGH_CONF), return up to 3 results
     marked with confidence='low' if they share query tokens. Avoids silent emptiness."""

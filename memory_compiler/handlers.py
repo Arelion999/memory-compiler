@@ -28,6 +28,7 @@ from memory_compiler.storage import (
     extract_snippets, extract_errors, TEMPLATES,
     read_project_deps, write_project_deps,
     encrypt_content, decrypt_content, is_encrypted,
+    log_event, mark_dependents,
 )
 
 
@@ -150,7 +151,10 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
             index_document(updated_text, fpath.name, project)
             embed_document(updated_text, fpath.name, project)
 
-    # 11. Git commit
+    # 11. Project journal (Karpathy LLM Wiki pattern)
+    log_event(project, "save_lesson", f"{topic} → {article_path.name}")
+
+    # 12. Git commit
     git_commit(f"save: {topic} [{project}]")
 
     result = action
@@ -180,22 +184,26 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
 
 async def get_context(project: str, query: str = None) -> list[TextContent]:
     if query:
-        # Search in target project + cross-project results
-        results = whoosh_search(query, project=project, limit=3)
-        cross = whoosh_search(query, project="all", limit=3) if project != "all" else []
-        # Add cross-project results that aren't already in main results
+        from memory_compiler.search import rerank
+        # Wider pool for reranker — top results refined by cross-encoder
+        results = whoosh_search(query, project=project, limit=10)
+        cross = whoosh_search(query, project="all", limit=10) if project != "all" else []
         seen = {r["file"] for r in results}
         for r in cross:
             if r["file"] not in seen and r["project"] != project:
                 results.append(r)
-                if len(results) >= 5:
+                if len(results) >= 15:
                     break
         if not results:
             return [TextContent(type="text", text=f"Ничего не найдено по '{query}' в {project}.")]
+        results = rerank(query, results, top_k=5)
         out = [f"# Контекст: {project} (query: {query})\n"]
         for r in results:
             preview = "\n".join(r["preview"].splitlines()[:8])
-            out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+            scores = f"score: {r['score']}"
+            if "rerank_score" in r:
+                scores += f", rerank: {r['rerank_score']:.2f}"
+            out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
         return [TextContent(type="text", text="\n".join(out))]
     else:
         proj_path = project_dir(project)
@@ -214,20 +222,26 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
 
 
 async def search(query: str, project: str = "all") -> list[TextContent]:
-    results = whoosh_search(query, project=project, limit=8)
+    from memory_compiler.search import rerank
+    # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
+    # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
+    results = whoosh_search(query, project=project, limit=20)
     if not results:
         return [TextContent(type="text", text=f"Ничего не найдено: '{query}'")]
 
-    # Track access
+    results = rerank(query, results, top_k=8)
+
     track_access([f"{r['project']}/{r['file']}" for r in results])
 
     out = [f"# Поиск: '{query}'\n"]
     for r in results:
-        # Hide encrypted content in search results
         if "**Секрет:** да" in r.get("preview", ""):
             r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
         preview_lines = r["preview"].splitlines()[:10]
-        out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n" + "\n".join(preview_lines) + "\n")
+        scores = f"score: {r['score']}"
+        if "rerank_score" in r:
+            scores += f", rerank: {r['rerank_score']:.2f}"
+        out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n" + "\n".join(preview_lines) + "\n")
 
     return [TextContent(type="text", text="\n".join(out))]
 
@@ -471,6 +485,36 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                 if related:
                     issues.append(f"\u2139\ufe0f [{proj}] {name} \u2014 связанные: {', '.join(related[:3])}")
 
+        # Check 8: Orphan articles (no inbound refs) — Karpathy LLM Wiki pattern
+        non_service = [a for a in articles
+                       if not a.name.startswith("_")
+                       and not a.name.startswith("tracking_")]
+        if len(non_service) > 1:
+            bodies = {a.name: a.read_text(encoding="utf-8") for a in non_service}
+            for a in non_service:
+                referenced = any(
+                    a.name in body for other_name, body in bodies.items()
+                    if other_name != a.name
+                )
+                if not referenced:
+                    issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 сирота (no inbound refs)")
+
+        # Check 9: Dead cross-references — markdown links to missing .md files
+        import re as _re
+        md_link = _re.compile(r"\[[^\]]+\]\((?:\./|\.\./[\w/-]+/)?([\w.-]+\.md)\)")
+        for a in articles:
+            if a.name.startswith("_"):
+                continue
+            atext = a.read_text(encoding="utf-8")
+            seen_dead = set()
+            for m in md_link.finditer(atext):
+                target = m.group(1)
+                if target in seen_dead:
+                    continue
+                if not (proj_path / target).exists():
+                    seen_dead.add(target)
+                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 dead reference \u2192 {target}")
+
     if fix:
         regenerate_index()
         fixed.append("\U0001f527 index.md перегенерирован")
@@ -484,6 +528,13 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
         out.extend(fixed)
     if not issues and not fixed:
         out.append("\u2705 Проблем не найдено")
+    # Project journal — record what lint found
+    for proj in check_projects:
+        proj_issues = sum(1 for i in issues if f"[{proj}]" in i)
+        proj_fixed = sum(1 for f in fixed if f"[{proj}]" in f)
+        if proj_issues or proj_fixed or fix:
+            log_event(proj, "lint", f"{proj_issues} issues, {proj_fixed} fixed")
+
     return [TextContent(type="text", text="\n".join(out))]
 
 
@@ -688,8 +739,17 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     article_text = fpath.read_text(encoding="utf-8")
     index_document(article_text, filename, project)
     embed_document(article_text, filename, project)
+
+    # Cascade-mark: refresh marker on lines that link to this file
+    cascaded = mark_dependents(project, filename, ts)
+
+    log_event(project, "edit_article", f"{filename}" + (f" (cascade: {cascaded})" if cascaded else ""))
     git_commit(f"edit: {filename} [{project}]")
-    return [TextContent(type="text", text=f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}")]
+
+    msg = f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}"
+    if cascaded:
+        msg += f"\n\U0001f504 Маркер обновления проставлен в {cascaded} зависимых статьях"
+    return [TextContent(type="text", text=msg)]
 
 
 async def read_article(project: str, filename: str) -> list[TextContent]:

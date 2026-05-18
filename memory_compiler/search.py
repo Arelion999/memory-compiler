@@ -88,7 +88,11 @@ def get_embed_model() -> SentenceTransformer:
 
 # ─── Cross-encoder reranker (lazy load) ────────────────────────────────────
 
-RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
+import os as _os
+# Default: BAAI/bge-reranker-v2-m3 — multilingual (built on BGE-M3), strong RU+EN.
+# Override via RERANKER_MODEL env var (e.g. cross-encoder/ms-marco-MiniLM-L-6-v2 for
+# RAM-constrained NAS deployments).
+RERANKER_MODEL_NAME = _os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 _reranker_model: Optional[CrossEncoder] = None
 
 
