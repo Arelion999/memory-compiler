@@ -285,6 +285,27 @@ def test_embeddings_pkl_stores_model_name(knowledge_dir):
     assert data["model"], "model field must be non-empty"
 
 
+def test_load_embeddings_invalidates_on_late_chunking_mismatch(knowledge_dir, monkeypatch):
+    """If pkl was saved with one LATE_CHUNKING value, loading with the opposite
+    must invalidate the cache — embedding topology differs (whole-doc vs chunks)."""
+    import pickle
+    from memory_compiler.search import EMBEDDINGS_PATH, load_embeddings, EMBED_MODEL_NAME
+    import memory_compiler.search as _smod
+    # Save pkl as if it were produced with LATE_CHUNKING=True
+    fake_pkl = {
+        "model": EMBED_MODEL_NAME,
+        "late_chunking": True,
+        "embeddings": {"foo/bar.md": [0.1, 0.2]},
+        "texts": {"foo/bar.md": "bar"},
+    }
+    EMBEDDINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(EMBEDDINGS_PATH, "wb") as f:
+        pickle.dump(fake_pkl, f)
+    # Current runtime has LATE_CHUNKING=False (default in module) — mismatch → invalidate
+    monkeypatch.setattr(_smod, "LATE_CHUNKING", False)
+    assert load_embeddings() is False, "different LATE_CHUNKING must invalidate cache"
+
+
 def test_load_embeddings_invalidates_on_model_mismatch(knowledge_dir):
     """If pkl was saved by a different model, load_embeddings must refuse to use it."""
     import pickle
