@@ -24,6 +24,11 @@ services:
       - MC_ENCRYPT_KEY=${MC_ENCRYPT_KEY:-}
       - GIT_CAPTURE_ALLOWED_ROOTS=${GIT_CAPTURE_ALLOWED_ROOTS:-/repos}
       - TZ=Asia/Vladivostok
+      # ML model configuration (v1.7.0+) — passthrough from .env, with defaults
+      - EMBED_MODEL=${EMBED_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+      - RERANKER_MODEL=${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - LATE_CHUNKING=${LATE_CHUNKING:-false}
+      - SPLADE_ENABLED=${SPLADE_ENABLED:-false}
       # - PROJECTS=project-a,project-b,infra,general
 
 volumes:
