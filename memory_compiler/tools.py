@@ -205,6 +205,17 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="init_schema",
+            description="Создать шаблон _schema.md в проекте — контракт сущностей/связей/стиля (Karpathy LLM Wiki pattern). Идемпотентно: не перезаписывает существующий.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Имя проекта"}
+                },
+                "required": ["project"]
+            }
+        ),
+        Tool(
             name="add_project",
             description="Создать новый проект в базе знаний.",
             inputSchema={
@@ -601,6 +612,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.search_by_tag(**arguments)
     elif name == "article_history":
         result = await handlers.article_history(**arguments)
+    elif name == "init_schema":
+        result = await handlers.init_schema(**arguments)
     elif name == "add_project":
         result = await handlers.add_project(**arguments)
     elif name == "remove_project":

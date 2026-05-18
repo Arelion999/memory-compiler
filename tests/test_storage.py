@@ -538,6 +538,93 @@ history: []
 # ─── Per-project _log.md (Karpathy LLM Wiki pattern) ────────────────────────
 
 
+def test_extract_reflections_from_bullets():
+    """Bullet-list content must yield atomic facts."""
+    from memory_compiler.storage import extract_reflections
+    content = (
+        "Реализованы фичи:\n"
+        "- Reranker подключён к search и get_context\n"
+        "- log.md создаётся при каждом save_lesson\n"
+        "- Lint находит сирот и битые ссылки\n"
+        "\n"
+        "Подробности в коде."
+    )
+    facts = extract_reflections(content)
+    assert len(facts) >= 3
+    joined = " ".join(facts)
+    assert "Reranker" in joined
+    assert "log.md" in joined
+    assert "Lint" in joined
+
+
+def test_extract_reflections_from_action_verbs():
+    """Action sentences with настроил/добавил/исправил/обновил should be extracted."""
+    from memory_compiler.storage import extract_reflections
+    content = (
+        "Сегодня настроил nginx reverse proxy на сервере app01. "
+        "Также исправил баг с пустыми embeddings. "
+        "Обновил версию до 1.7.0. "
+        "Просто заметка для контекста."
+    )
+    facts = extract_reflections(content)
+    joined = " ".join(facts).lower()
+    assert "nginx" in joined or "reverse proxy" in joined
+    assert "баг" in joined or "embeddings" in joined
+    assert "1.7.0" in joined or "версию" in joined
+
+
+def test_extract_reflections_skips_prose_without_facts():
+    """Plain prose without clear facts must produce no reflections."""
+    from memory_compiler.storage import extract_reflections
+    content = (
+        "Думаю над архитектурой. Возможно стоит посмотреть на это иначе. "
+        "Нужно подумать о подходе."
+    )
+    facts = extract_reflections(content)
+    # No bullets, no action verbs → empty
+    assert facts == [] or len(facts) == 0
+
+
+def test_finish_task_writes_reflections(knowledge_dir):
+    """finish_task with structured content must populate _reflections.md."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import finish_task
+    proj = knowledge_dir / "testproj"
+    _cfg.PROJECTS = _cfg._discover_projects()
+    asyncio.run(finish_task(
+        topic="upgrade test",
+        content=(
+            "Сделано:\n"
+            "- Подключил reranker\n"
+            "- Добавил log.md\n"
+            "- Расширил lint\n"
+        ),
+        project="testproj",
+    ))
+    refl_path = proj / "_reflections.md"
+    assert refl_path.exists(), "_reflections.md should be created"
+    text = refl_path.read_text(encoding="utf-8")
+    assert "reranker" in text.lower()
+    assert "log.md" in text.lower()
+    assert "lint" in text.lower()
+
+
+def test_reflections_fifo_caps_at_20(knowledge_dir):
+    """_reflections.md must keep at most 20 entries (FIFO)."""
+    from memory_compiler.storage import append_reflections
+    facts = [f"Atomic fact number {i}" for i in range(25)]
+    append_reflections("testproj", facts)
+    refl_path = knowledge_dir / "testproj" / "_reflections.md"
+    text = refl_path.read_text(encoding="utf-8")
+    entries = [l for l in text.splitlines() if l.startswith("- [")]
+    assert len(entries) == 20, f"Should cap at 20 entries, got {len(entries)}"
+    # Newest preserved
+    assert "Atomic fact number 24" in text
+    # Oldest dropped
+    assert "Atomic fact number 0" not in text
+
+
 def test_log_event_creates_file(knowledge_dir):
     """log_event must create _log.md in project dir and append a line."""
     from memory_compiler.storage import log_event

@@ -2,6 +2,33 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.0 — 2026-05-18
+
+Все 5 отложенных фич из v1.6.0 research-плана. Через env-флаги и feature gates, чтобы продакшен не сломался — все опасные изменения opt-in, дефолты совместимы с v1.6.0.
+
+### Контекст
+
+После v1.6.0 остался отложенный список: embedding upgrade, late chunking, reflective loop, Schema.md, SPLADE. Этот релиз закрывает все 5 — реализованы аккуратно с feature-flags для миграционно опасных вещей.
+
+### Added
+
+- **Env-driven embedding model** — `EMBED_MODEL` переключает модель векторизации. Дефолт остался `paraphrase-multilingual-MiniLM-L12-v2` (384 dim) для backward compat. Рекомендуемый upgrade: `EMBED_MODEL=BAAI/bge-m3` (+13 MTEB, 1024 dim, multilingual). `.embeddings.pkl` теперь версионируется: содержит `model` field, автоматически инвалидируется при смене модели и триггерит rebuild.
+- **Late chunking** (env `LATE_CHUNKING=true`) — pragmatic-версия Jina AI pattern: при включении статья эмбеддится целиком одним вектором вместо разбиения на `###`-чанки. Сохраняет контекст между секциями (anaphoric refs). Лучше работает с long-context моделями (BGE-M3 max=8192) — на дефолтном MiniLM может truncating длинные статьи, поэтому включать имеет смысл вместе с `EMBED_MODEL` upgrade.
+- **Reflective Memory (rule-based)** — `finish_task` автоматически извлекает atomic facts из content+session_summary через regex на bullets, numbered lists и action-verbs (настроил/исправил/добавил/configured/fixed/...). Факты копятся в `<project>/_reflections.md` (FIFO 20, newest-first). Без внешней LLM — это упрощённая версия Prospective Reflection из arXiv 2503.08026.
+- **Schema.md per-project** — новый tool `init_schema(project)` создаёт `_schema.md` шаблон с секциями Сущности/Связи/Stylistic/Glossary. Идемпотентно (не перезаписывает существующий). Контракт проекта как явный артефакт по паттерну Karpathy LLM Wiki.
+- **SPLADE 3-way hybrid skeleton** (env `SPLADE_ENABLED=true`) — инфраструктура для третьего канала retrieval (BM25 + dense + sparse-learned) с RRF merge. Сейчас stub-реализация возвращает пустой dict — graceful 2-way fallback. Готово к drop-in замене когда появится хороший multilingual SPLADE checkpoint.
+
+### Tests
+
+- 115/115 pass (было 100). +15 новых: 3 embedding-upgrade, 2 late-chunking, 5 reflective, 2 schema, 3 SPLADE.
+
+### Migration
+
+- **Дефолты неизменны.** Push v1.7.0 не ломает существующие deploy.
+- Чтобы попробовать BGE-M3: на NAS в `.env` добавь `EMBED_MODEL=BAAI/bge-m3`, перезапусти контейнер, выполни `mcp__memory-compiler__reindex` через любой клиент. Все 540 embeddings пересчитаются (~5-15 мин), `.embeddings.pkl` сохранится с новым model-tag.
+- Чтобы включить late chunking с BGE-M3: `LATE_CHUNKING=true` + повторный reindex.
+- Чтобы попробовать SPLADE: оставь выключенным до появления хорошей multilingual модели; код к ней готов.
+
 ## v1.6.0 — 2026-05-18
 
 Качество retrieval + аккуратность базы знаний. Влияние research-обзора по новым техникам RAG/agent-memory (Karpathy LLM Wiki, MTEB-2026).

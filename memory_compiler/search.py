@@ -73,7 +73,35 @@ from memory_compiler.config import (
 # ─── Semantic search ─────────────────────────────────────────────────────────
 
 EMBEDDINGS_PATH = KNOWLEDGE_DIR / ".embeddings.pkl"
-EMBED_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+# Default: legacy MiniLM (384 dim) — backward compat for existing .embeddings.pkl.
+# Recommended upgrade: EMBED_MODEL=BAAI/bge-m3 (1024 dim, MTEB +13, multilingual)
+# or EMBED_MODEL=Alibaba-NLP/gte-multilingual-base. Cache auto-invalidates on change.
+import os as _os_embed
+EMBED_MODEL_NAME = _os_embed.environ.get("EMBED_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+
+# Late chunking (Jina AI 2024 pattern, pragmatic variant): encode whole document as one
+# embedding instead of splitting on ### sections. Preserves anaphoric refs and cross-section
+# context. Best with long-context models (BGE-M3 max=8192); on MiniLM (max=128) it may
+# truncate long articles — only enable when paired with EMBED_MODEL upgrade.
+LATE_CHUNKING = _os_embed.environ.get("LATE_CHUNKING", "false").lower() in ("1", "true", "yes")
+
+# SPLADE 3-way hybrid (opt-in). When true, whoosh_search adds a sparse-learned channel
+# to the RRF merge alongside BM25 and dense embeddings. Falls back to 2-way if the
+# model is unavailable (no good multilingual SPLADE published yet — keep disabled
+# until that lands). When enabled, pip-install naver/splade-cocondenser-* or similar
+# and override _splade_search() with a real implementation.
+SPLADE_ENABLED = _os_embed.environ.get("SPLADE_ENABLED", "false").lower() in ("1", "true", "yes")
+
+
+def _splade_search(query: str, project: str = "all", limit: int = 20) -> dict[str, float]:
+    """Sparse-learned retrieval channel (stub).
+
+    Returns {path: score} ranked by SPLADE relevance. Current implementation is a
+    no-op stub that returns empty dict — RRF will gracefully degrade to 2-way hybrid.
+    Replace with a real backend (e.g. transformers SPLADE model) when a strong
+    multilingual checkpoint becomes available.
+    """
+    return {}
 _embed_model: Optional[SentenceTransformer] = None
 _embeddings: dict[str, np.ndarray] = {}  # path -> embedding
 _embed_texts: dict[str, str] = {}  # path -> title+tags for display
@@ -158,6 +186,12 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
             tags = line.split(":", 1)[1].strip()
             break
 
+    # Late chunking mode: return whole document as one embedding key.
+    # Preserves cross-section context (anaphoric refs, headers without bodies).
+    if LATE_CHUNKING:
+        whole = f"{title} {tags} {text}"
+        return [(path_key, whole)]
+
     # Find ### sections
     sections = []
     current_lines = []
@@ -226,20 +260,33 @@ def rebuild_embeddings():
         for i, path in enumerate(paths):
             _embeddings[path] = vectors[i]
 
-    # Save to disk for faster restart
+    # Save to disk for faster restart. Tag with model_name — load invalidates on mismatch.
     with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump({"embeddings": _embeddings, "texts": _embed_texts}, f)
+        pickle.dump({
+            "model": EMBED_MODEL_NAME,
+            "embeddings": _embeddings,
+            "texts": _embed_texts,
+        }, f)
 
     return len(docs)
 
 
 def load_embeddings():
-    """Load embeddings from disk if available."""
+    """Load embeddings from disk if available.
+
+    Returns False if the cached pkl was produced by a different embedding model
+    (different dimensionality / different semantics) — caller should rebuild.
+    """
     global _embeddings, _embed_texts
     if EMBEDDINGS_PATH.exists():
         try:
             with open(EMBEDDINGS_PATH, "rb") as f:
                 data = pickle.load(f)
+                # Cache invalidation: model name in pkl must match current EMBED_MODEL_NAME.
+                # Legacy .pkl without 'model' key → treat as mismatched (force rebuild).
+                cached_model = data.get("model")
+                if cached_model != EMBED_MODEL_NAME:
+                    return False
                 _embeddings = data["embeddings"]
                 _embed_texts = data["texts"]
                 return True
@@ -258,9 +305,13 @@ def embed_document(text: str, filename: str, project: str):
     _embeddings[key] = vec
     lines = text.splitlines()
     _embed_texts[key] = lines[0].lstrip("# ").strip() if lines else filename
-    # Save updated embeddings
+    # Save updated embeddings (with model tag for cache invalidation)
     with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump({"embeddings": _embeddings, "texts": _embed_texts}, f)
+        pickle.dump({
+            "model": EMBED_MODEL_NAME,
+            "embeddings": _embeddings,
+            "texts": _embed_texts,
+        }, f)
 
 
 def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
@@ -390,6 +441,14 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             continue
         sem_scores[path] = max(sim, 0)  # cosine sim, already 0-1
 
+    # 2b. SPLADE sparse-learned channel (opt-in, gracefully empty if disabled)
+    splade_scores: dict[str, float] = {}
+    if SPLADE_ENABLED:
+        try:
+            splade_scores = _splade_search(query_str, project=project, limit=limit * 2)
+        except Exception:
+            splade_scores = {}
+
     # 3. Merge via Reciprocal Rank Fusion (RRF) — industry standard for hybrid retrieval.
     # Formula: score(d) = Σ_q 1 / (k + rank_q(d))
     # Не требует калибровки между BM25 и cosine, устойчив к выбросам.
@@ -400,10 +459,13 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
                          key=lambda p: -bm25_scores[p]["bm25"])
     sem_ranked = sorted(sem_scores.keys(),
                         key=lambda p: -sem_scores[p])
+    splade_ranked = sorted(splade_scores.keys(),
+                           key=lambda p: -splade_scores[p])
     bm25_rank = {p: i + 1 for i, p in enumerate(bm25_ranked)}
     sem_rank = {p: i + 1 for i, p in enumerate(sem_ranked)}
+    splade_rank = {p: i + 1 for i, p in enumerate(splade_ranked)}
 
-    all_paths = set(bm25_scores.keys()) | set(sem_scores.keys())
+    all_paths = set(bm25_scores.keys()) | set(sem_scores.keys()) | set(splade_scores.keys())
     merged = []
     for path in all_paths:
         rrf = 0.0
@@ -411,6 +473,8 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             rrf += 1.0 / (RRF_K + bm25_rank[path])
         if path in sem_rank:
             rrf += 1.0 / (RRF_K + sem_rank[path])
+        if path in splade_rank:
+            rrf += 1.0 / (RRF_K + splade_rank[path])
 
         if path in bm25_scores:
             info = bm25_scores[path]

@@ -29,6 +29,7 @@ from memory_compiler.storage import (
     read_project_deps, write_project_deps,
     encrypt_content, decrypt_content, is_encrypted,
     log_event, mark_dependents,
+    extract_reflections, append_reflections,
 )
 
 
@@ -1542,11 +1543,72 @@ async def finish_task(topic: str, content: str, project: str, tags: list = None,
         session_result = await save_session(project, session_summary, "", open_questions or "")
         parts.append(session_result[0].text)
 
+    # 3. Prospective reflection — извлечь atomic facts из content + session_summary
+    reflections = extract_reflections(content + "\n" + (session_summary or ""))
+    if reflections:
+        append_reflections(project, reflections)
+        parts.append(f"\U0001f9e0 Reflections: +{len(reflections)} atomic facts")
+
     parts.append("\n*Задача записана в базу знаний.*")
     return [TextContent(type="text", text="\n".join(parts))]
 
 
 # ─── Управление проектами ────────────────────────────────────────────────────
+
+
+async def init_schema(project: str) -> list[TextContent]:
+    """Create a _schema.md template in the project directory (Karpathy LLM Wiki pattern).
+
+    Idempotent: if _schema.md already exists, returns a hint without overwriting.
+    The schema is a human-edited contract — entities, relations, stylistic conventions —
+    that lint and save_lesson can later use to enforce consistency.
+    """
+    proj_dir = project_dir(project)
+    schema_path = proj_dir / "_schema.md"
+    if schema_path.exists():
+        return [TextContent(type="text", text=(
+            f"ℹ️ _schema.md уже существует в {project}. "
+            f"Открой и отредактируй вручную: {schema_path}"
+        ))]
+
+    template = f"""# Schema: {project}
+
+Контракт проекта — какие сущности существуют, какие связи бывают, какой стиль статей.
+Используется `lint` и `save_lesson` для проверки соответствия (TODO).
+
+## Сущности
+
+<!-- Перечисли типы статей в проекте и их обязательные поля. Пример:
+- ticket — заявка клиента (id, status, client, assignee)
+- runbook — пошаговая инструкция (steps, verification)
+- decision — архитектурное решение (alternatives, reasoning)
+-->
+
+## Связи
+
+<!-- Какие отношения между сущностями. Пример:
+- ticket → client (поле client в frontmatter)
+- ticket → runbook (через общий тег)
+-->
+
+## Stylistic
+
+<!-- Стилистические соглашения проекта. Пример:
+- Все runbook-статьи имеют чекбоксы `- [ ]` для шагов
+- В tracking_*.md current.version всегда semver
+- Заголовки секций на русском
+-->
+
+## Glossary
+
+<!-- Специфические термины и аббревиатуры проекта. -->
+"""
+    schema_path.write_text(template, encoding="utf-8")
+    log_event(project, "init_schema", "_schema.md template created")
+    return [TextContent(type="text", text=(
+        f"✅ Создан шаблон _schema.md в {project}. "
+        f"Отредактируй файл: добавь сущности, связи, conventions проекта."
+    ))]
 
 
 async def add_project(name: str) -> list[TextContent]:
