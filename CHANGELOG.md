@@ -2,6 +2,39 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.4 — 2026-05-18
+
+Hardening: устранены 12 проблем найденных в code-audit после миграции на e5-base.
+
+### Fixed — HIGH severity
+
+- **Path traversal в `edit_article` / `read_article` / `delete_article`** — теперь все три используют `safe_article_path()` с проверкой что итоговый путь не выходит за пределы `KNOWLEDGE_DIR`. Defense-in-depth поверх MC_API_KEY auth.
+- **`rebuild_embeddings` atomic swap** — раньше сначала очищал `_embeddings = {}`, потом encode. Если encode падал (OOM, network) — глобальный dict оставался пустой и semantic search молча возвращал `[]`. Теперь строится локально, swap в globals только после успешного encode.
+- **Lint Check 9 cross-project + кириллица** — regex не поддерживал `../other_proj/file.md` (проверял существование только в текущем проекте) и не ловил русские имена файлов. Переписан с двумя capture groups; resolve target правильно учитывает project segment.
+
+### Fixed — MEDIUM severity
+
+- **`embed_document` теперь использует `_chunk_article`** — новые статьи через `save_lesson` / `edit_article` получают такую же представительность как rebuild_embeddings (раньше использовался `_doc_text_for_embedding` — только preview).
+- **Lint Check 8 (orphans) через link-parsing** — раньше substring-match на `a.name in body` давал false positives (raw mention в тексте) и false negatives (link без `.md`). Теперь парсит markdown-links регулярным выражением.
+- **`mark_dependents` устойчив к unreadable files** — try/except вокруг `read_text` чтобы PermissionError / UnicodeDecodeError не ломал edit_article.
+
+### Fixed — LOW severity
+
+- **`asyncio.create_task` для bg rebuild сохраняется в переменной** — иначе Python GC может убрать task мид-flight.
+- **`append_reflections` атомарная запись** — write tmp + rename вместо direct write_text, защита от torn writes при concurrent finish_task.
+- **`extract_reflections` пропускает отрицания** — sentences с "не настроил" / "did not configure" / "n't" больше не извлекаются как факты.
+- **`load_embeddings` логирует причину провала** — model mismatch / corrupt pkl / invalid schema теперь печатает явный warning вместо silent fail.
+- **`_log.md` ротируется** — при превышении `LOG_ROTATE_BYTES` (256KB default) старое содержимое перемещается в `_log.archive.md`, активный лог обнуляется.
+- **Warning при embeddings dict > 10k entries** — индикатор memory pressure для роста корпуса.
+
+### Tests
+
+- 127/127 pass (было 117). +10 новых: 1 path traversal, 1 atomic rebuild, 2 lint dead-ref (cross-proj + cyrillic), 1 embed_document parity, 1 orphan link-parsing, 1 mark_dependents read failure, 1 negation skip, 1 atomic write, 1 log rotation.
+
+### Migration
+
+Никаких env / config изменений не требуется — все fixes backward-compatible. Чтобы переопределить порог ротации лога: `from memory_compiler import storage; storage.LOG_ROTATE_BYTES = N`.
+
 ## v1.7.3 — 2026-05-18
 
 Hotfix: rebuild_embeddings вынесен из startup-хука в background task.

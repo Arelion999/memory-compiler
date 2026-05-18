@@ -433,7 +433,7 @@ def test_lint_flags_orphan_article(knowledge_dir):
     (proj / "alpha.md").write_text(
         "# Alpha topic\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
         "## Записи\n\n### 2026-01-01 10:00\n"
-        "See also beta.md for context body line.",
+        "See also [beta](./beta.md) for context body line.",
         encoding="utf-8",
     )
     (proj / "beta.md").write_text(
@@ -488,6 +488,125 @@ def test_lint_flags_dead_cross_reference(knowledge_dir):
     text = result[0].text
     assert "does_not_exist.md" in text
     assert "dead" in text.lower() or "битая" in text.lower() or "broken" in text.lower()
+
+
+def test_lint_orphan_ignores_substring_false_positive(knowledge_dir):
+    """An article mentioned only as raw text (not via markdown link) should still
+    be flagged orphan if no real link points to it. Current substring-match
+    gives false positives — switch to link-parsing detection."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    # alpha mentions "target.md" as a raw string in prose (not a link) — should NOT count as ref
+    (proj / "alpha.md").write_text(
+        "# Alpha\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### body\nДумал про target.md как идею но не ссылка фактически.",
+        encoding="utf-8",
+    )
+    # target — exists but no real link
+    (proj / "target.md").write_text(
+        "# Target\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### body\nTarget content body line one and two.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    orphan_lines = [l for l in text.splitlines()
+                    if "сирота" in l.lower() or "isolated" in l.lower() or "no inbound" in l.lower()]
+    flagged = " ".join(orphan_lines)
+    # target.md mentioned only as plain text → should still be flagged orphan
+    assert "target.md" in flagged
+
+
+def test_mark_dependents_skips_unreadable_files(knowledge_dir, monkeypatch):
+    """mark_dependents must not crash if one of the .md files can't be read.
+    Other dependents must still be processed."""
+    from memory_compiler.storage import mark_dependents
+    proj = knowledge_dir / "testproj"
+    (proj / "target.md").write_text(
+        "# Target\n\nbody", encoding="utf-8")
+    (proj / "linker_ok.md").write_text(
+        "# Linker OK\n\nSee [t](./target.md) (existing)", encoding="utf-8")
+    # broken.md: simulate via monkeypatching Path.read_text for that name
+    bad_path = proj / "broken.md"
+    bad_path.write_text("# Broken\n\nSee [t](./target.md) here.", encoding="utf-8")
+
+    orig_read_text = type(bad_path).read_text
+    def patched_read_text(self, *a, **kw):
+        if self.name == "broken.md":
+            raise PermissionError("simulated")
+        return orig_read_text(self, *a, **kw)
+    monkeypatch.setattr(type(bad_path), "read_text", patched_read_text)
+
+    # Must not raise; should still mark linker_ok.md
+    count = mark_dependents("testproj", "target.md", "2026-05-18 22:00")
+    assert count >= 1, f"linker_ok.md should be marked; got count={count}"
+
+
+def test_lint_dead_ref_handles_cross_project_link(knowledge_dir):
+    """Cross-project link ../other_proj/file.md should be resolved correctly:
+    not flagged when target exists in other project, flagged when missing."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj_a = knowledge_dir / "proja"
+    proj_b = knowledge_dir / "projb"
+    proj_a.mkdir(exist_ok=True)
+    proj_b.mkdir(exist_ok=True)
+    # Article in projb is the cross-target
+    (proj_b / "shared.md").write_text(
+        "# Shared\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\nShared content body line.",
+        encoding="utf-8",
+    )
+    # Article in proja with two cross-refs: one existing, one missing
+    (proj_a / "linker.md").write_text(
+        "# Linker\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "See [shared](../projb/shared.md) and also [ghost](../projb/missing.md) body.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="proja"))
+    text = result[0].text
+    dead_lines = [l for l in text.splitlines()
+                  if "dead" in l.lower() or "битая" in l.lower() or "broken" in l.lower()]
+    flagged = " ".join(dead_lines)
+    # missing cross-project ref → flagged
+    assert "missing.md" in flagged
+    # existing cross-project ref → NOT flagged
+    assert "shared.md" not in flagged
+
+
+def test_lint_dead_ref_handles_cyrillic_filename(knowledge_dir):
+    """Cyrillic .md filenames must be matched by the dead-ref regex."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "linker.md").write_text(
+        "# Linker\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "См. [статья](./отсутствующая_статья.md) и тело.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    assert "отсутствующая_статья.md" in text
 
 
 def test_lint_does_not_flag_existing_cross_ref(knowledge_dir):

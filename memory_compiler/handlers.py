@@ -30,6 +30,7 @@ from memory_compiler.storage import (
     encrypt_content, decrypt_content, is_encrypted,
     log_event, mark_dependents,
     extract_reflections, append_reflections,
+    safe_article_path,
 )
 
 
@@ -487,34 +488,64 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                     issues.append(f"\u2139\ufe0f [{proj}] {name} \u2014 связанные: {', '.join(related[:3])}")
 
         # Check 8: Orphan articles (no inbound refs) — Karpathy LLM Wiki pattern
+        # Markdown link parsing (not substring match) avoids false positives
+        # from raw filename mentions in prose.
         non_service = [a for a in articles
                        if not a.name.startswith("_")
                        and not a.name.startswith("tracking_")]
         if len(non_service) > 1:
-            bodies = {a.name: a.read_text(encoding="utf-8") for a in non_service}
+            import re as _re_orph
+            md_link_orph = _re_orph.compile(
+                r"\[[^\]]+\]\(\s*"
+                r"(?:\./)?"
+                r"(?:\.\./[\w.\-]+/)?"
+                r"([\w.\-]+\.md)\s*\)"
+            )
+            referenced = set()
             for a in non_service:
-                referenced = any(
-                    a.name in body for other_name, body in bodies.items()
-                    if other_name != a.name
-                )
-                if not referenced:
+                try:
+                    body = a.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                for m in md_link_orph.finditer(body):
+                    target = m.group(1)
+                    if target != a.name:
+                        referenced.add(target)
+            for a in non_service:
+                if a.name not in referenced:
                     issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 сирота (no inbound refs)")
 
         # Check 9: Dead cross-references — markdown links to missing .md files
+        # Supports: ./file.md, file.md, ../other_proj/file.md (cross-project resolution)
+        # Cyrillic filenames covered: \w under Unicode flag matches кириллицу.
         import re as _re
-        md_link = _re.compile(r"\[[^\]]+\]\((?:\./|\.\./[\w/-]+/)?([\w.-]+\.md)\)")
+        md_link = _re.compile(
+            r"\[[^\]]+\]\(\s*"
+            r"(?:\./)?"
+            r"(?:\.\./([\w.\-]+)/)?"
+            r"([\w.\-]+\.md)\s*\)"
+        )
         for a in articles:
             if a.name.startswith("_"):
                 continue
-            atext = a.read_text(encoding="utf-8")
+            try:
+                atext = a.read_text(encoding="utf-8")
+            except Exception:
+                continue
             seen_dead = set()
             for m in md_link.finditer(atext):
-                target = m.group(1)
-                if target in seen_dead:
+                cross_proj, target = m.group(1), m.group(2)
+                if cross_proj:
+                    target_path = KNOWLEDGE_DIR / cross_proj / target
+                    display = f"../{cross_proj}/{target}"
+                else:
+                    target_path = proj_path / target
+                    display = target
+                if display in seen_dead:
                     continue
-                if not (proj_path / target).exists():
-                    seen_dead.add(target)
-                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 dead reference \u2192 {target}")
+                if not target_path.exists():
+                    seen_dead.add(display)
+                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 dead reference \u2192 {display}")
 
     if fix:
         regenerate_index()
@@ -687,7 +718,10 @@ async def get_active_context(project: str) -> list[TextContent]:
 
 
 async def delete_article(project: str, filename: str) -> list[TextContent]:
-    fpath = KNOWLEDGE_DIR / project / filename
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     fpath.unlink()
@@ -708,7 +742,10 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
 
 
 async def edit_article(project: str, filename: str, content: str, append: bool = False) -> list[TextContent]:
-    fpath = KNOWLEDGE_DIR / project / filename
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -754,7 +791,10 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
 
 
 async def read_article(project: str, filename: str) -> list[TextContent]:
-    fpath = KNOWLEDGE_DIR / project / filename
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     text = fpath.read_text(encoding="utf-8")

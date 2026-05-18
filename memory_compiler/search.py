@@ -237,11 +237,17 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
 
 
 def rebuild_embeddings():
-    """Rebuild all embeddings from knowledge files with chunking."""
+    """Rebuild all embeddings from knowledge files with chunking.
+
+    Atomic: builds new dicts locally and only swaps them into the globals AFTER
+    successful encode + pickle dump. If encode raises (OOM, network, etc.), the
+    previous in-memory _embeddings stays intact — semantic search keeps working
+    with stale-but-functional data instead of silently returning empty results.
+    """
     global _embeddings, _embed_texts
     model = get_embed_model()
-    _embeddings = {}
-    _embed_texts = {}
+    new_embeddings: dict[str, np.ndarray] = {}
+    new_embed_texts: dict[str, str] = {}
     docs = []
     paths = []
 
@@ -250,10 +256,13 @@ def rebuild_embeddings():
         if not p.exists():
             continue
         for md in p.glob("*.md"):
-            text = md.read_text(encoding="utf-8")
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue  # skip unreadable/binary files
             key = f"{proj}/{md.name}"
             lines = text.splitlines()
-            _embed_texts[key] = lines[0].lstrip("# ").strip() if lines else md.stem
+            new_embed_texts[key] = lines[0].lstrip("# ").strip() if lines else md.stem
             # Chunk article for finer-grained search
             chunks = _chunk_article(text, key)
             for chunk_key, chunk_text in chunks:
@@ -263,11 +272,14 @@ def rebuild_embeddings():
     daily = KNOWLEDGE_DIR / "daily"
     if daily.exists():
         for md in daily.glob("*.md"):
-            text = md.read_text(encoding="utf-8")
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
             key = f"daily/{md.name}"
             docs.append(_doc_text_for_embedding(text))
             paths.append(key)
-            _embed_texts[key] = md.stem
+            new_embed_texts[key] = md.stem
 
     if docs:
         # Batch in small chunks — long-context models (BGE-M3) blow up peak
@@ -279,7 +291,11 @@ def rebuild_embeddings():
             batch_size=EMBED_BATCH_SIZE,
         )
         for i, path in enumerate(paths):
-            _embeddings[path] = vectors[i]
+            new_embeddings[path] = vectors[i]
+
+    # Atomic swap: only commit globals AFTER successful encode.
+    _embeddings = new_embeddings
+    _embed_texts = new_embed_texts
 
     # Save to disk for faster restart. Tag with model_name — load invalidates on mismatch.
     with open(EMBEDDINGS_PATH, "wb") as f:
@@ -297,35 +313,57 @@ def load_embeddings():
 
     Returns False if the cached pkl was produced by a different embedding model
     (different dimensionality / different semantics) — caller should rebuild.
+    Logs the reason for visibility instead of failing silently.
     """
     global _embeddings, _embed_texts
-    if EMBEDDINGS_PATH.exists():
-        try:
-            with open(EMBEDDINGS_PATH, "rb") as f:
-                data = pickle.load(f)
-                # Cache invalidation: model name in pkl must match current EMBED_MODEL_NAME.
-                # Legacy .pkl without 'model' key → treat as mismatched (force rebuild).
-                cached_model = data.get("model")
-                if cached_model != EMBED_MODEL_NAME:
-                    return False
-                _embeddings = data["embeddings"]
-                _embed_texts = data["texts"]
-                return True
-        except Exception:
-            pass
-    return False
+    if not EMBEDDINGS_PATH.exists():
+        return False
+    try:
+        with open(EMBEDDINGS_PATH, "rb") as f:
+            data = pickle.load(f)
+    except Exception as e:
+        print(f"load_embeddings: pkl corrupt or unreadable ({e}) — will rebuild")
+        return False
+    cached_model = data.get("model") if isinstance(data, dict) else None
+    if cached_model != EMBED_MODEL_NAME:
+        print(f"load_embeddings: model mismatch (pkl={cached_model!r} vs "
+              f"current={EMBED_MODEL_NAME!r}) — will rebuild")
+        return False
+    try:
+        _embeddings = data["embeddings"]
+        _embed_texts = data["texts"]
+        return True
+    except (KeyError, TypeError) as e:
+        print(f"load_embeddings: pkl schema invalid ({e}) — will rebuild")
+        return False
 
 
 def embed_document(text: str, filename: str, project: str):
-    """Add embedding for a single new document."""
+    """Add/update embedding(s) for a single document using the same chunking
+    strategy as rebuild_embeddings (so freshly-saved articles match the rest
+    of the index — no second-class representation)."""
     global _embeddings, _embed_texts
     model = get_embed_model()
-    doc_text = _doc_text_for_embedding(text)
-    key = f"{project}/{filename}"
-    vec = model.encode([doc_text], normalize_embeddings=True)[0]
-    _embeddings[key] = vec
+    parent_key = f"{project}/{filename}"
     lines = text.splitlines()
-    _embed_texts[key] = lines[0].lstrip("# ").strip() if lines else filename
+    _embed_texts[parent_key] = lines[0].lstrip("# ").strip() if lines else filename
+
+    # Remove any prior chunks for this article (chunking topology may have changed)
+    for old_key in list(_embeddings.keys()):
+        if old_key == parent_key or old_key.startswith(parent_key + "#"):
+            _embeddings.pop(old_key, None)
+
+    chunks = _chunk_article(text, parent_key)
+    chunk_texts = [c[1] for c in chunks]
+    vectors = model.encode(
+        chunk_texts,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+        batch_size=EMBED_BATCH_SIZE,
+    )
+    for (chunk_key, _), vec in zip(chunks, vectors):
+        _embeddings[chunk_key] = vec
+
     # Save updated embeddings (with model tag for cache invalidation)
     with open(EMBEDDINGS_PATH, "wb") as f:
         pickle.dump({
