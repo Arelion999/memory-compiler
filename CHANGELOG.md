@@ -2,6 +2,19 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.7 — 2026-05-18
+
+Lint cleanup: убраны false positives + автофикс битых ссылок.
+
+### Fixed
+
+- **Check 1/2 пропускает service files** — `_active_context.md`, `_session.md`, `_log.md`, `_reflections.md`, `tracking_*.md` управляются движком и не имеют yaml header by design. Раньше lint флажил их за пустоту/отсутствие метаданных (~60 false positives на 24 проектах).
+- **Auto-fix dead refs в `lint(fix=true)`** — каждая `[text](dead.md)` заменяется на голый `text`. Содержимое статьи сохранено, только убраны битые ссылки. Идемпотентно.
+
+### Tests
+
+- 134/134 (was 132). +2: `test_lint_check2_skips_service_files`, `test_lint_fix_removes_dead_refs`.
+
 ## v1.7.6 — 2026-05-18
 
 Cache-invalidate `.embeddings.pkl` при смене `LATE_CHUNKING` flag.

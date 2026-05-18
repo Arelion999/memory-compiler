@@ -403,24 +403,28 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
             continue
 
         for a in articles:
+            # Service files (_*.md, tracking_*.md) lack yaml metadata
+            # by design — they are engine-managed. Skip Check 1/2 for them.
+            is_service = a.name.startswith("_") or a.name.startswith("tracking_")
             text = a.read_text(encoding="utf-8")
             lines = text.splitlines()
 
-            # Check 1: Empty or minimal
-            body = "\n".join(lines[5:]).strip()  # skip header
-            if len(body) < 50:
-                issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 пустая/минимальная статья ({len(body)} символов)")
+            if not is_service:
+                # Check 1: Empty or minimal
+                body = "\n".join(lines[5:]).strip()  # skip header
+                if len(body) < 50:
+                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 пустая/минимальная статья ({len(body)} символов)")
 
-            # Check 2: Missing metadata
-            has_project = any(l.startswith("**Проект:**") for l in lines[:10])
-            has_tags = any(l.startswith("**Теги:**") for l in lines[:10])
-            has_date = any(l.startswith("**Дата:**") or l.startswith("**Обновлено:**") for l in lines[:10])
-            if not has_project or not has_tags or not has_date:
-                missing = []
-                if not has_project: missing.append("Проект")
-                if not has_tags: missing.append("Теги")
-                if not has_date: missing.append("Дата")
-                issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 нет метаданных: {', '.join(missing)}")
+                # Check 2: Missing metadata
+                has_project = any(l.startswith("**Проект:**") for l in lines[:10])
+                has_tags = any(l.startswith("**Теги:**") for l in lines[:10])
+                has_date = any(l.startswith("**Дата:**") or l.startswith("**Обновлено:**") for l in lines[:10])
+                if not has_project or not has_tags or not has_date:
+                    missing = []
+                    if not has_project: missing.append("Проект")
+                    if not has_tags: missing.append("Теги")
+                    if not has_date: missing.append("Дата")
+                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 нет метаданных: {', '.join(missing)}")
 
             # Check 3: Stale (>90 days)
             updated = None
@@ -537,6 +541,8 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
             except Exception:
                 continue
             seen_dead = set()
+            # Two passes: first collect dead refs, then optionally strip them when fix=True.
+            dead_matches = []  # list of (match, display) for fix pass
             for m in md_link.finditer(atext):
                 cross_proj, target = m.group(1), m.group(2)
                 if cross_proj:
@@ -545,11 +551,27 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                 else:
                     target_path = proj_path / target
                     display = target
-                if display in seen_dead:
-                    continue
                 if not target_path.exists():
-                    seen_dead.add(display)
-                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 dead reference \u2192 {display}")
+                    if display not in seen_dead:
+                        seen_dead.add(display)
+                        issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 dead reference \u2192 {display}")
+                    dead_matches.append((m.group(0), display))
+            # Fix pass \u2014 replace each `[text](dead.md)` with bare `text`, preserving content
+            if fix and dead_matches:
+                new_text = atext
+                replaced = 0
+                for full_match, display in dead_matches:
+                    # Extract link text from `[text](url)` and replace whole match with `text`
+                    link_text_m = re.match(r"\[([^\]]+)\]\(", full_match)
+                    if not link_text_m:
+                        continue
+                    link_text = link_text_m.group(1)
+                    if full_match in new_text:
+                        new_text = new_text.replace(full_match, link_text)
+                        replaced += 1
+                if replaced > 0 and new_text != atext:
+                    a.write_text(new_text, encoding="utf-8")
+                    fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 \u0443\u0434\u0430\u043b\u0435\u043d\u043e {replaced} \u0431\u0438\u0442\u044b\u0445 \u0441\u0441\u044b\u043b\u043e\u043a")
 
     if fix:
         regenerate_index()
