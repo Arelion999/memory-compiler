@@ -2,6 +2,14 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.3 — 2026-05-18
+
+Hotfix: rebuild_embeddings вынесен из startup-хука в background task.
+
+### Fixed
+
+- **Контейнер уходит в unhealthy при смене EMBED_MODEL** — startup lifespan вызывал `rebuild_embeddings()` синхронно если кеш `.embeddings.pkl` несовместим. Для BGE-M3 на CPU это 5-15 минут, в течение которых `/api/health` не отвечает и Docker healthcheck помечает контейнер как unhealthy. Теперь rebuild идёт через `asyncio.create_task` + `run_in_executor` в фоне, сервер стартует мгновенно, semantic search возвращает пусто до завершения фоновой задачи (BM25 + reranker работают сразу).
+
 ## v1.7.2 — 2026-05-18
 
 Hotfix: HF Hub offline-режим по умолчанию + пробрасывание новых ML env-vars в compose.
