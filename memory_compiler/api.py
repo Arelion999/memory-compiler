@@ -520,11 +520,25 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         load_article_meta()
         count = rebuild_index()
         print(f"Whoosh index built: {count} documents")
-        if not load_embeddings() or len(_search_mod._embeddings) != count:
-            ecount = rebuild_embeddings()
-            print(f"Embeddings built: {ecount} documents")
-        else:
+        # Embeddings: load from cache if compatible; otherwise rebuild in
+        # background so we don't block server startup (rebuild with BGE-M3 or
+        # other long-context model can take 5-15 minutes and would prevent
+        # /api/health from responding, marking the container unhealthy).
+        if load_embeddings() and len(_search_mod._embeddings) >= 1:
             print(f"Embeddings loaded from cache: {len(_search_mod._embeddings)} documents")
+        else:
+            print("Embeddings cache invalid/empty — scheduling rebuild in background")
+
+            async def _bg_rebuild():
+                import asyncio as _asy
+                loop = _asy.get_event_loop()
+                try:
+                    n = await loop.run_in_executor(None, rebuild_embeddings)
+                    print(f"[bg] Embeddings rebuild done: {n} vectors")
+                except Exception as e:
+                    print(f"[bg] Embeddings rebuild failed: {e}")
+
+            asyncio.create_task(_bg_rebuild())
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
         print("Auto-compile scheduled daily at 02:00, auto-lint weekly Sun 03:00")
