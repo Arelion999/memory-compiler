@@ -39,8 +39,18 @@ def test_low_confidence_query_specific_pass():
 def test_low_confidence_query_mixed():
     # Mixed — has at least 2 content tokens → not low confidence
     assert not is_low_confidence_query("давай настроим nginx mikrotik")  # nginx + mikrotik
-    # Only one content token → still low confidence
-    assert is_low_confidence_query("давай продолжим nginx")  # only "nginx"
+    # One specific content token is still actionable — must NOT be low confidence
+    # (Web UI single-word search like "memory-compiler" or "nginx" must work)
+    assert not is_low_confidence_query("давай продолжим nginx")  # "nginx" is enough
+
+
+def test_low_confidence_single_word_passes():
+    """Single-word non-stopword queries (e.g. from Web UI search bar) must NOT
+    be flagged as low-confidence. Previously they were filtered out entirely."""
+    assert not is_low_confidence_query("memory-compiler")
+    assert not is_low_confidence_query("nginx")
+    assert not is_low_confidence_query("postgres")
+    assert not is_low_confidence_query("project-8")
 
 
 def test_content_tokens_strips_stopwords():

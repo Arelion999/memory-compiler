@@ -2,6 +2,20 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.8 — 2026-05-19
+
+Web UI single-word search не возвращает результаты.
+
+### Fixed
+
+- **Single-word queries из Web UI/MCP теперь работают**. `is_low_confidence_query` требовал `>=2 content tokens`. Однословные запросы вроде `memory-compiler`, `nginx`, `postgres` после фильтра stopwords давали 1 токен, флажились low-confidence, и search возвращал пустой результат. На скриншоте UI это видно как «Ничего не найдено» при наличии 23 статей в проекте.
+- Default `min_content_tokens` снижен с 2 до 1 — теперь low-confidence только при ZERO content tokens (только stopwords / noise).
+- В stopwords добавлены question words (`what/when/where/why/how/who/which` + `что/когда/где/почему/зачем/кто/какой/какая/какие`), чтобы `"what's next"` остался low-confidence (был 1 token "what" без них → не low; теперь "what" стопворд → 0 tokens → low).
+
+### Tests
+
+- 135/135 pass (was 134). +1 test: `test_low_confidence_single_word_passes`. Updated `test_low_confidence_query_mixed`: однотокенный "давай продолжим nginx" больше НЕ low-confidence (это позитивное изменение — "nginx" actionable).
+
 ## v1.7.7 — 2026-05-18
 
 Lint cleanup: убраны false positives + автофикс битых ссылок.
