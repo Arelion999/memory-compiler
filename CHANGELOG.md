@@ -2,6 +2,19 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.2 — 2026-05-18
+
+Hotfix: HF Hub offline-режим по умолчанию + пробрасывание новых ML env-vars в compose.
+
+### Fixed
+
+- **OSError Errno 99 (Cannot assign requested address)** — после загрузки модели sentence-transformers продолжал стучаться в huggingface.co (telemetry/проверка обновлений). На сетях с rate-limit/firewall это валит контейнер при старте. `HF_HUB_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1` по умолчанию в compose — работаем из локального кеша, никаких сетевых вызовов после первого load.
+- В docker-compose.yml добавлен passthrough для `EMBED_BATCH_SIZE`, `EMBED_MAX_SEQ_LENGTH` (из v1.7.1) — без этого env-vars не доходили до контейнера.
+
+### Migration
+
+- Если ставишь EMBED_MODEL на новую модель — временно установи `HF_HUB_OFFLINE=0` для первой загрузки, затем верни обратно в 1.
+
 ## v1.7.1 — 2026-05-18
 
 Hotfix: батчинг при reindex с большими моделями (BGE-M3 и аналоги).

@@ -29,6 +29,14 @@ services:
       - RERANKER_MODEL=${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       - LATE_CHUNKING=${LATE_CHUNKING:-false}
       - SPLADE_ENABLED=${SPLADE_ENABLED:-false}
+      - EMBED_BATCH_SIZE=${EMBED_BATCH_SIZE:-8}
+      - EMBED_MAX_SEQ_LENGTH=${EMBED_MAX_SEQ_LENGTH:-2048}
+      # HF Hub: после первой загрузки модели работать только из кеша,
+      # не делать сетевых вызовов (telemetry/version-check) — иначе на
+      # некоторых сетях падаем Errno 99 при обращении к huggingface.co
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
+      - HF_HUB_DISABLE_TELEMETRY=1
       # - PROJECTS=project-a,project-b,infra,general
 
 volumes:
