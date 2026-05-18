@@ -2,6 +2,24 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.5 — 2026-05-18
+
+Закрыты 3 проблемы пропущенные в v1.7.4 (second-pass audit).
+
+### Fixed
+
+- **P1 (HIGH): Path traversal в save_lesson / save_session / save_runbook / save_decision / save_secret / save_from_template / save_tracking / save_compact** — v1.7.4 закрыл только edit/read/delete_article, но все handlers использующие `project_dir(project)` имели ту же уязвимость. Введён `safe_project_dir()` — отвергает project с `..`, `/`, `\`, или резолвящийся вне KNOWLEDGE_DIR. Применён ко всем 14 call-сайтам в handlers.py. Plus добавлен top-level ValueError handler в `call_tool` dispatcher — graceful response при любом safe_*-провале.
+- **P2 (MEDIUM): `safe_article_path` обходился через project="."** — точка не содержит `/`, `\`, `..` (проверки v1.7.4), но `KNOWLEDGE_DIR / "." → KNOWLEDGE_DIR` — даёт доступ к root-уровню файлам. Усилена проверка: project должен быть STRICT subdir, не сам KNOWLEDGE_DIR.
+- **P3 (MEDIUM): `mark_dependents` теперь cross-project** — раньше пробегал только по `*.md` в проекте edited статьи. Cross-project ссылки `[text](../proj/file.md)` из других проектов не помечались. Теперь итерирует по всем проектам с правильным паттерном для каждого случая (intra-vs-cross).
+
+### Tests
+
+- 131/131 pass (было 127). +4 теста: P1 traversal через save_lesson, P2 dot project + safe_project_dir, P3 cross-project mark_dependents.
+
+### Migration
+
+Backward-compatible. Никаких env / config изменений.
+
 ## v1.7.4 — 2026-05-18
 
 Hardening: устранены 12 проблем найденных в code-audit после миграции на e5-base.

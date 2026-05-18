@@ -524,6 +524,28 @@ def test_lint_orphan_ignores_substring_false_positive(knowledge_dir):
     assert "target.md" in flagged
 
 
+def test_mark_dependents_cross_project(knowledge_dir):
+    """When article in proja is edited, dependents in projb (linking via
+    ../proja/file.md) must also be marked."""
+    from memory_compiler.storage import mark_dependents
+    import memory_compiler.config as _cfg
+
+    proja = knowledge_dir / "proja"
+    projb = knowledge_dir / "projb"
+    proja.mkdir(exist_ok=True)
+    projb.mkdir(exist_ok=True)
+    (proja / "shared.md").write_text("# Shared\n\nbody", encoding="utf-8")
+    (projb / "consumer.md").write_text(
+        "# Consumer\n\nuses [shared](../proja/shared.md)", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    count = mark_dependents("proja", "shared.md", "2026-05-18 23:00")
+    # consumer.md in projb should be marked
+    consumer_text = (projb / "consumer.md").read_text(encoding="utf-8")
+    assert "🔄" in consumer_text or "обновлено" in consumer_text
+    assert count >= 1
+
+
 def test_mark_dependents_skips_unreadable_files(knowledge_dir, monkeypatch):
     """mark_dependents must not crash if one of the .md files can't be read.
     Other dependents must still be processed."""

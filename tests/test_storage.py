@@ -538,6 +538,55 @@ history: []
 # ─── Per-project _log.md (Karpathy LLM Wiki pattern) ────────────────────────
 
 
+def test_safe_path_rejects_dot_project(knowledge_dir):
+    """project='.' must be rejected — it resolves to KNOWLEDGE_DIR itself,
+    allowing access to root-level files outside any project."""
+    from memory_compiler.storage import safe_article_path
+    import pytest
+    with pytest.raises(ValueError):
+        safe_article_path(".", "index.md")
+    with pytest.raises(ValueError):
+        safe_article_path("", "anything.md")
+
+
+def test_safe_project_dir_rejects_traversal(knowledge_dir):
+    """safe_project_dir must reject project names that escape KNOWLEDGE_DIR."""
+    from memory_compiler.storage import safe_project_dir
+    import pytest
+    # Valid
+    p = safe_project_dir("testproj")
+    assert p == knowledge_dir / "testproj"
+    # Traversal via project
+    with pytest.raises(ValueError):
+        safe_project_dir("../etc")
+    with pytest.raises(ValueError):
+        safe_project_dir("..")
+    with pytest.raises(ValueError):
+        safe_project_dir(".")
+    with pytest.raises(ValueError):
+        safe_project_dir("")
+    with pytest.raises(ValueError):
+        safe_project_dir("a/b")
+
+
+def test_save_lesson_rejects_path_traversal_in_project(knowledge_dir):
+    """save_lesson with project='../etc' must NOT create files outside KNOWLEDGE_DIR."""
+    import asyncio
+    from memory_compiler.handlers import save_lesson
+    result = asyncio.run(save_lesson(
+        topic="harmless title",
+        content="some content",
+        project="../etc",
+    ))
+    text = result[0].text
+    assert "Небезопасный" in text or "unsafe" in text.lower() or "❌" in text
+    # Verify no file created outside KNOWLEDGE_DIR
+    import os
+    parent = knowledge_dir.parent
+    bad = parent / "etc"
+    assert not bad.exists() or not any(bad.glob("*.md"))
+
+
 def test_safe_path_rejects_traversal(knowledge_dir):
     """safe_project_path must reject path traversal attempts."""
     from memory_compiler.storage import safe_article_path

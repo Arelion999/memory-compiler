@@ -36,27 +36,42 @@ def normalize_project(project: str) -> str:
     return project.strip().lower()
 
 
+def safe_project_dir(project: str) -> Path:
+    """Return KNOWLEDGE_DIR/<project> only if project name is safe.
+
+    Rejects empty, '.', '..', anything with path separators or traversal — these
+    would resolve OUT of any project directory (back to KNOWLEDGE_DIR root or
+    higher). Same defense-in-depth as safe_article_path, for handlers that need
+    just the project directory (save_lesson, save_session, etc).
+    """
+    if not project or not project.strip():
+        raise ValueError(f"empty project: {project!r}")
+    if project in (".", "..") or "/" in project or "\\" in project or ".." in project:
+        raise ValueError(f"unsafe project: {project!r}")
+    proj = project_dir(project)
+    kd = KNOWLEDGE_DIR.resolve()
+    proj_r = proj.resolve()
+    # Project must be a strict subdir of KNOWLEDGE_DIR (not KNOWLEDGE_DIR itself).
+    if proj_r == kd or kd not in proj_r.parents:
+        raise ValueError(f"project escapes KNOWLEDGE_DIR: {project!r}")
+    return proj
+
+
 def safe_article_path(project: str, filename: str) -> Path:
     """Return KNOWLEDGE_DIR/<project>/<filename> only if it stays inside the project dir.
 
     Raises ValueError on traversal attempts (../, absolute paths, project names
-    that escape KNOWLEDGE_DIR). Defense-in-depth: even though MC_API_KEY guards
-    the HTTP/MCP endpoints, we still must not let a crafted filename read or
-    overwrite arbitrary host files.
+    that escape KNOWLEDGE_DIR or resolve to KNOWLEDGE_DIR itself). Defense-in-
+    depth: even though MC_API_KEY guards the HTTP/MCP endpoints, we still must
+    not let a crafted filename read or overwrite arbitrary host files.
     """
-    if not project or not filename:
-        raise ValueError(f"empty project/filename: {project!r}/{filename!r}")
+    if not filename:
+        raise ValueError(f"empty filename: {filename!r}")
     # Filenames must be flat — no subdirs, no traversal, no absolute paths.
     if "/" in filename or "\\" in filename or ".." in filename:
         raise ValueError(f"unsafe filename: {filename!r}")
-    # Project must resolve inside KNOWLEDGE_DIR — reject traversal via project name too.
-    if "/" in project or "\\" in project or ".." in project:
-        raise ValueError(f"unsafe project: {project!r}")
+    proj = safe_project_dir(project)  # delegates project validation
     kd = KNOWLEDGE_DIR.resolve()
-    proj = project_dir(project)
-    proj_r = proj.resolve()
-    if proj_r != kd and kd not in proj_r.parents:
-        raise ValueError(f"project escapes KNOWLEDGE_DIR: {project!r}")
     candidate = (proj / filename).resolve()
     if kd not in candidate.parents:
         raise ValueError(f"path escapes KNOWLEDGE_DIR: {project}/{filename}")
@@ -935,44 +950,61 @@ def append_reflections(project: str, facts: list[str], cap: int = 20) -> None:
 
 def mark_dependents(project: str, filename: str, timestamp: str) -> int:
     """Cascade-mark: when filename is edited, refresh a 🔄 marker on every line
-    that links to it from another article in the same project. Idempotent —
-    re-running replaces the existing marker timestamp instead of duplicating.
+    that links to it from any other article (same or different project).
+    Idempotent — re-running replaces the existing marker timestamp.
+
+    Cross-project links recognised:
+      - same project: [text](./file.md) or [text](file.md)
+      - cross project: [text](../<project>/file.md)
 
     Returns the number of dependent articles touched.
     """
-    proj_dir_path = project_dir(project)
-    if not proj_dir_path.exists():
+    target_proj_dir = project_dir(project)
+    if not target_proj_dir.exists():
         return 0
 
-    link_pattern = re.compile(
-        r'\[([^\]]+)\]\((?:\./|\.\./[\w/-]+/)?' + re.escape(filename) + r'\)'
+    fname_escaped = re.escape(filename)
+    same_proj_pattern = re.compile(r'\[([^\]]+)\]\((?:\./)?' + fname_escaped + r'\)')
+    cross_proj_pattern = re.compile(
+        r'\[([^\]]+)\]\(\.\./' + re.escape(project) + r'/' + fname_escaped + r'\)'
     )
     marker_pattern = re.compile(r'\s*🔄 обновлено: \d{4}-\d{2}-\d{2} \d{2}:\d{2}')
     new_marker = f" 🔄 обновлено: {timestamp}"
 
     marked = 0
-    for a in proj_dir_path.glob("*.md"):
-        if a.name == filename or a.name.startswith("_"):
-            continue
-        try:
-            text = a.read_text(encoding="utf-8")
-        except Exception:
-            continue  # unreadable file (perms / broken encoding) — skip, don't crash
-        if not link_pattern.search(text):
-            continue
-        new_lines = []
-        modified = False
-        for line in text.splitlines():
-            if link_pattern.search(line):
-                stripped = marker_pattern.sub("", line)
-                new_lines.append(stripped + new_marker)
-                modified = True
-            else:
-                new_lines.append(line)
-        if modified:
-            tail = "\n" if text.endswith("\n") else ""
-            a.write_text("\n".join(new_lines) + tail, encoding="utf-8")
-            marked += 1
+    # Iterate over ALL projects to catch cross-project deps too
+    if KNOWLEDGE_DIR.exists():
+        for proj_path in KNOWLEDGE_DIR.iterdir():
+            if not proj_path.is_dir() or proj_path.name.startswith("."):
+                continue
+            is_same_project = (proj_path == target_proj_dir)
+            for a in proj_path.glob("*.md"):
+                # Skip the file itself + service files
+                if is_same_project and a.name == filename:
+                    continue
+                if a.name.startswith("_"):
+                    continue
+                try:
+                    text = a.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                # Pick the right pattern based on whether the link is intra- or cross-project
+                pattern = same_proj_pattern if is_same_project else cross_proj_pattern
+                if not pattern.search(text):
+                    continue
+                new_lines = []
+                modified = False
+                for line in text.splitlines():
+                    if pattern.search(line):
+                        stripped = marker_pattern.sub("", line)
+                        new_lines.append(stripped + new_marker)
+                        modified = True
+                    else:
+                        new_lines.append(line)
+                if modified:
+                    tail = "\n" if text.endswith("\n") else ""
+                    a.write_text("\n".join(new_lines) + tail, encoding="utf-8")
+                    marked += 1
     return marked
 
 

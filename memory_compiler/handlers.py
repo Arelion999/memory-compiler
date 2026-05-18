@@ -30,7 +30,7 @@ from memory_compiler.storage import (
     encrypt_content, decrypt_content, is_encrypted,
     log_event, mark_dependents,
     extract_reflections, append_reflections,
-    safe_article_path,
+    safe_article_path, safe_project_dir,
 )
 
 
@@ -38,6 +38,10 @@ from memory_compiler.storage import (
 
 
 async def save_lesson(topic: str, content: str, project: str, tags: list = None, force_new: bool = False) -> list[TextContent]:
+    try:
+        safe_project_dir(project)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный параметр: {e}")]
     tags = tags or []
     # Автотегирование — дополнить пользовательские теги автоматическими
     auto = auto_tags(content, topic)
@@ -80,10 +84,10 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         action = f"\U0001f504 Обновлено: {project}/{article_path.name}{diff_info}"
     else:
         # Create new article
-        article_path = project_dir(project) / f"{slug}.md"
+        article_path = safe_project_dir(project) / f"{slug}.md"
         # Handle name collision
         if article_path.exists():
-            article_path = project_dir(project) / f"{slug}_{now.strftime('%Y%m%d')}.md"
+            article_path = safe_project_dir(project) / f"{slug}_{now.strftime('%Y%m%d')}.md"
         article_text = f"""# {topic}\n\n**Дата:** {ts}\n**Проект:** {project}\n**Теги:** {', '.join(tags) if tags else '—'}\n\n## Записи\n\n### {ts}\n{content}\n"""
         article_path.write_text(article_text, encoding="utf-8")
         regenerate_index()
@@ -208,7 +212,7 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
             out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
         return [TextContent(type="text", text="\n".join(out))]
     else:
-        proj_path = project_dir(project)
+        proj_path = safe_project_dir(project)
         articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not articles:
             return [TextContent(type="text", text=f"База знаний по '{project}' пуста.")]
@@ -575,7 +579,7 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
 
 async def save_session(project: str, summary: str, decisions: str = "", open_questions: str = "") -> list[TextContent]:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    session_path = project_dir(project) / "_session.md"
+    session_path = safe_project_dir(project) / "_session.md"
     text = f"""# Сессия: {project}
 
 **Дата:** {now}
@@ -595,7 +599,7 @@ async def save_session(project: str, summary: str, decisions: str = "", open_que
 
 
 async def load_session(project: str) -> list[TextContent]:
-    session_path = project_dir(project) / "_session.md"
+    session_path = safe_project_dir(project) / "_session.md"
     parts = []
     if session_path.exists():
         parts.append(session_path.read_text(encoding="utf-8"))
@@ -630,7 +634,7 @@ async def load_session(project: str) -> list[TextContent]:
 
 
 async def get_summary(project: str) -> list[TextContent]:
-    proj_path = project_dir(project)
+    proj_path = safe_project_dir(project)
     articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     # Исключаем служебные файлы
     articles = [a for a in articles if not a.name.startswith("_")]
@@ -707,7 +711,7 @@ async def ask(question: str, project: str = "all") -> list[TextContent]:
 
 
 async def get_active_context(project: str) -> list[TextContent]:
-    ctx_path = project_dir(project) / "_active_context.md"
+    ctx_path = safe_project_dir(project) / "_active_context.md"
     if not ctx_path.exists():
         return [TextContent(type="text", text=f"Нет активного контекста для {project}.")]
     text = ctx_path.read_text(encoding="utf-8")
@@ -1232,7 +1236,7 @@ async def save_compact(project: str, summary: str) -> list[TextContent]:
     Файл: <project>/_compact_history.md — FIFO из 5 последних event'ов.
     Подтягивается в start_task — даёт continuous memory через compact-границы.
     """
-    proj_dir = project_dir(project)
+    proj_dir = safe_project_dir(project)
     cpath = proj_dir / "_compact_history.md"
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -1603,7 +1607,7 @@ async def init_schema(project: str) -> list[TextContent]:
     The schema is a human-edited contract — entities, relations, stylistic conventions —
     that lint and save_lesson can later use to enforce consistency.
     """
-    proj_dir = project_dir(project)
+    proj_dir = safe_project_dir(project)
     schema_path = proj_dir / "_schema.md"
     if schema_path.exists():
         return [TextContent(type="text", text=(
@@ -1781,9 +1785,9 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
 
 {steps_text}
 """
-    article_path = project_dir(project) / f"{slug}.md"
+    article_path = safe_project_dir(project) / f"{slug}.md"
     if article_path.exists():
-        article_path = project_dir(project) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+        article_path = safe_project_dir(project) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
     article_path.write_text(article_text, encoding="utf-8")
 
     index_document(article_text, article_path.name, project)
@@ -1918,9 +1922,9 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
 ## Обоснование
 {reasoning}
 """
-    article_path = project_dir(project) / f"decision_{slug}.md"
+    article_path = safe_project_dir(project) / f"decision_{slug}.md"
     if article_path.exists():
-        article_path = project_dir(project) / f"decision_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+        article_path = safe_project_dir(project) / f"decision_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
     article_path.write_text(article_text, encoding="utf-8")
 
     index_document(article_text, article_path.name, project)
@@ -2018,9 +2022,9 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 
 {encrypted_body}
 """
-    article_path = project_dir(project) / f"secret_{slug}.md"
+    article_path = safe_project_dir(project) / f"secret_{slug}.md"
     if article_path.exists():
-        article_path = project_dir(project) / f"secret_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+        article_path = safe_project_dir(project) / f"secret_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
     article_path.write_text(article_text, encoding="utf-8")
 
     # Index with title+tags only (not encrypted content) for searchability
