@@ -85,6 +85,12 @@ EMBED_MODEL_NAME = _os_embed.environ.get("EMBED_MODEL", "paraphrase-multilingual
 # truncate long articles — only enable when paired with EMBED_MODEL upgrade.
 LATE_CHUNKING = _os_embed.environ.get("LATE_CHUNKING", "false").lower() in ("1", "true", "yes")
 
+# Memory-safe encoding controls for big models (BGE-M3, Qwen3-Embedding etc):
+# without these, model.encode(docs=540, seq=8192, hidden=1024) tries a peak
+# allocation ~18GB and OOMs on NAS-class machines even with 32GB RAM.
+EMBED_BATCH_SIZE = int(_os_embed.environ.get("EMBED_BATCH_SIZE", "8"))
+EMBED_MAX_SEQ_LENGTH = int(_os_embed.environ.get("EMBED_MAX_SEQ_LENGTH", "2048"))
+
 # SPLADE 3-way hybrid (opt-in). When true, whoosh_search adds a sparse-learned channel
 # to the RRF merge alongside BM25 and dense embeddings. Falls back to 2-way if the
 # model is unavailable (no good multilingual SPLADE published yet — keep disabled
@@ -111,6 +117,14 @@ def get_embed_model() -> SentenceTransformer:
     global _embed_model
     if _embed_model is None:
         _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+        # Cap context length — long-context defaults (8192) make peak memory
+        # allocation explode during batch encoding. 2048 covers >99% of our
+        # articles; longer ones are truncated rather than OOM the host.
+        try:
+            if _embed_model.max_seq_length > EMBED_MAX_SEQ_LENGTH:
+                _embed_model.max_seq_length = EMBED_MAX_SEQ_LENGTH
+        except Exception:
+            pass
     return _embed_model
 
 
@@ -256,7 +270,14 @@ def rebuild_embeddings():
             _embed_texts[key] = md.stem
 
     if docs:
-        vectors = model.encode(docs, show_progress_bar=False, normalize_embeddings=True)
+        # Batch in small chunks — long-context models (BGE-M3) blow up peak
+        # allocation when encoding hundreds of long docs at once.
+        vectors = model.encode(
+            docs,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+            batch_size=EMBED_BATCH_SIZE,
+        )
         for i, path in enumerate(paths):
             _embeddings[path] = vectors[i]
 

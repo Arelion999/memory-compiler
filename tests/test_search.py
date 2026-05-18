@@ -52,6 +52,32 @@ def test_content_tokens_strips_stopwords():
     assert "продолжим" not in tokens
 
 
+def test_embed_batch_size_default_safe():
+    """Default EMBED_BATCH_SIZE must be small enough to avoid OOM on NAS-class hosts."""
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import EMBED_BATCH_SIZE, EMBED_MAX_SEQ_LENGTH
+    # 8 keeps peak allocation ~270MB even with seq=2048 hidden=1024
+    assert EMBED_BATCH_SIZE <= 16
+    assert EMBED_MAX_SEQ_LENGTH <= 4096
+
+
+def test_embed_batch_size_env_override(monkeypatch):
+    """EMBED_BATCH_SIZE and EMBED_MAX_SEQ_LENGTH must be configurable via env."""
+    monkeypatch.setenv("EMBED_BATCH_SIZE", "32")
+    monkeypatch.setenv("EMBED_MAX_SEQ_LENGTH", "512")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    from memory_compiler.search import EMBED_BATCH_SIZE, EMBED_MAX_SEQ_LENGTH
+    assert EMBED_BATCH_SIZE == 32
+    assert EMBED_MAX_SEQ_LENGTH == 512
+    monkeypatch.delenv("EMBED_BATCH_SIZE", raising=False)
+    monkeypatch.delenv("EMBED_MAX_SEQ_LENGTH", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
 def test_splade_disabled_by_default():
     """SPLADE 3-way hybrid is opt-in — default must be disabled."""
     import importlib

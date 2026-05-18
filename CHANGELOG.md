@@ -2,6 +2,19 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.1 — 2026-05-18
+
+Hotfix: батчинг при reindex с большими моделями (BGE-M3 и аналоги).
+
+### Fixed
+
+- **OOM при `rebuild_embeddings` на BGE-M3** — `model.encode(docs)` без batch_size пытался разместить полный тензор `(N=540, seq=8192, hidden=1024)` ~ 18GB peak allocation, что валилось `RuntimeError: alloc_cpu.cpp:127 Cannot allocate memory` даже на 32GB-хостах. Добавлены `EMBED_BATCH_SIZE` (default 8) и `EMBED_MAX_SEQ_LENGTH` (default 2048, cap для long-context моделей).
+- `get_embed_model()` теперь принудительно устанавливает `max_seq_length` после load (если он выше cap). Long-context модели типа BGE-M3 имеют default 8192 — это съедает память при batch encoding без реальной нужды для статей памяти-компилера.
+
+### Tests
+
+- 117/117 pass (было 115). +2 теста на env-override batch/seq params.
+
 ## v1.7.0 — 2026-05-18
 
 Все 5 отложенных фич из v1.6.0 research-плана. Через env-флаги и feature gates, чтобы продакшен не сломался — все опасные изменения opt-in, дефолты совместимы с v1.6.0.
