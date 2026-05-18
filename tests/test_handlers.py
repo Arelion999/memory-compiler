@@ -257,3 +257,266 @@ async def test_set_and_get_project_deps(knowledge_dir):
     assert "general" in result[0].text
     result = await get_project_deps("testproj")
     assert "general" in result[0].text
+
+
+# ─── Reranker integration in search() and get_context() ────────────────────
+
+
+def _seed_postgres_articles(knowledge_dir, titles):
+    import memory_compiler.config as _cfg
+    proj = knowledge_dir / "testproj"
+    for i, title in enumerate(titles):
+        (proj / f"art_{i}.md").write_text(
+            f"# {title}\n\n**Дата:** 2026-01-01 10:00\n"
+            f"**Теги:** postgres\n\n## Записи\n\n### 2026-01-01 10:00\n"
+            f"{title} — implementation details and configuration body.",
+            encoding="utf-8",
+        )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+    rebuild_index()
+    rebuild_embeddings()
+
+
+def test_search_applies_reranker(knowledge_dir, monkeypatch):
+    """search() must run results through cross-encoder reranker and surface rerank_score."""
+    import memory_compiler.search as search_mod
+    titles = ["postgres tuning queries", "postgres backup script", "postgres ssl client cert"]
+    _seed_postgres_articles(knowledge_dir, titles)
+
+    class FakeReranker:
+        def predict(self, pairs, show_progress_bar=False):
+            return [9.0 if "ssl" in t.lower() else 1.0 for _q, t in pairs]
+
+    monkeypatch.setattr(search_mod, "_reranker_model", FakeReranker())
+
+    result = asyncio.run(search("postgres deploy", project="testproj"))
+    text = result[0].text
+    # Reranker output must be visible (as in start_task) — proves rerank ran
+    assert "rerank" in text.lower()
+    # SSL article should be first (FakeReranker scored it highest)
+    ssl_idx = text.find("ssl client cert")
+    tuning_idx = text.find("tuning queries")
+    assert ssl_idx > 0, "ssl article not found in output"
+    assert tuning_idx < 0 or ssl_idx < tuning_idx, "reranker did not reorder"
+
+
+def test_search_works_without_reranker(knowledge_dir, monkeypatch):
+    """Graceful fallback — when reranker unavailable, search still returns results
+    and does NOT expose a rerank score line."""
+    import memory_compiler.search as search_mod
+    _seed_postgres_articles(knowledge_dir, ["postgres tuning guide"])
+
+    # Marker 'False' = "tried to load and failed" — get_reranker_model returns None
+    monkeypatch.setattr(search_mod, "_reranker_model", False)
+
+    result = asyncio.run(search("postgres tuning", project="testproj"))
+    text = result[0].text
+    assert "postgres tuning guide" in text.lower()
+    # No reranker → no rerank score label
+    assert "rerank:" not in text.lower()
+
+
+# ─── lint orphans and dead cross-refs (Karpathy LLM Wiki pattern) ──────────
+
+
+# ─── Cascade-mark on edit_article (Karpathy: stale-reference flagging) ─────
+
+
+def test_edit_article_marks_dependent_articles(knowledge_dir):
+    """When an article is edited, articles that link to it get a 🔄 review marker."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import edit_article
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "config.md").write_text(
+        "# Config article\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nOriginal config content body line.",
+        encoding="utf-8",
+    )
+    (proj / "deploy.md").write_text(
+        "# Deploy article\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nDeploy uses config settings.\n\n"
+        "## См. также\n- [Config](./config.md) (2026-01-01)\n",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    asyncio.run(edit_article(project="testproj", filename="config.md",
+                             content="UPDATED config content with new fields.",
+                             append=False))
+
+    deploy_text = (proj / "deploy.md").read_text(encoding="utf-8")
+    assert "config.md" in deploy_text  # link still present
+    # Review marker injected near the link
+    has_marker = "🔄" in deploy_text or "review" in deploy_text.lower() or "обновлен" in deploy_text.lower()
+    assert has_marker, f"No cascade-review marker found in deploy.md:\n{deploy_text}"
+
+
+def test_edit_article_does_not_touch_unrelated(knowledge_dir):
+    """Articles that do NOT reference the edited file must remain unchanged."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import edit_article
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "target.md").write_text(
+        "# Target\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nTarget body content line one.",
+        encoding="utf-8",
+    )
+    (proj / "unrelated.md").write_text(
+        "# Unrelated\n\n**Дата:** 2026-01-01 10:00\n**Теги:** other\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nNothing related to the other one body.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    before = (proj / "unrelated.md").read_text(encoding="utf-8")
+    asyncio.run(edit_article(project="testproj", filename="target.md",
+                             content="Updated target body line.", append=False))
+    after = (proj / "unrelated.md").read_text(encoding="utf-8")
+    assert before == after, "Unrelated article was modified unexpectedly"
+
+
+def test_lint_flags_orphan_article(knowledge_dir):
+    """An article not referenced by any other article in the project must be flagged
+    with an explicit 'isolated/сирота/no inbound refs' marker."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "alpha.md").write_text(
+        "# Alpha topic\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\n"
+        "See also beta.md for context body line.",
+        encoding="utf-8",
+    )
+    (proj / "beta.md").write_text(
+        "# Beta topic\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\n"
+        "Beta content body line one. Beta content body line two for length.",
+        encoding="utf-8",
+    )
+    (proj / "gamma.md").write_text(
+        "# Gamma topic\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\n"
+        "Gamma content body line one. Gamma content body line two for length.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    # Explicit marker required — find line(s) with the orphan label
+    isolated_marker = ("сирота", "isolated", "no inbound")
+    lines = text.splitlines()
+    isolated_lines = [l for l in lines if any(m in l.lower() for m in isolated_marker)]
+    assert isolated_lines, f"No orphan marker line found in output:\n{text}"
+    flagged = " ".join(isolated_lines)
+    # Gamma is the only article not referenced by anyone
+    assert "gamma.md" in flagged
+    # Beta is referenced from alpha — must not appear as orphan
+    assert "beta.md" not in flagged
+
+
+def test_lint_flags_dead_cross_reference(knowledge_dir):
+    """A markdown link pointing to a missing file must be flagged."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "broken.md").write_text(
+        "# Article with broken link\n\n**Дата:** 2026-01-01 10:00\n**Теги:** docs\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\n"
+        "Some content. Reference: [missing](./does_not_exist.md) and more text body here.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    assert "does_not_exist.md" in text
+    assert "dead" in text.lower() or "битая" in text.lower() or "broken" in text.lower()
+
+
+def test_lint_does_not_flag_existing_cross_ref(knowledge_dir):
+    """In one project: linker mentions an existing target AND a missing one.
+    Lint must flag only the missing reference, not the existing one."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "target_present.md").write_text(
+        "# Target\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nThe target article body has substantial content here.",
+        encoding="utf-8",
+    )
+    (proj / "linker.md").write_text(
+        "# Linker\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\n"
+        "See [target](./target_present.md) and also [ghost](./ghost_missing.md) body.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="testproj"))
+    text = result[0].text
+    dead_lines = [l for l in text.splitlines()
+                  if "dead" in l.lower() or "битая" in l.lower() or "broken" in l.lower()]
+    flagged = " ".join(dead_lines)
+    # Missing target flagged, existing one — not
+    assert "ghost_missing.md" in flagged
+    assert "target_present.md" not in flagged
+
+
+def test_get_context_applies_reranker(knowledge_dir, monkeypatch):
+    """get_context() with query must also use reranker."""
+    import memory_compiler.search as search_mod
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import get_context
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    for i, title in enumerate(["nginx ssl config", "nginx access log rotation", "nginx upstream load balance"]):
+        (proj / f"ngx_{i}.md").write_text(
+            f"# {title}\n\n**Дата:** 2026-01-01 10:00\n**Теги:** nginx\n\n{title} details body.",
+            encoding="utf-8",
+        )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    class FakeReranker:
+        def predict(self, pairs, show_progress_bar=False):
+            return [9.0 if "upstream" in t.lower() else 1.0 for _q, t in pairs]
+
+    monkeypatch.setattr(search_mod, "_reranker_model", FakeReranker())
+
+    result = asyncio.run(get_context(project="testproj", query="nginx load distribution"))
+    text = result[0].text
+    # rerank label must surface in output — proves reranker ran on get_context results
+    assert "rerank" in text.lower()
+    upstream_idx = text.find("upstream load balance")
+    ssl_idx = text.find("ssl config")
+    assert upstream_idx > 0, "upstream article missing from output"
+    assert ssl_idx < 0 or upstream_idx < ssl_idx, "reranker did not reorder in get_context"

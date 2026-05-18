@@ -2,6 +2,31 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.6.0 — 2026-05-18
+
+Качество retrieval + аккуратность базы знаний. Влияние research-обзора по новым техникам RAG/agent-memory (Karpathy LLM Wiki, MTEB-2026).
+
+### Контекст
+
+`bge-reranker-base` уже был в коде с v1.3, но вызывался только в `start_task` — обычный `search()`/`get_context()` довольствовался hybrid RRF без cross-encoder reranker'а. Также Karpathy в апреле 2026 формализовал паттерн `index.md`+`log.md`+`Schema`+`Lint` для compounding knowledge artifacts — у нас была половина (index.md, stale_facts), не было per-project journal и проверок целостности ссылок.
+
+### Added
+
+- **Cross-encoder reranker подключён к `search()` и `get_context()`** — индустриальный паттерн 2026: hybrid retrieval → top-20 кандидатов → cross-encoder rerank → top-K. По RAG-бенчмаркам это +25–40% precision над hybrid alone при ~50ms overhead. В выводе теперь видно `score: 44.8, rerank: 9.21` для каждого результата.
+- **Дефолтный reranker — `BAAI/bge-reranker-v2-m3`** (multilingual, на базе BGE-M3). Был `bge-reranker-base` (английский). Для русскоязычной базы это значительный прирост качества. Управляется через env `RERANKER_MODEL` — на NAS с малой RAM можно поставить `cross-encoder/ms-marco-MiniLM-L-6-v2`.
+- **Per-project `_log.md`** — append-only журнал событий по Karpathy LLM Wiki. Записываются `save_lesson`, `edit_article`, `lint`. Отделён от глобального `_audit.log` (JSON, все вызовы) — это человеко-читаемый narrative проекта.
+- **`lint` расширен**: проверка `сирота` (no inbound refs — статья на которую никто не ссылается) и `dead reference` (markdown-link на несуществующий файл). Дополняет существующие checks (метаданные, устаревшее, дубли).
+- **Cascade-mark при `edit_article`** — когда статья меняется, на каждой строке которая ссылается на неё в других статьях проекта обновляется маркер `🔄 обновлено: YYYY-MM-DD HH:MM`. Идемпотентно — re-edit просто обновляет timestamp. Решает «temporal blindness» проблему из Karpathy gist.
+
+### Tests
+
+- 100/100 pass (было 85). +15 новых: 3 reranker integration, 5 log.md, 3 lint extensions, 2 reranker config, 2 cascade-mark.
+
+### Migration
+
+- Embedding-кэш `.embeddings.pkl` ломать не нужно — embedding модель та же (`paraphrase-multilingual-MiniLM-L12-v2`).
+- При первом `start_task` или `search` после апгрейда сервер скачает `bge-reranker-v2-m3` (~570MB) с HuggingFace — будет 1-минутная задержка, fallback на `None` если HF недоступен. Чтобы остаться на старом `base` reranker'е: `RERANKER_MODEL=BAAI/bge-reranker-base`.
+
 ## v1.5.2 — 2026-05-12
 
 Hotfix.

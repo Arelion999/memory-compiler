@@ -788,6 +788,69 @@ def audit_log(tool_name: str, args: dict, result_size: int):
         pass
 
 
+def mark_dependents(project: str, filename: str, timestamp: str) -> int:
+    """Cascade-mark: when filename is edited, refresh a 🔄 marker on every line
+    that links to it from another article in the same project. Idempotent —
+    re-running replaces the existing marker timestamp instead of duplicating.
+
+    Returns the number of dependent articles touched.
+    """
+    proj_dir_path = project_dir(project)
+    if not proj_dir_path.exists():
+        return 0
+
+    link_pattern = re.compile(
+        r'\[([^\]]+)\]\((?:\./|\.\./[\w/-]+/)?' + re.escape(filename) + r'\)'
+    )
+    marker_pattern = re.compile(r'\s*🔄 обновлено: \d{4}-\d{2}-\d{2} \d{2}:\d{2}')
+    new_marker = f" 🔄 обновлено: {timestamp}"
+
+    marked = 0
+    for a in proj_dir_path.glob("*.md"):
+        if a.name == filename or a.name.startswith("_"):
+            continue
+        text = a.read_text(encoding="utf-8")
+        if not link_pattern.search(text):
+            continue
+        new_lines = []
+        modified = False
+        for line in text.splitlines():
+            if link_pattern.search(line):
+                stripped = marker_pattern.sub("", line)
+                new_lines.append(stripped + new_marker)
+                modified = True
+            else:
+                new_lines.append(line)
+        if modified:
+            tail = "\n" if text.endswith("\n") else ""
+            a.write_text("\n".join(new_lines) + tail, encoding="utf-8")
+            marked += 1
+    return marked
+
+
+def log_event(project: str, action: str, details: str = "") -> None:
+    """Append a per-project event line to <project>/_log.md (Karpathy LLM Wiki pattern).
+
+    One human-readable journal per project with ingest / save_* / lint / consolidate
+    events. Distinct from _audit.log (global, JSON, every tool call) — _log.md is
+    intentionally selective and readable, recording only knowledge-shaping operations.
+    """
+    proj_dir = project_dir(project)
+    log_path = proj_dir / "_log.md"
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = f"- [{ts}] **{action}** — {details}".rstrip(" —") + "\n"
+    is_new = not log_path.exists()
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            if is_new:
+                f.write(f"# Project journal: {normalize_project(project)}\n\n"
+                        "Append-only log of knowledge-shaping events "
+                        "(ingest, save_*, lint, consolidate, delete).\n\n")
+            f.write(line)
+    except Exception:
+        pass  # never break a write path because of journaling
+
+
 def read_audit_log(limit: int = 100) -> list[dict]:
     """Read last N audit entries."""
     path = _audit_path()
