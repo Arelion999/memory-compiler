@@ -538,6 +538,76 @@ history: []
 # ─── Per-project _log.md (Karpathy LLM Wiki pattern) ────────────────────────
 
 
+def test_safe_path_rejects_traversal(knowledge_dir):
+    """safe_project_path must reject path traversal attempts."""
+    from memory_compiler.storage import safe_article_path
+    proj_dir = knowledge_dir / "testproj"
+    # Valid path inside project
+    p = safe_article_path("testproj", "article.md")
+    assert p == proj_dir / "article.md"
+    # Path traversal via filename
+    import pytest
+    with pytest.raises(ValueError):
+        safe_article_path("testproj", "../../../etc/passwd")
+    with pytest.raises(ValueError):
+        safe_article_path("testproj", "../infra/secret.md")
+    # Path traversal via project
+    with pytest.raises(ValueError):
+        safe_article_path("../etc", "passwd")
+    # Absolute path
+    with pytest.raises(ValueError):
+        safe_article_path("testproj", "/etc/passwd")
+
+
+def test_extract_reflections_skips_negation():
+    """Sentences with negation (не настроил / not fixed) must NOT be extracted as facts."""
+    from memory_compiler.storage import extract_reflections
+    content = (
+        "Сегодня не настроил VPN — времени не хватило. "
+        "Зато настроил nginx и подключил redis. "
+        "Не удалил старые конфиги пока."
+    )
+    facts = extract_reflections(content)
+    joined = " ".join(facts).lower()
+    assert "nginx" in joined or "redis" in joined
+    # negated sentences must not appear
+    assert "не настроил vpn" not in joined
+    assert "не удалил" not in joined
+
+
+def test_append_reflections_atomic_write(knowledge_dir, tmp_path, monkeypatch):
+    """append_reflections must write atomically (no half-written file)."""
+    from memory_compiler.storage import append_reflections
+    proj = knowledge_dir / "testproj"
+    refl_path = proj / "_reflections.md"
+    append_reflections("testproj", ["first fact"])
+    # File exists and content valid
+    assert refl_path.exists()
+    text1 = refl_path.read_text(encoding="utf-8")
+    assert "first fact" in text1
+    # Re-append — must contain both, atomically
+    append_reflections("testproj", ["second fact"])
+    text2 = refl_path.read_text(encoding="utf-8")
+    assert "first fact" in text2 and "second fact" in text2
+    # No leftover .tmp file
+    assert not (proj / "_reflections.md.tmp").exists()
+
+
+def test_log_rotates_when_too_big(knowledge_dir, monkeypatch):
+    """_log.md is rotated when it exceeds size threshold — older entries archived."""
+    from memory_compiler import storage as _st
+    # Force a small threshold for testing
+    monkeypatch.setattr(_st, "LOG_ROTATE_BYTES", 200)
+    for i in range(50):
+        _st.log_event("testproj", "test_action", f"event number {i} with some details")
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    archive = knowledge_dir / "testproj" / "_log.archive.md"
+    # Current log smaller than 5x threshold (some rotation happened)
+    assert log_path.stat().st_size < 200 * 5
+    # Archive contains older entries
+    assert archive.exists()
+
+
 def test_extract_reflections_from_bullets():
     """Bullet-list content must yield atomic facts."""
     from memory_compiler.storage import extract_reflections

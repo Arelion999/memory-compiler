@@ -52,6 +52,77 @@ def test_content_tokens_strips_stopwords():
     assert "продолжим" not in tokens
 
 
+def test_embed_document_uses_chunking_strategy(knowledge_dir, monkeypatch):
+    """embed_document must use the same chunking strategy as rebuild_embeddings.
+    With LATE_CHUNKING=true it should embed the whole document — same shape that
+    rebuild_embeddings produces — so newly-saved articles aren't second-class."""
+    monkeypatch.setenv("LATE_CHUNKING", "true")
+    import importlib
+    import memory_compiler.search
+    importlib.reload(memory_compiler.search)
+    import memory_compiler.search as _smod
+    monkeypatch.setattr(_smod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(_smod, "INDEX_DIR", knowledge_dir / ".whoosh_index")
+    monkeypatch.setattr(_smod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
+    monkeypatch.setattr(_smod, "_ix", None)
+    _smod._embeddings.clear()
+    _smod._embed_texts.clear()
+
+    proj = knowledge_dir / "testproj"
+    text = (
+        "# New article\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### Section A\nfirst section body\n\n### Section B\nsecond section body"
+    )
+    (proj / "new.md").write_text(text, encoding="utf-8")
+
+    _smod.embed_document(text, "new.md", "testproj")
+    keys = [k for k in _smod._embeddings if "new.md" in k]
+    chunk_keys = [k for k in keys if "#chunk" in k]
+    # Late chunking → exactly 1 key for the article (no #chunkN suffix)
+    assert len(chunk_keys) == 0, f"late chunking should not split, got chunks: {chunk_keys}"
+    assert len(keys) == 1, f"should be 1 key per article, got: {keys}"
+
+    monkeypatch.delenv("LATE_CHUNKING", raising=False)
+    importlib.reload(memory_compiler.search)
+
+
+def test_rebuild_embeddings_atomic_on_failure(knowledge_dir, monkeypatch):
+    """If model.encode fails mid-rebuild, the previous _embeddings dict must
+    remain intact — semantic search must keep working with old data."""
+    import memory_compiler.search as _smod
+    import memory_compiler.config as _cfg
+
+    proj = knowledge_dir / "testproj"
+    (proj / "first.md").write_text(
+        "# First\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\nFirst article body content.",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    # 1. Successful initial rebuild — populates _embeddings
+    _smod.rebuild_embeddings()
+    initial = dict(_smod._embeddings)
+    assert len(initial) >= 1, "initial rebuild should populate embeddings"
+
+    # 2. Make rebuild fail mid-flight by monkeypatching model.encode
+    class BoomModel:
+        def encode(self, *a, **kw):
+            raise RuntimeError("synthetic OOM")
+    monkeypatch.setattr(_smod, "_embed_model", BoomModel())
+
+    # 3. Add another article and trigger rebuild — must fail but NOT wipe state
+    (proj / "second.md").write_text(
+        "# Second\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\nSecond body content.",
+        encoding="utf-8",
+    )
+    try:
+        _smod.rebuild_embeddings()
+    except RuntimeError:
+        pass  # expected
+    # 4. Previous embeddings must be preserved (atomic semantics)
+    assert _smod._embeddings == initial, \
+        "rebuild_embeddings must not wipe state on failure"
+
+
 def test_embed_batch_size_default_safe():
     """Default EMBED_BATCH_SIZE must be small enough to avoid OOM on NAS-class hosts."""
     import importlib

@@ -36,6 +36,33 @@ def normalize_project(project: str) -> str:
     return project.strip().lower()
 
 
+def safe_article_path(project: str, filename: str) -> Path:
+    """Return KNOWLEDGE_DIR/<project>/<filename> only if it stays inside the project dir.
+
+    Raises ValueError on traversal attempts (../, absolute paths, project names
+    that escape KNOWLEDGE_DIR). Defense-in-depth: even though MC_API_KEY guards
+    the HTTP/MCP endpoints, we still must not let a crafted filename read or
+    overwrite arbitrary host files.
+    """
+    if not project or not filename:
+        raise ValueError(f"empty project/filename: {project!r}/{filename!r}")
+    # Filenames must be flat — no subdirs, no traversal, no absolute paths.
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise ValueError(f"unsafe filename: {filename!r}")
+    # Project must resolve inside KNOWLEDGE_DIR — reject traversal via project name too.
+    if "/" in project or "\\" in project or ".." in project:
+        raise ValueError(f"unsafe project: {project!r}")
+    kd = KNOWLEDGE_DIR.resolve()
+    proj = project_dir(project)
+    proj_r = proj.resolve()
+    if proj_r != kd and kd not in proj_r.parents:
+        raise ValueError(f"project escapes KNOWLEDGE_DIR: {project!r}")
+    candidate = (proj / filename).resolve()
+    if kd not in candidate.parents:
+        raise ValueError(f"path escapes KNOWLEDGE_DIR: {project}/{filename}")
+    return proj / filename
+
+
 def project_dir(project: str) -> Path:
     """Get project directory, normalizing the name first.
 
@@ -805,6 +832,13 @@ _REFLECTION_ACTION_VERBS = re.compile(
 )
 
 
+# Negation markers that disqualify a sentence from being recorded as a fact.
+_NEGATION_RE = re.compile(
+    r'(?:^|\s)(?:не|never|not|n\'t|didn\'t|did not|hasn\'t|has not|haven\'t)\s',
+    re.IGNORECASE,
+)
+
+
 def extract_reflections(content: str) -> list[str]:
     """Extract atomic facts from session content via rules.
 
@@ -812,6 +846,8 @@ def extract_reflections(content: str) -> list[str]:
       1. Top-level bullet items: '- X' or '* X'
       2. Numbered list items: '1. X'
       3. Sentences containing action verbs (настроил/fixed/added/...) — full sentence
+    Sentences with negation markers ('не', 'not', "n't"…) are NOT extracted
+    because they describe something that didn't happen.
     Returns deduplicated list of fact strings (trimmed).
     """
     if not content or not content.strip():
@@ -826,14 +862,14 @@ def extract_reflections(content: str) -> list[str]:
         m_bullet = re.match(r'^[-*]\s+(.+)$', stripped)
         if m_bullet:
             fact = m_bullet.group(1).strip()
-            if len(fact) >= 6:
+            if len(fact) >= 6 and not _NEGATION_RE.search(" " + fact):
                 facts.append(fact)
             continue
         # Numbered: 1. foo, 2) foo
         m_num = re.match(r'^\d+[.)]\s+(.+)$', stripped)
         if m_num:
             fact = m_num.group(1).strip()
-            if len(fact) >= 6:
+            if len(fact) >= 6 and not _NEGATION_RE.search(" " + fact):
                 facts.append(fact)
 
     # 3. Sentences with action verbs (split content into sentences first)
@@ -846,6 +882,9 @@ def extract_reflections(content: str) -> list[str]:
         if any(sent in f or f in sent for f in facts):
             continue
         if _REFLECTION_ACTION_VERBS.search(sent):
+            # Skip negated sentences ("не настроил", "did not configure" etc.)
+            if _NEGATION_RE.search(" " + sent):
+                continue
             # Cap at 200 chars
             facts.append(sent[:200].rstrip(".!? "))
 
@@ -888,7 +927,10 @@ def append_reflections(project: str, facts: list[str], cap: int = 20) -> None:
         + "\n".join(combined)
         + "\n"
     )
-    refl_path.write_text(body, encoding="utf-8")
+    # Atomic write: write to .tmp then rename (avoids torn writes on crash / concurrent edit)
+    tmp_path = refl_path.with_suffix(refl_path.suffix + ".tmp")
+    tmp_path.write_text(body, encoding="utf-8")
+    tmp_path.replace(refl_path)
 
 
 def mark_dependents(project: str, filename: str, timestamp: str) -> int:
@@ -912,7 +954,10 @@ def mark_dependents(project: str, filename: str, timestamp: str) -> int:
     for a in proj_dir_path.glob("*.md"):
         if a.name == filename or a.name.startswith("_"):
             continue
-        text = a.read_text(encoding="utf-8")
+        try:
+            text = a.read_text(encoding="utf-8")
+        except Exception:
+            continue  # unreadable file (perms / broken encoding) — skip, don't crash
         if not link_pattern.search(text):
             continue
         new_lines = []
@@ -931,24 +976,43 @@ def mark_dependents(project: str, filename: str, timestamp: str) -> int:
     return marked
 
 
+# When _log.md exceeds this many bytes, rotate it to _log.archive.md and start fresh.
+# Overridable in tests / via env. ~256KB ≈ several thousand lines.
+LOG_ROTATE_BYTES = 256 * 1024
+
+
 def log_event(project: str, action: str, details: str = "") -> None:
     """Append a per-project event line to <project>/_log.md (Karpathy LLM Wiki pattern).
 
     One human-readable journal per project with ingest / save_* / lint / consolidate
     events. Distinct from _audit.log (global, JSON, every tool call) — _log.md is
     intentionally selective and readable, recording only knowledge-shaping operations.
+
+    Rotates to _log.archive.md when size exceeds LOG_ROTATE_BYTES to keep the active
+    log readable.
     """
     proj_dir = project_dir(project)
     log_path = proj_dir / "_log.md"
+    archive_path = proj_dir / "_log.archive.md"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     line = f"- [{ts}] **{action}** — {details}".rstrip(" —") + "\n"
-    is_new = not log_path.exists()
     try:
+        # Rotation: if current log too big, move to archive (append-only) then start fresh
+        if log_path.exists() and log_path.stat().st_size >= LOG_ROTATE_BYTES:
+            try:
+                old_text = log_path.read_text(encoding="utf-8")
+                with open(archive_path, "a", encoding="utf-8") as af:
+                    af.write(old_text)
+                log_path.unlink()
+            except Exception:
+                pass
+        is_new = not log_path.exists()
         with open(log_path, "a", encoding="utf-8") as f:
             if is_new:
                 f.write(f"# Project journal: {normalize_project(project)}\n\n"
                         "Append-only log of knowledge-shaping events "
-                        "(ingest, save_*, lint, consolidate, delete).\n\n")
+                        "(ingest, save_*, lint, consolidate, delete). "
+                        f"Rotated to _log.archive.md when size exceeds {LOG_ROTATE_BYTES} bytes.\n\n")
             f.write(line)
     except Exception:
         pass  # never break a write path because of journaling
