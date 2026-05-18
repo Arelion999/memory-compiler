@@ -30,6 +30,9 @@ _STOPWORDS = frozenset([
     # English continuation / meta
     "continue", "resume", "let", "lets", "now", "please", "help", "make", "do",
     "next", "more", "still", "also", "project",
+    # Question words (RU + EN) — alone they're not actionable
+    "what", "when", "where", "why", "how", "who", "which",
+    "что", "когда", "где", "почему", "зачем", "кто", "какой", "какая", "какие",
 ])
 
 
@@ -39,18 +42,24 @@ def _content_tokens(query: str) -> list[str]:
     return [t for t in tokens if t not in _STOPWORDS]
 
 
-def is_low_confidence_query(query: str, min_content_tokens: int = 2) -> bool:
+def is_low_confidence_query(query: str, min_content_tokens: int = 1) -> bool:
     """Detect generic / continuation / meta queries that won't yield meaningful RAG hits.
 
-    Examples flagged:
+    A query is low-confidence when it has ZERO content tokens — only stopwords
+    or short noise like "ok", "да". A single specific token ("nginx",
+    "memory-compiler") is enough signal to attempt retrieval — Web UI search
+    bar typically sends single-word queries.
+
+    Examples flagged (0 content tokens after filtering stopwords + short noise):
       - "let's continue" / "давай продолжим"
       - "what's next?"
       - "help me"
       - "ok"
 
-    Examples NOT flagged:
+    Examples NOT flagged (≥1 content token):
+      - "nginx"
+      - "memory-compiler"
       - "nginx ssl prod config"
-      - "POST /v1/orders endpoint"
       - "deploy backend service"
     """
     if not query or not query.strip():
