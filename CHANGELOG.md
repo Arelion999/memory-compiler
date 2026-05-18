@@ -2,6 +2,30 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.6 — 2026-05-18
+
+Cache-invalidate `.embeddings.pkl` при смене `LATE_CHUNKING` flag.
+
+### Fixed
+
+- `LATE_CHUNKING` меняет топологию embeddings (whole-doc vs N chunks per article).
+  Раньше pkl tag хранил только `model` — переключение flag без смены модели не
+  инвалидировало кэш, и в RAM грузились embeddings от другого режима. Теперь
+  pkl содержит `late_chunking` поле, при mismatch — rebuild.
+- Legacy pkl без поля `late_chunking` рассматривается как валидный для текущего
+  значения flag (no invalidation, preserves cache for users on the same setting).
+
+### Tests
+
+- 132/132 (was 131). +1 test: late_chunking mismatch triggers rebuild.
+
+### Rationale
+
+`e5-base` имеет `max_seq_length=512` — это значит для длинных статей late
+chunking теряет хвост (truncate до первых ~2000 chars). Правильный режим для
+512-context моделей — chunking по `###`. Late chunking имеет смысл только при
+long-context моделях типа BGE-M3 (max=8192).
+
 ## v1.7.5 — 2026-05-18
 
 Закрыты 3 проблемы пропущенные в v1.7.4 (second-pass audit).

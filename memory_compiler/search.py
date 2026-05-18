@@ -301,6 +301,7 @@ def rebuild_embeddings():
     with open(EMBEDDINGS_PATH, "wb") as f:
         pickle.dump({
             "model": EMBED_MODEL_NAME,
+            "late_chunking": LATE_CHUNKING,
             "embeddings": _embeddings,
             "texts": _embed_texts,
         }, f)
@@ -328,6 +329,15 @@ def load_embeddings():
     if cached_model != EMBED_MODEL_NAME:
         print(f"load_embeddings: model mismatch (pkl={cached_model!r} vs "
               f"current={EMBED_MODEL_NAME!r}) — will rebuild")
+        return False
+    # LATE_CHUNKING flag changes the embedding TOPOLOGY (whole-doc vs per-section
+    # chunks). When the flag flips, the cache becomes invalid even though the
+    # model didn't change. Legacy pkl without 'late_chunking' key is treated as
+    # current value (no invalidation) — preserves cache for users on the same flag.
+    cached_late = data.get("late_chunking", LATE_CHUNKING)
+    if cached_late != LATE_CHUNKING:
+        print(f"load_embeddings: LATE_CHUNKING mismatch (pkl={cached_late} vs "
+              f"current={LATE_CHUNKING}) — will rebuild")
         return False
     try:
         _embeddings = data["embeddings"]
@@ -368,6 +378,7 @@ def embed_document(text: str, filename: str, project: str):
     with open(EMBEDDINGS_PATH, "wb") as f:
         pickle.dump({
             "model": EMBED_MODEL_NAME,
+            "late_chunking": LATE_CHUNKING,
             "embeddings": _embeddings,
             "texts": _embed_texts,
         }, f)
