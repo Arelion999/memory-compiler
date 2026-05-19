@@ -538,6 +538,55 @@ history: []
 # ─── Per-project _log.md (Karpathy LLM Wiki pattern) ────────────────────────
 
 
+def test_version_regex_does_not_match_ip_octets():
+    """Version regex must NOT capture the first 3 octets of an IPv4 address.
+    `\\d+\\.\\d+\\.\\d+` was greedy enough to match '51.79.124' inside IP
+    '80.81.82.83', poisoning auto_update_tracking for version fields."""
+    from memory_compiler.storage import _FACT_PATTERNS
+    text = "Attacker C2 server at 80.81.82.83 was spotted."
+    matches = _FACT_PATTERNS["version"].findall(text)
+    assert matches == [], f"Version regex must not match IP octets, got: {matches}"
+
+
+def test_auto_update_tracking_only_strict_key_match(knowledge_dir):
+    """auto_update_tracking must use strict key names, not substring match.
+    Otherwise keys like 'iptables_policy', 'hosting', 'bitrix_version_date'
+    accidentally hit the ip/host/version dispatcher and get overwritten."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking
+    import memory_compiler.config as _cfg
+
+    # Set up a tracking article with mixed keys that contain ip/host/version
+    # as substrings but are NOT IP/host/version fields.
+    save_tracking_article("testproj", "deployment", {
+        "host": "example.ru",            # legitimate host
+        "ip": "80.80.80.80",                # legitimate IP
+        "hosting": "Khabarovsk DC",          # NOT an IP — substring "host" caught it before
+        "iptables_policy": "ACCEPT",         # NOT an IP — substring "ip" caught it
+        "bitrix_version": "25.100.200",      # legitimate version
+        "bitrix_version_date": "2025-03-18", # NOT a version — substring "version" caught it
+    })
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    # Lesson text mentions an ATTACKER's IP — must NOT overwrite our deployment.
+    text = "Found webshells. C2 server at 80.81.82.83 (OVH Canada) and SEO spam."
+    updates = auto_update_tracking("testproj", text, topic="incident report")
+
+    # Re-load tracking, verify nothing wrong got overwritten
+    from memory_compiler.storage import load_tracking
+    data = load_tracking("testproj", "deployment")
+    cur = data["current"]
+    # Non-IP/host/version fields must stay intact
+    assert cur["hosting"] == "Khabarovsk DC", f"hosting got overwritten: {cur['hosting']!r}"
+    assert cur["iptables_policy"] == "ACCEPT", f"iptables_policy overwritten: {cur['iptables_policy']!r}"
+    # YAML parses ISO dates to datetime.date — accept either str or date object
+    bvd = cur["bitrix_version_date"]
+    assert str(bvd) == "2025-03-18", \
+        f"bitrix_version_date overwritten: {bvd!r}"
+    # bitrix_version must stay since the attacker IP is not a real version
+    assert cur["bitrix_version"] == "25.100.200", \
+        f"bitrix_version overwritten by IP octets: {cur['bitrix_version']!r}"
+
+
 def test_safe_path_rejects_dot_project(knowledge_dir):
     """project='.' must be rejected — it resolves to KNOWLEDGE_DIR itself,
     allowing access to root-level files outside any project."""

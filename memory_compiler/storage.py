@@ -1739,10 +1739,30 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
 
 
 _FACT_PATTERNS = {
-    "version": re.compile(r'\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)\b', re.IGNORECASE),
+    # Version: \d+.\d+.\d+ but NOT followed by another .\d — that would make it an IP.
+    # Previous version w/o this guard captured the first 3 octets of '80.81.82.83' as
+    # version '51.79.124', poisoning auto_update_tracking for every key matching version.
+    "version": re.compile(
+        # Lookbehind: not preceded by digit+dot (would mean we're mid-IP)
+        # Lookahead:  not followed by dot+digit  (would mean another octet)
+        r'(?<!\d\.)\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)(?!\.\d)\b',
+        re.IGNORECASE,
+    ),
     "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?::(\d{2,5}))?\b'),
     "port": re.compile(r':(\d{2,5})\b'),
     "url": re.compile(r'(https?://[^\s\)"\']+)'),
+}
+
+# Whitelist of EXACT key names (lowercased) eligible for auto_update_tracking per fact type.
+# Substring matching is dangerous — keys like 'iptables_policy' contain 'ip' but are not IPs,
+# 'hosting' contains 'host' but is a description, 'bitrix_version_date' contains 'version'
+# but is a date. Strict allowlist prevents any IP/version in lesson text from overwriting
+# unrelated fields.
+_AUTOUPDATE_KEY_WHITELIST = {
+    "version": {"version", "ver"},
+    "ip": {"ip", "host", "server", "address"},
+    "port": {"port"},
+    "url": {"url", "link"},
 }
 
 # Skip patterns that indicate historical context (don't update current)
@@ -1828,21 +1848,19 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         new_current = dict(current)
         changed = False
 
-        # Match fact types to existing keys (by name substring)
+        # Match fact types to existing keys via strict whitelist (NOT substring).
+        # Substring caused: 'iptables_policy' → ip, 'hosting' → ip, 'bitrix_version_date'
+        # → version. Any IP/version mentioned in a lesson would then overwrite all such
+        # unrelated fields. Whitelist: only exact key names update.
         for key, value in current.items():
             if key == "since":
                 continue
             key_lower = key.lower()
-            # Map key → fact pattern type
             fact_type = None
-            if "version" in key_lower or "ver" == key_lower:
-                fact_type = "version"
-            elif "ip" in key_lower or "host" in key_lower or "server" in key_lower:
-                fact_type = "ip"
-            elif "port" in key_lower:
-                fact_type = "port"
-            elif "url" in key_lower or "link" in key_lower:
-                fact_type = "url"
+            for ft, allowed in _AUTOUPDATE_KEY_WHITELIST.items():
+                if key_lower in allowed:
+                    fact_type = ft
+                    break
 
             if fact_type and fact_type in facts:
                 candidate = facts[fact_type][0]  # first match in text
