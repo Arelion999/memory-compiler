@@ -2,6 +2,33 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.9 — 2026-05-19
+
+Critical hotfix: `auto_update_tracking` подменял несвязанные поля.
+
+### Контекст
+
+Юзер сохранял lesson о security-инциденте с C2-сервером `51.79.124.111`. После save_lesson tracking/deployment проекта оказался испорчен — поля `host`, `hosting`, `iptables_policy`, `bitrix_version`, `bitrix_version_date` все были перезаписаны строкой `51.79.124.111` (IP атакующего!).
+
+### Two bugs combined
+
+**Bug 1: Version regex ловила IP-октеты.** `\bv?(\d+\.\d+\.\d+)\b` матчила первые 3 октета `51.79.124.111` как версию `51.79.124`. Затем эта «версия» подставлялась во всё.
+
+**Bug 2: Substring key-matching.** `if "ip" in key_lower` ловит `iptables_policy`, `if "host" in key_lower` ловит `hosting`, `if "version" in key_lower` ловит `bitrix_version_date`. Любая упомянутая в тексте величина перезаписывала ВСЕ keys содержащие подстроку.
+
+### Fixed
+
+- Version regex теперь с двойным lookaround: `(?<!\d\.)` + `(?!\.\d)` — гарантирует что 3 октета не часть IPv4 адреса.
+- `auto_update_tracking` использует **strict whitelist** keys (`{"version", "ver"}` / `{"ip", "host", "server", "address"}` / `{"port"}` / `{"url", "link"}`), не substring match.
+
+### Tests
+
+- 137/137 (was 135). +2 теста: regex IP guard + strict key matching.
+
+### Migration
+
+Backward-compatible. Если у тебя tracking уже испорчен — поправь вручную через `save_tracking(facts={...})` (теперь auto-update не будет ломать).
+
 ## v1.7.8 — 2026-05-19
 
 Web UI single-word search не возвращает результаты.
