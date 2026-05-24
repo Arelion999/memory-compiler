@@ -2,6 +2,36 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.10 — 2026-05-24
+
+`detect_contradictions` давал ложные «противоречия» по IP при сравнении статей про устройства одного класса.
+
+### Контекст
+
+При сохранении статьи про роутер с LAN-адресом (private RFC1918) система выдавала «возможные противоречия» против старых статей про роутеры с публичным WAN-IP и публичным DNS (8.8.8.8). IP в разных /24 — но все статьи попадали в ту же категорию через generic-теги (`router`, `mikrotik`), `shared_entities` непустое, условие v1.1.1 «разные подсети + нет общих сущностей → skip» не срабатывало.
+
+### Root cause
+
+`_ENTITY_KEYWORDS` (storage.py) хранит generic-категории устройств, а не специфические идентификаторы. Два разных роутера в разных ролях IP считались «одной сущностью». Дополнительно: regex IP цеплял CIDR network-address (`192.168.50.0/24` → IP `192.168.50.0`).
+
+### Fixed
+
+- **`_ip_role(ip)`** — классификация через stdlib `ipaddress`: `wellknown` / `private` / `public` / `special`. IP в разных ролях (private vs public) — заведомо разные сущности, skip.
+- **`_WELL_KNOWN_IPS`** — frozenset публичных DNS (Google, Cloudflare, Quad9, OpenDNS, Yandex, AdGuard). Появляются в десятках статей в разных контекстах — шум.
+- **Regex IP** теперь с negative-lookahead `(?!/\d)` — CIDR-нотация не ловится как host-факт.
+
+### Tests
+
+- 142/142 (was 137). +5 кейсов: private vs public, well-known DNS, разные hostnames в filename, CIDR-network-address, смесь ролей IP в нескольких статьях.
+
+### Подводный камень
+
+`ipaddress.ip_address("203.0.113.10").is_private` возвращает **True** для TEST-NET-3 (RFC 5737 reserved-for-documentation). Если нужен заведомо public IP в тестах — использовать реальные адреса класса example.com (`93.184.216.34`), не RFC 5737 диапазоны.
+
+### Migration
+
+Backward-compatible. Старые статьи не пересохраняются — детектор используется только при `save_lesson`/`save_from_template` для новых записей.
+
 ## v1.7.9 — 2026-05-19
 
 Critical hotfix: `auto_update_tracking` подменял несвязанные поля.
