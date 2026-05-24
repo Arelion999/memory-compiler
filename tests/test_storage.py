@@ -100,6 +100,86 @@ def test_detect_contradictions_same_entity_cross_subnet_warning(knowledge_dir):
     assert len(warnings) > 0, "Переезд nginx в другую подсеть должен вызвать предупреждение"
 
 
+def test_detect_contradictions_private_vs_public_ip_no_warning(knowledge_dir):
+    """LAN-адрес (RFC1918) и WAN (публичный) — разные роли, не конфликт даже при общем теге.
+    93.184.216.34 — публичный IP example.com (безопасный для тестов).
+    """
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "router_alpha.md").write_text(
+        "Router alpha: PPPoE WAN внешний IP 93.184.216.34", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Router beta: LAN-интерфейс 192.168.50.1", "testproj"
+    )
+    assert warnings == [], f"Private vs public IP не должен давать FP, получено: {warnings}"
+
+
+def test_detect_contradictions_well_known_public_dns_no_warning(knowledge_dir):
+    """Известные публичные адреса (8.8.8.8, 1.1.1.1) не сравниваются ни с чем."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "router_doh.md").write_text(
+        "Router: DoH резолвер 8.8.8.8 (Google DNS)", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Router: новая LAN-подсеть 192.168.50.0", "testproj"
+    )
+    assert warnings == [], f"Well-known DNS не должен давать FP, получено: {warnings}"
+
+
+def test_detect_contradictions_different_hostnames_in_filename_no_warning(knowledge_dir):
+    """Разные имена устройств в filename → разные физические экземпляры, не конфликт."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "router_alpha__wan_drop.md").write_text(
+        "Router alpha: WAN-канал 93.184.216.34 потери", encoding="utf-8"
+    )
+    (proj / "router_beta__doh.md").write_text(
+        "Router beta: DoH 8.8.8.8 захлёбывался", encoding="utf-8"
+    )
+    # Третий роутер — офисный, новая статья
+    warnings = detect_contradictions(
+        "Router gamma: LAN-интерфейс 192.168.50.1", "testproj"
+    )
+    assert warnings == [], f"Разные hostname в filename → разные устройства, получено: {warnings}"
+
+
+def test_detect_contradictions_cidr_network_address_no_warning(knowledge_dir):
+    """CIDR-подсеть (192.168.50.0/24) не сравнивается с хостом в этой же подсети."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "lan_subnet.md").write_text(
+        "Офисная LAN: 192.168.50.0/24", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Router LAN: шлюз 192.168.50.1", "testproj"
+    )
+    assert warnings == [], f"CIDR network-address ≠ host, получено: {warnings}"
+
+
+def test_detect_contradictions_mixed_roles_no_warning(knowledge_dir):
+    """Регрессия: смесь ролей IP (WAN public + DNS public + LAN private + tunnel private)
+    в статьях про устройства одного класса не должна давать FP.
+    """
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "router_alpha__wan_drop.md").write_text(
+        "Router alpha: WAN PPPoE 93.184.216.34 firewall drop в логе", encoding="utf-8"
+    )
+    (proj / "router_beta__doh.md").write_text(
+        "Router beta: DoH резолвер 8.8.8.8 захлёбывался", encoding="utf-8"
+    )
+    (proj / "router_alpha__download_low.md").write_text(
+        "Router alpha: download упал, WAN IP 93.184.216.34", encoding="utf-8"
+    )
+    # Новая статья — устранение конфликта LAN-подсети
+    new = ("Router gamma: LAN сменил с 192.168.1.0/24 "
+           "на 192.168.50.0/24, шлюз 192.168.50.1, DMZ via VPN 10.10.250.1")
+    warnings = detect_contradictions(new, "testproj")
+    assert warnings == [], f"Смесь ролей IP не должна давать FP, получено: {warnings}"
+
+
 def test_project_dir_creates(knowledge_dir):
     p = project_dir("newproj")
     assert p.exists()

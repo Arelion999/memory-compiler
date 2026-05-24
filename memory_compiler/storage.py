@@ -3,6 +3,7 @@ Storage module: article management, git versioning, and helper utilities.
 """
 import base64
 import hashlib
+import ipaddress
 import json
 import re
 import subprocess
@@ -385,7 +386,9 @@ def update_active_context(project: str, topic: str, content: str):
 # или порт-подобное ":80" внутри URL.
 _FACT_PATTERNS_PRIMARY = [
     (r'(https?://[^\s\)]+)', "URL"),
-    (r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', "IP"),
+    # IP — только одиночные адреса. CIDR (1.2.3.0/24) НЕ считается IP-фактом:
+    # это описание подсети, а не хоста, и сравнивать его с host-IP бессмысленно.
+    (r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?!/\d)\b', "IP"),
 ]
 _FACT_PATTERNS_SECONDARY = [
     # Версия: должна быть префикс v/V или слово "верси"/"version" рядом,
@@ -419,6 +422,38 @@ def _ip_subnet(ip: str) -> str:
     if len(parts) == 4:
         return ".".join(parts[:3])
     return ip
+
+
+# Публичные DNS-резолверы и аналогичные well-known сервисы. Их IP встречаются
+# в десятках статей в разных ролях, попарное сравнение даёт чистый шум.
+_WELL_KNOWN_IPS = frozenset({
+    "8.8.8.8", "8.8.4.4",                  # Google
+    "1.1.1.1", "1.0.0.1",                  # Cloudflare
+    "9.9.9.9", "149.112.112.112",          # Quad9
+    "208.67.222.222", "208.67.220.220",    # OpenDNS
+    "77.88.8.8", "77.88.8.1",              # Yandex
+    "94.140.14.14", "94.140.15.15",        # AdGuard
+})
+
+
+def _ip_role(ip: str) -> str:
+    """Классификация IP по сетевой роли.
+
+    Возвращает: 'wellknown' | 'private' | 'public' | 'special' | 'invalid'.
+    Используется детектором противоречий: IP в РАЗНЫХ ролях не могут
+    конфликтовать (LAN-адрес и WAN-адрес — это разные сущности по природе).
+    """
+    if ip in _WELL_KNOWN_IPS:
+        return "wellknown"
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return "invalid"
+    if addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_link_local:
+        return "special"
+    if addr.is_private:
+        return "private"
+    return "public"
 
 
 # Известные сущности — слова рядом с IP/URL указывают на конкретный сервер/сервис.
@@ -490,8 +525,23 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
                     if d == e:
                         continue
 
-                    # Умная фильтрация: для IP смотрим на подсеть и сущность
+                    # Умная фильтрация: для IP смотрим на роль, подсеть и сущность
                     if label == "IP":
+                        role_d, role_e = _ip_role(d), _ip_role(e)
+
+                        # Случай 0a: well-known публичные сервисы (8.8.8.8 и т.п.) —
+                        # фигурируют в десятках статей в разных контекстах, шум.
+                        if "wellknown" in (role_d, role_e):
+                            continue
+                        # Случай 0b: разные «роли» IP (private vs public) — это
+                        # заведомо разные сущности (LAN-адрес не конфликтует с WAN).
+                        if {role_d, role_e} == {"private", "public"}:
+                            continue
+                        # Случай 0c: special-адреса (loopback/link-local/multicast)
+                        # тоже не сравниваем с обычными адресами.
+                        if "special" in (role_d, role_e) and role_d != role_e:
+                            continue
+
                         same_subnet = _ip_subnet(d) == _ip_subnet(e)
                         shared_entities = new_entities & existing_entities
 
