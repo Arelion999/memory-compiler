@@ -406,6 +406,12 @@ def _extract_facts(text: str) -> dict[str, set[str]]:
     for pattern, label in _FACT_PATTERNS_PRIMARY:
         found = set(re.findall(pattern, remaining))
         if found:
+            if label == "URL":
+                # regex [^\s\)]+ тянет URL до пробела/скобки, поэтому из markdown/JSON
+                # («"url",», «url.», «<url>») прилипает хвост. Обрезаем хвостовые
+                # кавычки/запятые/точки — иначе один и тот же адрес сравнивается как
+                # разные строки (FP детектора) и попадает «грязным» в факты/tracking.
+                found = {u.rstrip('"\'.,;:>]}') for u in found}
             facts[label] = found
             remaining = re.sub(pattern, " ", remaining)
     # 2. Secondary: версии, порты — ищем в остатке
