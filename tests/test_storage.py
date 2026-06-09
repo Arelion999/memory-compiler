@@ -259,10 +259,10 @@ def test_update_cross_references_scoped_and_windowed(knowledge_dir, monkeypatch)
     (kb / "otherproj").mkdir(exist_ok=True)
     (kb / "otherproj" / "cross.md").write_text("чужой проект", encoding="utf-8")
     _xref_setup(monkeypatch, _vec(1.0), {
-        "testproj/in_window.md": _vec(0.80),
+        "testproj/in_window.md": _vec(0.88),
         "testproj/too_far.md": _vec(0.50),
-        "testproj/too_close.md": _vec(0.95),
-        "otherproj/cross.md": _vec(0.82),
+        "testproj/too_close.md": _vec(0.99),
+        "otherproj/cross.md": _vec(0.90),
     })
     update_cross_references("Новая тема", "testproj", "testproj/new.md")
     assert "См. также" in (kb / "testproj" / "in_window.md").read_text(encoding="utf-8")
@@ -276,7 +276,7 @@ def test_update_cross_references_caps_total(knowledge_dir, monkeypatch):
     """Потолок: при многих подходящих кандидатах линкуются только top-N (5)."""
     from memory_compiler.storage import update_cross_references
     kb = knowledge_dir
-    sims = {"a": 0.84, "b": 0.82, "c": 0.80, "d": 0.78, "e": 0.76, "f": 0.70}
+    sims = {"a": 0.96, "b": 0.94, "c": 0.92, "d": 0.90, "e": 0.88, "f": 0.86}
     emb = {}
     for name, s in sims.items():
         (kb / "testproj" / f"{name}.md").write_text(f"article {name}", encoding="utf-8")

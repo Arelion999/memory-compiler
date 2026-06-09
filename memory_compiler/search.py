@@ -463,6 +463,42 @@ def get_index() -> whoosh_index.Index:
     return _ix
 
 
+# ─── Background reindex ────────────────────────────────────────────────────
+import threading as _threading
+_reindex_lock = _threading.Lock()
+_reindex_running = {"v": False}
+
+
+def reindex_running() -> bool:
+    return _reindex_running["v"]
+
+
+def start_background_reindex() -> bool:
+    """Запустить полный reindex (BM25F + embeddings + index.md) в демон-потоке.
+    Возвращает True если запущен, False если reindex уже идёт. НЕ блокирует
+    event loop — сервер остаётся отзывчивым (раньше синхронный reindex вешал
+    сервер на ~26 мин, /api/health не отвечал)."""
+    if not _reindex_lock.acquire(blocking=False):
+        return False
+    _reindex_running["v"] = True
+
+    def _run():
+        try:
+            rebuild_index()
+            rebuild_embeddings()
+            try:
+                from memory_compiler.storage import regenerate_index
+                regenerate_index()
+            except Exception:
+                pass
+        finally:
+            _reindex_running["v"] = False
+            _reindex_lock.release()
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def rebuild_index():
     """Full reindex of all knowledge files."""
     global _ix

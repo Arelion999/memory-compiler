@@ -416,3 +416,39 @@ def test_encode_no_prefixes_for_non_e5_model(monkeypatch):
     s.encode_passages(["док"])
     assert captured[0] == ["привет"]
     assert captured[1] == ["док"]
+
+
+def test_background_reindex_runs_and_guards(monkeypatch):
+    """start_background_reindex: запускает reindex в демон-потоке (не блокирует)
+    и не допускает параллельных запусков (lock)."""
+    import time, threading
+    import memory_compiler.search as s
+    calls = {"idx": 0, "emb": 0}
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_idx():
+        calls["idx"] += 1
+        return 1
+
+    def fake_emb():
+        calls["emb"] += 1
+        started.set()
+        release.wait(timeout=5)
+        return 1
+
+    monkeypatch.setattr(s, "rebuild_index", fake_idx)
+    monkeypatch.setattr(s, "rebuild_embeddings", fake_emb)
+
+    assert s.start_background_reindex() is True
+    assert started.wait(timeout=5), "поток reindex не стартовал"
+    assert s.reindex_running() is True
+    # второй вызов во время выполнения — отказ
+    assert s.start_background_reindex() is False
+    release.set()
+    for _ in range(100):
+        if not s.reindex_running():
+            break
+        time.sleep(0.05)
+    assert s.reindex_running() is False
+    assert calls["idx"] == 1 and calls["emb"] == 1

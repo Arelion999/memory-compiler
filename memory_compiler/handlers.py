@@ -1170,7 +1170,7 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
     return [TextContent(type="text", text="\n".join(parts))]
 
 
-async def consolidate(project: str = "all", min_sim: float = 0.78) -> list[TextContent]:
+async def consolidate(project: str = "all", min_sim: float = 0.90) -> list[TextContent]:
     """Найти семантически похожие статьи в проекте — кандидаты на слияние.
 
     Использует кэшированные embeddings: попарное cosine similarity между всеми
