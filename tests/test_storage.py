@@ -223,6 +223,84 @@ def test_detect_contradictions_url_trailing_punctuation_no_warning(knowledge_dir
     assert warnings == [], f"Идентичный URL не должен давать FP, получено: {warnings}"
 
 
+# ─── update_cross_references: защита от загрязнения (B+C+D) ───────────────────
+
+def _vec(sim):
+    """2D единичный вектор, чей dot с [1,0] равен sim."""
+    import math
+    return [sim, math.sqrt(max(0.0, 1.0 - sim * sim))]
+
+
+def _xref_setup(monkeypatch, q_vec, embeddings):
+    """Инъекция stub-модели и контролируемого _embeddings в search-модуль."""
+    import numpy as np
+    import memory_compiler.search as search_mod
+
+    class _Stub:
+        def encode(self, texts, normalize_embeddings=True, **kw):
+            return np.array([q_vec], dtype=float)
+
+    monkeypatch.setattr(search_mod, "get_embed_model", lambda: _Stub())
+    monkeypatch.setattr(
+        search_mod, "_embeddings",
+        {k: np.array(v, dtype=float) for k, v in embeddings.items()},
+    )
+
+
+def test_update_cross_references_scoped_and_windowed(knowledge_dir, monkeypatch):
+    """Кросс-реф только в ТОТ ЖЕ проект и только в окне similarity:
+    чужой проект, слишком далёкие и слишком близкие (дубль) — не линкуются.
+    """
+    from memory_compiler.storage import update_cross_references
+    kb = knowledge_dir
+    (kb / "testproj" / "in_window.md").write_text("про docker", encoding="utf-8")
+    (kb / "testproj" / "too_far.md").write_text("про nginx", encoding="utf-8")
+    (kb / "testproj" / "too_close.md").write_text("дубль", encoding="utf-8")
+    (kb / "otherproj").mkdir(exist_ok=True)
+    (kb / "otherproj" / "cross.md").write_text("чужой проект", encoding="utf-8")
+    _xref_setup(monkeypatch, _vec(1.0), {
+        "testproj/in_window.md": _vec(0.80),
+        "testproj/too_far.md": _vec(0.50),
+        "testproj/too_close.md": _vec(0.95),
+        "otherproj/cross.md": _vec(0.82),
+    })
+    update_cross_references("Новая тема", "testproj", "testproj/new.md")
+    assert "См. также" in (kb / "testproj" / "in_window.md").read_text(encoding="utf-8")
+    assert "См. также" not in (kb / "testproj" / "too_far.md").read_text(encoding="utf-8")
+    assert "См. также" not in (kb / "testproj" / "too_close.md").read_text(encoding="utf-8")
+    assert "См. также" not in (kb / "otherproj" / "cross.md").read_text(encoding="utf-8"), \
+        "кросс-проектный линк не должен создаваться"
+
+
+def test_update_cross_references_caps_total(knowledge_dir, monkeypatch):
+    """Потолок: при многих подходящих кандидатах линкуются только top-N (5)."""
+    from memory_compiler.storage import update_cross_references
+    kb = knowledge_dir
+    sims = {"a": 0.84, "b": 0.82, "c": 0.80, "d": 0.78, "e": 0.76, "f": 0.70}
+    emb = {}
+    for name, s in sims.items():
+        (kb / "testproj" / f"{name}.md").write_text(f"article {name}", encoding="utf-8")
+        emb[f"testproj/{name}.md"] = _vec(s)
+    _xref_setup(monkeypatch, _vec(1.0), emb)
+    update_cross_references("Тема", "testproj", "testproj/new.md")
+    linked = [n for n in sims
+              if "См. также" in (kb / "testproj" / f"{n}.md").read_text(encoding="utf-8")]
+    assert len(linked) == 5, f"ожидался потолок top-5, получено: {linked}"
+    assert "f" not in linked, "должен отсекаться кандидат с наименьшим sim"
+
+
+def test_update_cross_references_skips_meta_source(knowledge_dir, monkeypatch):
+    """Meta-статья (health-check/session) не должна кросс-реферить ничего —
+    они семантически близки ко всему и засевали базу нерелевантными ссылками.
+    """
+    from memory_compiler.storage import update_cross_references
+    kb = knowledge_dir
+    (kb / "testproj" / "normal.md").write_text("обычная статья", encoding="utf-8")
+    _xref_setup(monkeypatch, _vec(1.0), {"testproj/normal.md": _vec(0.80)})
+    update_cross_references("Health-check", "testproj", "testproj/health-check_2026-06-09.md")
+    assert "См. также" not in (kb / "testproj" / "normal.md").read_text(encoding="utf-8")
+
+
 def test_project_dir_creates(knowledge_dir):
     p = project_dir("newproj")
     assert p.exists()

@@ -678,39 +678,66 @@ def format_git_refs(refs: dict[str, list[str]]) -> str:
 # ─── Cross-references ────────────────────────────────────────────────────────
 
 
-def update_cross_references(topic: str, project: str, saved_path: str):
-    """Добавить ссылки в связанные статьи."""
+# Meta-статьи (session/health-check/tracking и service-файлы на «_») семантически
+# близки почти ко всему и при e5-эмбеддингах засевали базу нерелевантными «См.
+# также». Их не кросс-реферим — ни как источник, ни как цель.
+_META_REF_SUBSTR = ("health-check", "session", "сессия", "tracking_")
+
+
+def _is_meta_article(filename: str) -> bool:
+    n = filename.lower()
+    return n.startswith("_") or any(s in n for s in _META_REF_SUBSTR)
+
+
+def update_cross_references(topic: str, project: str, saved_path: str,
+                           max_refs: int = 5, min_sim: float = 0.65, max_sim: float = 0.85):
+    """Добавить ссылки «См. также» в семантически близкие статьи ТОГО ЖЕ проекта.
+
+    Защита от загрязнения (v1.7.13): скоуп по проекту (C), потолок top-N (B),
+    пропуск meta-статей (D). Раньше функция при e5-эмбеддингах (косинус сжат
+    вверх, порог 0.55 калибровался под старую MiniLM) дописывала сотни
+    нерелевантных кросс-ссылок через всю базу, в т.ч. в чужие проекты.
+    """
     from memory_compiler.search import _embeddings, get_embed_model
     import numpy as np
 
     if not _embeddings:
         return
+    # D: не кросс-реферим ОТ meta-статьи.
+    if _is_meta_article(saved_path.split("/")[-1]):
+        return
+
     model = get_embed_model()
     q_vec = model.encode([topic], normalize_embeddings=True)[0]
-    now = datetime.now().strftime("%Y-%m-%d")
 
+    # Кандидаты: тот же проект, не meta, similarity в окне. Затем — top-N.
+    cands = []
     for key, vec in _embeddings.items():
-        if key == saved_path or key.startswith("daily/") or "#chunk" in key:
+        if key == saved_path or "#chunk" in key:
+            continue
+        if key.split("/", 1)[0] != project:        # C: только тот же проект
+            continue
+        if _is_meta_article(key.split("/")[-1]):    # D: не линкуем В meta
             continue
         sim = float(np.dot(q_vec, vec))
-        if sim < 0.55 or sim > 0.85:
+        if sim < min_sim or sim > max_sim:
             continue  # слишком далеко или слишком близко (дубль)
+        cands.append((sim, key))
 
+    cands.sort(reverse=True)
+    now = datetime.now().strftime("%Y-%m-%d")
+    for _sim, key in cands[:max_refs]:              # B: потолок top-N
         fpath = KNOWLEDGE_DIR / key
-        if not fpath.exists() or fpath.name.startswith("_"):
+        if not fpath.exists():
             continue
-
         text = fpath.read_text(encoding="utf-8")
         ref_line = f"- [{topic}](../{saved_path}) ({now})"
-
         if "## См. также" in text:
-            # Не добавлять дубли
-            if saved_path in text:
+            if saved_path in text:                  # не дублировать
                 continue
             text = text.rstrip() + f"\n{ref_line}\n"
         else:
             text = text.rstrip() + f"\n\n## См. также\n{ref_line}\n"
-
         fpath.write_text(text, encoding="utf-8")
 
 
