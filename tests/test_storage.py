@@ -180,6 +180,24 @@ def test_detect_contradictions_mixed_roles_no_warning(knowledge_dir):
     assert warnings == [], f"Смесь ролей IP не должна давать FP, получено: {warnings}"
 
 
+def test_detect_contradictions_versions_no_warning(knowledge_dir):
+    """Версии монотонно растут во времени: разные версии одного сервиса в
+    разных статьях — это эволюция, а не противоречие. Текущую версию ведёт
+    tracking (save_tracking/get_current). Даже общая сущность (nginx) не должна
+    превращать разницу версий в ложный конфликт.
+    """
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx_deploy_old.md").write_text(
+        "Nginx сервис: версия 1.1.0 на проде", encoding="utf-8"
+    )
+    # Тот же nginx, версия выросла за месяцы работы
+    warnings = detect_contradictions(
+        "Nginx обновлён: версия 1.7.8", "testproj"
+    )
+    assert warnings == [], f"Разные версии — эволюция, не конфликт, получено: {warnings}"
+
+
 def test_project_dir_creates(knowledge_dir):
     p = project_dir("newproj")
     assert p.exists()
