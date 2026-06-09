@@ -24,6 +24,9 @@ services:
       - MC_ENCRYPT_KEY=${MC_ENCRYPT_KEY:-}
       - GIT_CAPTURE_ALLOWED_ROOTS=${GIT_CAPTURE_ALLOWED_ROOTS:-/repos}
       - TZ=Asia/Vladivostok
+      # CPU-потоки для torch/BLAS (J4125 = 4 ядра) — ~2x быстрее reindex.
+      # Применяется только при recreate (docker-compose up -d --force-recreate).
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
       # ML model configuration (v1.7.0+) — passthrough from .env, with defaults
       - EMBED_MODEL=${EMBED_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
       - RERANKER_MODEL=${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}

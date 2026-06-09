@@ -20,7 +20,7 @@ Semantic versioning: major.minor.patch. Versions below 1.0 were development mile
 
 ### Migration
 
-Backward-compatible. Опционально для скорости reindex: `OMP_NUM_THREADS=4` в .env + `docker-compose up -d --force-recreate` (J4125 = 4 ядра).
+Backward-compatible. `OMP_NUM_THREADS=4` добавлен в docker-compose (~2x скорость reindex на 4-ядерном J4125; overridable из .env). Применяется через `docker-compose up -d --force-recreate`.
 
 ## v1.7.14 — 2026-06-09
 
