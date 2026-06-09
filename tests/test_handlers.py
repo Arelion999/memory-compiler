@@ -10,6 +10,24 @@ from memory_compiler.handlers import (
     set_project_deps, get_project_deps,
     _project_from_cwd, route_project,
 )
+from memory_compiler.handlers import get_summary
+
+
+def test_get_summary_skips_frontmatter_and_cleans_tags(knowledge_dir):
+    """get_summary: YAML-frontmatter (---) не становится заголовком, а закрывающие
+    ** из '**Теги:**' не попадают в теги."""
+    proj = knowledge_dir / "testproj"
+    (proj / "fm.md").write_text(
+        "---\ntype: decision\n---\n# Настоящий заголовок\n"
+        "**Теги:** docker, nas\n\n## Записи\n\n### 2026\nтело статьи\n",
+        encoding="utf-8",
+    )
+    res = asyncio.run(get_summary("testproj"))
+    text = res[0].text
+    assert "**---**" not in text, "frontmatter --- не должен становиться заголовком"
+    assert "Настоящий заголовок" in text
+    assert "(** " not in text, "закрывающие ** не должны попадать в теги"
+    assert "docker, nas" in text
 
 
 def test_project_from_cwd_match(knowledge_dir):

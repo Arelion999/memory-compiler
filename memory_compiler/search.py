@@ -137,6 +137,34 @@ def get_embed_model() -> SentenceTransformer:
     return _embed_model
 
 
+def _needs_e5_prefix() -> bool:
+    """e5-семейство (intfloat/*-e5-*) ТРЕБУЕТ асимметричных префиксов
+    'query: ' / 'passage: '. Без них косинус-сходство сжато вверх (слабо
+    связанные тексты дают ~0.78–0.88) — деградирует semantic_search и
+    переполняет окно кросс-рефа. Прочие модели (MiniLM, BGE-M3, GTE)
+    префиксы НЕ используют."""
+    return "e5" in EMBED_MODEL_NAME.lower()
+
+
+def encode_passages(texts: list[str]):
+    """Закодировать документы/чанки (passage-сторона) с нужным префиксом."""
+    model = get_embed_model()
+    if _needs_e5_prefix():
+        texts = [f"passage: {t}" for t in texts]
+    return model.encode(
+        texts, normalize_embeddings=True, show_progress_bar=False,
+        batch_size=EMBED_BATCH_SIZE,
+    )
+
+
+def encode_query(text: str):
+    """Закодировать поисковый запрос/тему (query-сторона) с нужным префиксом."""
+    model = get_embed_model()
+    if _needs_e5_prefix():
+        text = f"query: {text}"
+    return model.encode([text], normalize_embeddings=True)[0]
+
+
 # ─── Cross-encoder reranker (lazy load) ────────────────────────────────────
 
 import os as _os
@@ -293,12 +321,7 @@ def rebuild_embeddings():
     if docs:
         # Batch in small chunks — long-context models (BGE-M3) blow up peak
         # allocation when encoding hundreds of long docs at once.
-        vectors = model.encode(
-            docs,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-            batch_size=EMBED_BATCH_SIZE,
-        )
+        vectors = encode_passages(docs)
         for i, path in enumerate(paths):
             new_embeddings[path] = vectors[i]
 
@@ -374,12 +397,7 @@ def embed_document(text: str, filename: str, project: str):
 
     chunks = _chunk_article(text, parent_key)
     chunk_texts = [c[1] for c in chunks]
-    vectors = model.encode(
-        chunk_texts,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-        batch_size=EMBED_BATCH_SIZE,
-    )
+    vectors = encode_passages(chunk_texts)
     for (chunk_key, _), vec in zip(chunks, vectors):
         _embeddings[chunk_key] = vec
 
@@ -397,8 +415,7 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
     """Search by semantic similarity. Returns [(path, score), ...]. Deduplicates chunks to parent articles."""
     if not _embeddings:
         return []
-    model = get_embed_model()
-    q_vec = model.encode([query], normalize_embeddings=True)[0]
+    q_vec = encode_query(query)
     raw_scores = []
     for path, vec in _embeddings.items():
         sim = float(np.dot(q_vec, vec))

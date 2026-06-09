@@ -667,11 +667,18 @@ async def get_summary(project: str) -> list[TextContent]:
     for a in articles[:20]:
         text = a.read_text(encoding="utf-8")
         file_lines = text.splitlines()
-        title = file_lines[0].lstrip("# ").strip() if file_lines else a.stem
+        # Заголовок: первый H1 (# ...), пропуская YAML-frontmatter (---) и пустые строки
+        title = a.stem
+        for fl in file_lines[:15]:
+            s = fl.strip()
+            if s.startswith("# "):
+                title = s.lstrip("# ").strip()
+                break
         tags = ""
         for fl in file_lines[:10]:
             if fl.lower().startswith("**теги:**"):
-                tags = fl.split(":", 1)[1].strip()
+                # split по первому ':' оставляет закрывающие ** от '**Теги:**' — срезаем
+                tags = fl.split(":", 1)[1].strip().lstrip("*").strip()
                 break
         # Первые 2 строки тела (после метаданных)
         body_lines = []

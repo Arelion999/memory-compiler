@@ -698,7 +698,7 @@ def update_cross_references(topic: str, project: str, saved_path: str,
     вверх, порог 0.55 калибровался под старую MiniLM) дописывала сотни
     нерелевантных кросс-ссылок через всю базу, в т.ч. в чужие проекты.
     """
-    from memory_compiler.search import _embeddings, get_embed_model
+    from memory_compiler.search import _embeddings, encode_query
     import numpy as np
 
     if not _embeddings:
@@ -707,8 +707,7 @@ def update_cross_references(topic: str, project: str, saved_path: str,
     if _is_meta_article(saved_path.split("/")[-1]):
         return
 
-    model = get_embed_model()
-    q_vec = model.encode([topic], normalize_embeddings=True)[0]
+    q_vec = encode_query(topic)
 
     # Кандидаты: тот же проект, не meta, similarity в окне. Затем — top-N.
     cands = []
