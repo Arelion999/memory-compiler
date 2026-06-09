@@ -690,7 +690,7 @@ def _is_meta_article(filename: str) -> bool:
 
 
 def update_cross_references(topic: str, project: str, saved_path: str,
-                           max_refs: int = 5, min_sim: float = 0.65, max_sim: float = 0.85):
+                           max_refs: int = 5, min_sim: float = 0.80, max_sim: float = 0.97):
     """Добавить ссылки «См. также» в семантически близкие статьи ТОГО ЖЕ проекта.
 
     Защита от загрязнения (v1.7.13): скоуп по проекту (C), потолок top-N (B),
@@ -719,8 +719,12 @@ def update_cross_references(topic: str, project: str, saved_path: str,
         if _is_meta_article(key.split("/")[-1]):    # D: не линкуем В meta
             continue
         sim = float(np.dot(q_vec, vec))
+        # Окно калибровано под e5 С ПРЕФИКСАМИ (v1.7.15, по замерам): внутри
+        # проекта косинус сжат в ~0.78–0.96, поэтому 0.80..0.97 = «реально
+        # близко, но не точный дубль». Старое 0.65/0.85 (под MiniLM без
+        # префиксов) на e5-шкале отсекало самые релевантные (>0.85) как дубли.
         if sim < min_sim or sim > max_sim:
-            continue  # слишком далеко или слишком близко (дубль)
+            continue
         cands.append((sim, key))
 
     cands.sort(reverse=True)

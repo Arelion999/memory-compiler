@@ -3,7 +3,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 from memory_compiler.config import PROJECTS, stats
-from memory_compiler.search import rebuild_index, rebuild_embeddings
+from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
 from memory_compiler.storage import regenerate_index, audit_log
 from memory_compiler import handlers
 
@@ -431,7 +431,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "default": "all"},
-                    "min_sim": {"type": "number", "default": 0.78, "description": "Порог similarity. 0.78 — близкие но разные; 0.85+ — почти точные дубли"}
+                    "min_sim": {"type": "number", "default": 0.90, "description": "Порог similarity (e5 с префиксами). 0.90 — близкие; 0.95+ — почти дубли"}
                 },
                 "required": []
             }
@@ -602,10 +602,11 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "lint":
         result = await handlers.lint(arguments.get("project", "all"), arguments.get("fix", False))
     elif name == "reindex":
-        count = rebuild_index()
-        ecount = rebuild_embeddings()
-        regenerate_index()
-        result = [TextContent(type="text", text=f"\u2705 \u041f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u043e: {count} \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u043e\u0432 (BM25F + {ecount} embeddings), index.md \u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d")]
+        started = start_background_reindex()
+        if started:
+            result = [TextContent(type="text", text="\ud83d\udd04 Reindex \u0437\u0430\u043f\u0443\u0449\u0435\u043d \u0432 \u0444\u043e\u043d\u0435 \u2014 \u0441\u0435\u0440\u0432\u0435\u0440 \u043e\u0441\u0442\u0430\u0451\u0442\u0441\u044f \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u041d\u0430 \u0431\u043e\u043b\u044c\u0448\u043e\u0439 \u0431\u0430\u0437\u0435 (NAS) \u044d\u0442\u043e \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u0438\u043d\u0443\u0442; \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u0435 \u0432\u0438\u0434\u043d\u043e \u043f\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044e .embeddings.pkl.")]
+        else:
+            result = [TextContent(type="text", text="\u23f3 Reindex \u0443\u0436\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f \u2014 \u0434\u043e\u0436\u0434\u0438\u0441\u044c \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f.")]
     elif name == "save_session":
         result = await handlers.save_session(**arguments)
     elif name == "load_session":
