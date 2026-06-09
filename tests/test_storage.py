@@ -198,6 +198,31 @@ def test_detect_contradictions_versions_no_warning(knowledge_dir):
     assert warnings == [], f"Разные версии — эволюция, не конфликт, получено: {warnings}"
 
 
+def test_extract_facts_url_strips_trailing_punctuation():
+    """URL из JSON/markdown («"url",») извлекается БЕЗ хвостовых кавычек/запятых —
+    иначе грязные значения попадают в факты и tracking, а идентичные адреса
+    сравниваются как разные строки.
+    """
+    from memory_compiler.storage import _extract_facts
+    facts = _extract_facts('config: "http://10.20.30.40:8765/sse?key=fake%24",')
+    assert facts.get("URL") == {"http://10.20.30.40:8765/sse?key=fake%24"}
+
+
+def test_detect_contradictions_url_trailing_punctuation_no_warning(knowledge_dir):
+    """Идентичный URL не должен давать ложное противоречие из-за хвоста:
+    в старой статье он записан в JSON-виде («url",), в новой — чисто.
+    """
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "old_endpoint.md").write_text(
+        'Endpoint в конфиге: "http://10.20.30.40:8765/sse",', encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Тот же endpoint: http://10.20.30.40:8765/sse", "testproj"
+    )
+    assert warnings == [], f"Идентичный URL не должен давать FP, получено: {warnings}"
+
+
 def test_project_dir_creates(knowledge_dir):
     p = project_dir("newproj")
     assert p.exists()
