@@ -488,7 +488,8 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
     1. IP в разных /24 подсетях — НЕ конфликт (разные сегменты сети = разные сервера)
     2. Если в обеих статьях упоминаются разные сущности (NAS vs nginx) — НЕ конфликт
     3. Конфликт только если: одна сущность ИЛИ одна подсеть И значения разные
-    4. Версии и порты сравниваются как раньше (точное совпадение типа)
+    4. Версии НЕ сравниваются (монотонны во времени = эволюция, не конфликт;
+       текущую версию ведёт tracking). Порты сравниваются по точному совпадению.
     """
     warnings = []
     new_facts = _extract_facts(new_content)
@@ -511,6 +512,13 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
         existing_entities = _entities_in_text(text)
 
         for label in new_facts:
+            # Версии монотонно растут во времени: одна и та же сущность за месяцы
+            # проходит 1.1.0 → 1.7.8, и старые статьи легитимно содержат старые
+            # версии. Сравнение версий между статьями давало чистый шум (FP даже
+            # при общей сущности). Текущую версию ведёт tracking
+            # (save_tracking/get_current), а не детектор противоречий.
+            if label == "версия":
+                continue
             existing = existing_facts.get(label, set())
             new_vals = new_facts.get(label, set())
             if not new_vals or not existing:
