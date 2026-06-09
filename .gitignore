@@ -1,5 +1,9 @@
 # Secrets
 .env
+.env.*
+!.env.example
+# Бэкапы (.env.bak-*, docker-compose.yml.bak-* и т.п.) — могут содержать секреты
+*.bak*
 
 # Деплой-скрипты с credentials
 deploy.py
