@@ -377,3 +377,42 @@ def test_soft_fallback_returns_low_confidence_when_top_weak(knowledge_dir):
         for r in results:
             # Either explicitly low-confidence or actually relevant
             assert r.get("confidence") == "low" or r.get("score", 0) >= 35
+
+
+def test_encode_applies_e5_prefixes(monkeypatch):
+    """e5-модель требует query:/passage: префиксов — без них косинус сжат вверх,
+    что деградирует retrieval и переполняет окно кросс-рефа."""
+    import numpy as np
+    import memory_compiler.search as s
+    captured = []
+
+    class _Stub:
+        def encode(self, texts, **kw):
+            captured.append(list(texts))
+            return np.zeros((len(texts), 3))
+
+    monkeypatch.setattr(s, "EMBED_MODEL_NAME", "intfloat/multilingual-e5-base")
+    monkeypatch.setattr(s, "get_embed_model", lambda: _Stub())
+    s.encode_query("привет мир")
+    s.encode_passages(["док один", "док два"])
+    assert captured[0] == ["query: привет мир"]
+    assert captured[1] == ["passage: док один", "passage: док два"]
+
+
+def test_encode_no_prefixes_for_non_e5_model(monkeypatch):
+    """MiniLM/BGE-M3/GTE префиксы НЕ используют — текст не должен меняться."""
+    import numpy as np
+    import memory_compiler.search as s
+    captured = []
+
+    class _Stub:
+        def encode(self, texts, **kw):
+            captured.append(list(texts))
+            return np.zeros((len(texts), 3))
+
+    monkeypatch.setattr(s, "EMBED_MODEL_NAME", "paraphrase-multilingual-MiniLM-L12-v2")
+    monkeypatch.setattr(s, "get_embed_model", lambda: _Stub())
+    s.encode_query("привет")
+    s.encode_passages(["док"])
+    assert captured[0] == ["привет"]
+    assert captured[1] == ["док"]

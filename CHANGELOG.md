@@ -2,6 +2,29 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.14 — 2026-06-09
+
+e5-эмбеддинги без префиксов (корректность retrieval) + косметика get_summary.
+
+### e5 query:/passage: префиксы (главное)
+
+`intfloat/multilingual-e5-base` ТРЕБУЕТ асимметричных префиксов `query: ` (запрос) и `passage: ` (документ). Код вызывал `model.encode()` без них → косинус сжат вверх (слабо связанные тексты ~0.78–0.88), что деградировало `semantic_search` и переполняло окно кросс-рефа (корень загрязнения из v1.7.13). Добавлены `encode_query()`/`encode_passages()` в search.py, model-aware (префиксы только для e5; MiniLM/BGE-M3/GTE не трогаются). Подключены в `rebuild_embeddings`, `embed_document`, `semantic_search`, `update_cross_references`.
+
+**ВАЖНО:** требует `reindex` (эмбеддинги пересчитываются с passage-префиксом). Имя модели не изменилось → авто-инвалидация кэша не срабатывает, нужен явный reindex после деплоя.
+
+### get_summary косметика
+
+- Заголовок берётся из первого H1 (`# ...`), а не из первой строки → YAML-frontmatter (`---`) больше не показывается как «**---**».
+- Теги: срезается закрывающий `**` от `**Теги:**` (был «(** decision)»).
+
+### Tests
+
+- 151 (was 148). +2 e5-префиксы (query/passage для e5, без префиксов для MiniLM), +1 get_summary (frontmatter + теги).
+
+### Migration
+
+После деплоя выполнить `reindex`. Пороги `semantic_search`/кросс-рефа пока не меняются — рекалибровка под корректную шкалу e5 отдельным шагом по замерам.
+
 ## v1.7.13 — 2026-06-09
 
 `update_cross_references` засевал базу нерелевантными «См. также» (загрязнение кросс-рефами).
