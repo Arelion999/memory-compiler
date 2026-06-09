@@ -398,22 +398,50 @@ _FACT_PATTERNS_SECONDARY = [
 ]
 
 
+def _normalize_url(u: str) -> str:
+    """Нормализовать URL для сравнения и хранения (L4): срезать хвостовую
+    пунктуацию из markdown/JSON, отбросить query/fragment (там же ?key=СЕКРЕТ),
+    схему+хост в нижний регистр, убрать хвостовой '/'. Один и тот же эндпоинт
+    перестаёт давать ложное «противоречие», а ключ не утекает в факты/tracking."""
+    u = u.rstrip('"\'.,;:>]}')
+    u = re.sub(r'[?#].*$', '', u)
+    m = re.match(r'(https?)://([^/]+)(.*)$', u, re.IGNORECASE)
+    if m:
+        path = m.group(3).rstrip('/')
+        u = "%s://%s%s" % (m.group(1).lower(), m.group(2).lower(), path)
+    return u
+
+
 def _extract_facts(text: str) -> dict[str, set[str]]:
     """Извлечь факты из текста, избегая пересечений между паттернами."""
     facts: dict[str, set[str]] = {}
     remaining = text
     # 1. Primary: URL, IP — удаляем найденное из текста
     for pattern, label in _FACT_PATTERNS_PRIMARY:
-        found = set(re.findall(pattern, remaining))
-        if found:
-            if label == "URL":
-                # regex [^\s\)]+ тянет URL до пробела/скобки, поэтому из markdown/JSON
-                # («"url",», «url.», «<url>») прилипает хвост. Обрезаем хвостовые
-                # кавычки/запятые/точки — иначе один и тот же адрес сравнивается как
-                # разные строки (FP детектора) и попадает «грязным» в факты/tracking.
-                found = {u.rstrip('"\'.,;:>]}') for u in found}
-            facts[label] = found
+        raw = set(re.findall(pattern, remaining))
+        if raw:
+            # Всегда убираем совпавшие спаны из текста (чтобы версии/порты ниже их не ловили)
             remaining = re.sub(pattern, " ", remaining)
+            if label == "URL":
+                vals = {_normalize_url(u) for u in raw}
+            elif label == "IP":
+                # Только валидные host-IP. Отсекаем (это 4-частные ВЕРСИИ, случайно
+                # совпавшие с маской \d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}):
+                #  • октет >255 → ipaddress ValueError (сборка 1.2.3.300);
+                #  • 0.0.0.0/8 «this-network» → не хост (версия 0.2.0.x).
+                # Иначе версия сравнивается как IP и даёт FP против реального адреса.
+                vals = set()
+                for ip in raw:
+                    try:
+                        ipaddress.ip_address(ip)
+                    except ValueError:
+                        continue
+                    if not ip.startswith("0."):
+                        vals.add(ip)
+            else:
+                vals = raw
+            if vals:
+                facts[label] = vals
     # 2. Secondary: версии, порты — ищем в остатке
     for pattern, label in _FACT_PATTERNS_SECONDARY:
         found = set(re.findall(pattern, remaining, re.IGNORECASE))
@@ -543,6 +571,10 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
                     if label == "IP":
                         role_d, role_e = _ip_role(d), _ip_role(e)
 
+                        # Случай 0: нераспознаваемый «IP» (октет>255 и т.п.) — обычно
+                        # 4-частная версия-сборка, не адрес; сравнивать нельзя (L3).
+                        if "invalid" in (role_d, role_e):
+                            continue
                         # Случай 0a: well-known публичные сервисы (8.8.8.8 и т.п.) —
                         # фигурируют в десятках статей в разных контекстах, шум.
                         if "wellknown" in (role_d, role_e):

@@ -198,14 +198,55 @@ def test_detect_contradictions_versions_no_warning(knowledge_dir):
     assert warnings == [], f"Разные версии — эволюция, не конфликт, получено: {warnings}"
 
 
-def test_extract_facts_url_strips_trailing_punctuation():
-    """URL из JSON/markdown («"url",») извлекается БЕЗ хвостовых кавычек/запятых —
-    иначе грязные значения попадают в факты и tracking, а идентичные адреса
-    сравниваются как разные строки.
-    """
+def test_detect_contradictions_four_part_version_not_ip(knowledge_dir):
+    """4-частная версия (0.2.0.5 расширения 1С) не должна распознаваться как IP
+    (0.0.0.0/8 — не хост) и конфликтовать с реальным адресом сервера."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "config.md").write_text(
+        "docker postgres, сервер 1С 192.168.1.55", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "docker: версия расширения 0.2.0.4 → 0.2.0.5", "testproj"
+    )
+    assert warnings == [], f"4-частная версия не должна сравниваться как IP: {warnings}"
+
+
+def test_detect_contradictions_invalid_octet_version_not_ip(knowledge_dir):
+    """Версия-сборка с октетом >255 (1.2.3.300) ловится IP-regex, но не валидна
+    как IP (L1) → не должна сравниваться с реальным адресом сервера."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "config.md").write_text(
+        "docker postgres, сервер 192.168.1.55", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "docker: обновили сборку до 1.2.3.300", "testproj"
+    )
+    assert warnings == [], f"Невалидный октет (версия-сборка) не должен сравниваться как IP: {warnings}"
+
+
+def test_extract_facts_url_normalized():
+    """URL нормализуется (L4): хвостовая пунктуация срезается, query/fragment
+    (там же ?key=СЕКРЕТ) отбрасывается, схема+хост в нижний регистр, хвостовой /
+    убран. Идентичный эндпоинт перестаёт быть «разными строками» и не течёт
+    ключом в факты/tracking."""
     from memory_compiler.storage import _extract_facts
-    facts = _extract_facts('config: "http://10.20.30.40:8765/sse?key=fake%24",')
-    assert facts.get("URL") == {"http://10.20.30.40:8765/sse?key=fake%24"}
+    facts = _extract_facts('config: "http://Host.LAN:8765/SSE/?key=fake%24",')
+    assert facts.get("URL") == {"http://host.lan:8765/SSE"}
+
+
+def test_detect_contradictions_url_query_difference_no_warning(knowledge_dir):
+    """Один эндпоинт, отличается только query (?key=) — не противоречие (L4)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "ep_old.md").write_text(
+        "Endpoint: http://10.20.30.40:8765/sse?key=AAA", encoding="utf-8"
+    )
+    warnings = detect_contradictions(
+        "Тот же endpoint, другой ключ: http://10.20.30.40:8765/sse?key=BBB", "testproj"
+    )
+    assert warnings == [], f"Разница только в query не должна давать FP: {warnings}"
 
 
 def test_detect_contradictions_url_trailing_punctuation_no_warning(knowledge_dir):
