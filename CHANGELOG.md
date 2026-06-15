@@ -2,6 +2,27 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.17 — 2026-06-15
+
+Самоаналитика + tracking по данным аудита (1753 вызова за 55 дней): gap_report больше не таймаутит, auto_update_tracking не откатывает версию.
+
+### Контекст
+
+Анализ `_audit.log` (read:write ≈ 1:1, июнь ×3 к апрелю, ~10% поисков пустые) вскрыл два дефекта инструментов самоанализа/трекинга.
+
+### Fixed
+
+- **gap_report** не укладывался в MCP-таймаут на реальном логе: для КАЖДОГО уникального исторического запроса гонял whoosh + semantic (e5-encode) → сотни кодирований на NAS. Теперь свежие запросы первыми (`queries.sort` по ts) + потолок `_GAP_MAX_CHECKS=50` дорогих проверок.
+- **auto_update_tracking** брал ПЕРВУЮ версию из текста (`facts["version"][0]`) → перечисление `1.7.11…1.7.16` в заметке откатывало трекер на 1.7.11. Теперь для версий берётся МАКСИМАЛЬНАЯ (semver, `_max_semver`).
+
+### Tests
+
+- 156 (was 155). +1: auto_update_tracking берёт max-версию.
+
+### Migration
+
+Backward-compatible, только новые вызовы. Деплой — рестарт (reindex не нужен).
+
 ## v1.7.16 — 2026-06-09
 
 `detect_contradictions`: 4-частные версии как IP + нормализация URL (разбор всего класса FP).

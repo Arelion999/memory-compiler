@@ -1516,8 +1516,15 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
     from memory_compiler.search import semantic_search
     SOLVED_THRESHOLD = 0.55  # cosine sim к существующим статьям
 
+    # Свежие запросы приоритетнее (актуальные пробелы), а дорогую re-search
+    # (whoosh + semantic e5-encode на КАЖДЫЙ запрос) ограничиваем — иначе на
+    # большом логе gap_report таймаутит на NAS.
+    queries.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    _GAP_MAX_CHECKS = 50
+
     empty_queries: list[dict] = []
     seen_queries: set[str] = set()  # дедупликация по тексту
+    checks = 0
     for item in queries:
         q = item["q"].strip()
         if is_low_confidence_query(q):
@@ -1525,6 +1532,9 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
         if q.lower() in seen_queries:
             continue
         seen_queries.add(q.lower())
+        if checks >= _GAP_MAX_CHECKS:
+            break
+        checks += 1
         try:
             results = whoosh_search(q, project=item["project"] if item["project"] != "all" else "all", limit=3)
         except Exception:
