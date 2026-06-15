@@ -1951,6 +1951,17 @@ def list_tracking_articles(project: str) -> list[dict]:
     return result
 
 
+def _max_semver(versions):
+    """Максимальная версия по числовым компонентам (1.7.16 > 1.7.9 > 1.7.11).
+    Список приходит из extract_facts_from_text в порядке текста."""
+    def _k(v):
+        return tuple(int(x) for x in re.findall(r'\d+', str(v)))
+    try:
+        return max(versions, key=_k)
+    except Exception:
+        return versions[0]
+
+
 def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]:
     """Scan text for facts and update existing tracking articles safely.
     Rules:
@@ -1989,7 +2000,10 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                     break
 
             if fact_type and fact_type in facts:
-                candidate = facts[fact_type][0]  # first match in text
+                vals = facts[fact_type]
+                # для версий берём МАКСИМАЛЬНУЮ (semver), не первую в тексте —
+                # иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11.
+                candidate = _max_semver(vals) if (fact_type == "version" and len(vals) > 1) else vals[0]
                 if str(candidate) != str(value):
                     new_current[key] = candidate
                     changed = True

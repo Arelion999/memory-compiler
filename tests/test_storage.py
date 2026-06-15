@@ -643,6 +643,16 @@ def test_auto_update_tracking(knowledge_dir):
     assert len(updates2) == 0
 
 
+def test_auto_update_tracking_picks_max_version(knowledge_dir):
+    """auto_update_tracking берёт МАКСИМАЛЬНУЮ версию из текста, не первую —
+    иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.7.10"})
+    auto_update_tracking("testproj", "релиз v1.7.11, затем v1.7.12, финал version 1.7.16", "Releases")
+    data = load_tracking("testproj", "release")
+    assert data["current"]["version"] == "1.7.16", f"ожидался max 1.7.16, got {data['current']}"
+
+
 def test_frontmatter_parser(knowledge_dir):
     from memory_compiler.storage import _parse_frontmatter
     text = """---
