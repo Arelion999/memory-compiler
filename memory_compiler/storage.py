@@ -1789,7 +1789,13 @@ def load_tracking(project: str, entity: str) -> Optional[dict]:
     return data if data.get("type") == "tracking" else None
 
 
-def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "") -> dict:
+def _semver_key(v):
+    """Числовой ключ версии для сравнения: '1.7.16' → (1, 7, 16)."""
+    return tuple(int(x) for x in re.findall(r'\d+', str(v)))
+
+
+def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
+                          guard_version_regression: bool = False) -> dict:
     """Create or update tracking article with bi-temporal frontmatter.
 
     new_facts: dict of fields to set in 'current' (e.g. {"version": "1.3.50"}).
@@ -1821,6 +1827,19 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     old_current = dict(raw_current) if isinstance(raw_current, dict) else {}
     if not isinstance(data.get("history"), list):
         data["history"] = []
+
+    # Guard (авто-пути): не опускаем tracked-версию назад. Упоминание старого
+    # git-tag в заметке finish_task не должно откатывать трекер (1.7.17 → 1.7.14).
+    # v1.7.17 брал max-версию ВНУТРИ текста, но не сравнивал с текущей — этот путь
+    # (release-блок / auto_update_tracking) оставался без защиты. Явный save_tracking
+    # (guard=False) downgrade разрешает — реальные production-rollback'и фиксируются.
+    if (guard_version_regression and old_current
+            and "version" in new_facts and "version" in old_current):
+        try:
+            if _semver_key(new_facts["version"]) < _semver_key(old_current["version"]):
+                new_facts = {**new_facts, "version": old_current["version"]}
+        except Exception:
+            pass
 
     # Check if facts actually changed
     if old_current and all(old_current.get(k) == v for k, v in new_facts.items()):
@@ -1954,10 +1973,8 @@ def list_tracking_articles(project: str) -> list[dict]:
 def _max_semver(versions):
     """Максимальная версия по числовым компонентам (1.7.16 > 1.7.9 > 1.7.11).
     Список приходит из extract_facts_from_text в порядке текста."""
-    def _k(v):
-        return tuple(int(x) for x in re.findall(r'\d+', str(v)))
     try:
-        return max(versions, key=_k)
+        return max(versions, key=_semver_key)
     except Exception:
         return versions[0]
 
@@ -2011,7 +2028,7 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         if changed:
             # Remove 'since' — save_tracking_article regenerates it
             new_facts = {k: v for k, v in new_current.items() if k != "since"}
-            result = save_tracking_article(project, entity, new_facts)
+            result = save_tracking_article(project, entity, new_facts, guard_version_regression=True)
             if result["action"] == "updated":
                 updates.append({
                     "entity": entity,

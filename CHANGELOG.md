@@ -2,6 +2,36 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.18 — 2026-06-18
+
+Регрессия v1.7.17: защита от отката версии покрыла только `auto_update_tracking`, но не точку записи трекера. `finish_task` с упоминанием последнего git-tag репо откатывал трекеры назад.
+
+### Контекст
+
+v1.7.17 научил `auto_update_tracking` брать МАКСИМАЛЬНУЮ версию ВНУТРИ текста, но не сравнивал кандидата с ТЕКУЩЕЙ версией трекера. Заметка `finish_task` упоминала последний tag репо (v1.7.14 — релизы 1.7.15…1.7.17 не тегались) → оба трекера откатывались назад:
+
+```
+🔄 tracking/release: version: 1.7.17 → 1.7.14
+🔄 tracking/deployment: version: 1.7.17 → 1.7.14
+```
+
+Незакрытыми остались ДВА авто-пути: release-блок в `save_lesson` (писал версию из regex напрямую) и сам `auto_update_tracking` (брал max лишь среди версий текста, при единственной старой версии всё равно перезаписывал).
+
+### Fixed
+
+- **save_tracking_article** получил флаг `guard_version_regression` (default `False`): на авто-путях НЕ опускает `version` ниже текущей (semver-сравнение через `_semver_key`). Откат → `unchanged`, история не засоряется. Прочие поля (ip/port/url) обновляются как обычно.
+- Флаг включён в ОБОИХ авто-путях: release-блок `save_lesson` и `auto_update_tracking`.
+- Явный `save_tracking` (`guard=False`) downgrade по-прежнему РАЗРЕШАЕТ — реальные production-rollback'и должны фиксироваться.
+- `_max_semver` отрефакторен на общий `_semver_key` (DRY).
+
+### Tests
+
+- 160 (was 156). +4: авто-скан не откатывает (`auto_update_tracking`), guard блокирует откат и пропускает forward (`save_tracking_article`), явный downgrade разрешён, e2e через `save_lesson` (оба трекера остаются на 1.7.17).
+
+### Migration
+
+Backward-compatible, только новые вызовы. Деплой — рестарт (reindex не нужен).
+
 ## v1.7.17 — 2026-06-15
 
 Самоаналитика + tracking по данным аудита (1753 вызова за 55 дней): gap_report больше не таймаутит, auto_update_tracking не откатывает версию.
