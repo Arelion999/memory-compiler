@@ -773,3 +773,23 @@ def test_get_context_applies_reranker(knowledge_dir, monkeypatch):
     ssl_idx = text.find("ssl config")
     assert upstream_idx > 0, "upstream article missing from output"
     assert ssl_idx < 0 or upstream_idx < ssl_idx, "reranker did not reorder in get_context"
+
+
+@pytest.mark.asyncio
+async def test_finish_task_does_not_roll_back_tracking_version(knowledge_dir):
+    """Регрессия v1.7.17 (оба трекера): finish_task → save_lesson с release-тегом и
+    упоминанием старого git-tag v1.7.14 в content откатывал tracking/release и
+    tracking/deployment с 1.7.17 назад на 1.7.14. Авто-пути НЕ должны опускать версию."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.7.17"})
+    save_tracking_article("testproj", "deployment", {"version": "1.7.17"})
+
+    await save_lesson(
+        "Деплой релиза на NAS",
+        "Рестарт контейнера выполнен. Последний git-tag в репо: v1.7.14.",
+        "testproj",
+        ["release"],
+    )
+
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.7.17", "release откатился"
+    assert load_tracking("testproj", "deployment")["current"]["version"] == "1.7.17", "deployment откатился"

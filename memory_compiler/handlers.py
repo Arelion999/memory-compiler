@@ -135,7 +135,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         if m:
             version = m.group(1)
             from memory_compiler.storage import save_tracking_article
-            r = save_tracking_article(project, "release", {"version": version})
+            r = save_tracking_article(project, "release", {"version": version}, guard_version_regression=True)
             if r["action"] != "unchanged":
                 tracking_updates.append({
                     "entity": "release",

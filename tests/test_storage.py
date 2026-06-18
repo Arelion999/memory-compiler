@@ -653,6 +653,43 @@ def test_auto_update_tracking_picks_max_version(knowledge_dir):
     assert data["current"]["version"] == "1.7.16", f"ожидался max 1.7.16, got {data['current']}"
 
 
+def test_auto_update_tracking_no_version_regression(knowledge_dir):
+    """Регрессия v1.7.17: автоматический скан НЕ должен откатывать версию трекера
+    назад. Заметка упоминает старый git-tag v1.7.14, трекер на 1.7.17 → 1.7.17.
+    v1.7.17 чинил выбор max-версии ВНУТРИ текста, но не сравнивал с текущей."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "deployment", {"version": "1.7.17"})
+    updates = auto_update_tracking("testproj", "Рестарт выполнен, последний git-tag v1.7.14", "Deploy")
+    data = load_tracking("testproj", "deployment")
+    assert data["current"]["version"] == "1.7.17", f"трекер откатился назад: {data['current']}"
+    assert updates == [], f"отката быть не должно, а есть апдейт: {updates}"
+
+
+def test_save_tracking_article_guards_version_regression(knowledge_dir):
+    """save_tracking_article(guard_version_regression=True) не опускает версию ниже
+    текущей; движение вперёд при этом работает как обычно."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.7.17"})
+    # Откат назад заблокирован → unchanged
+    r = save_tracking_article("testproj", "release", {"version": "1.7.14"}, guard_version_regression=True)
+    assert r["action"] == "unchanged", f"откат не заблокирован: {r}"
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.7.17"
+    # Движение вперёд по-прежнему работает
+    r2 = save_tracking_article("testproj", "release", {"version": "1.7.18"}, guard_version_regression=True)
+    assert r2["action"] == "updated"
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.7.18"
+
+
+def test_save_tracking_article_explicit_downgrade_still_allowed(knowledge_dir):
+    """Без guard (явный вызов save_tracking) откат версии РАЗРЕШЁН — реальные
+    production-rollback'и должны фиксироваться. Защищаем только авто-пути."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.7.17"})
+    r = save_tracking_article("testproj", "release", {"version": "1.7.14"})
+    assert r["action"] == "updated"
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.7.14"
+
+
 def test_frontmatter_parser(knowledge_dir):
     from memory_compiler.storage import _parse_frontmatter
     text = """---
