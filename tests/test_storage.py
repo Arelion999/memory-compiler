@@ -645,21 +645,22 @@ def test_auto_update_tracking(knowledge_dir):
 
 def test_auto_update_tracking_picks_max_version(knowledge_dir):
     """auto_update_tracking берёт МАКСИМАЛЬНУЮ версию из текста, не первую —
-    иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11."""
+    иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11.
+    (Заметка ссылается на сущность 'release' — этого требует relevance-гейт.)"""
     from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
     save_tracking_article("testproj", "release", {"version": "1.7.10"})
-    auto_update_tracking("testproj", "релиз v1.7.11, затем v1.7.12, финал version 1.7.16", "Releases")
+    auto_update_tracking("testproj", "release: v1.7.11, затем v1.7.12, финал version 1.7.16", "Releases")
     data = load_tracking("testproj", "release")
     assert data["current"]["version"] == "1.7.16", f"ожидался max 1.7.16, got {data['current']}"
 
 
 def test_auto_update_tracking_no_version_regression(knowledge_dir):
     """Регрессия v1.7.17: автоматический скан НЕ должен откатывать версию трекера
-    назад. Заметка упоминает старый git-tag v1.7.14, трекер на 1.7.17 → 1.7.17.
-    v1.7.17 чинил выбор max-версии ВНУТРИ текста, но не сравнивал с текущей."""
+    назад. Заметка ссылается на 'deployment' (проходит relevance-гейт) и упоминает
+    старый git-tag v1.7.14, трекер на 1.7.17 → должен остаться 1.7.17."""
     from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
     save_tracking_article("testproj", "deployment", {"version": "1.7.17"})
-    updates = auto_update_tracking("testproj", "Рестарт выполнен, последний git-tag v1.7.14", "Deploy")
+    updates = auto_update_tracking("testproj", "deployment: рестарт выполнен, последний git-tag v1.7.14", "Deploy")
     data = load_tracking("testproj", "deployment")
     assert data["current"]["version"] == "1.7.17", f"трекер откатился назад: {data['current']}"
     assert updates == [], f"отката быть не должно, а есть апдейт: {updates}"
@@ -874,6 +875,10 @@ def test_auto_update_tracking_only_strict_key_match(knowledge_dir):
     # bitrix_version must stay since the attacker IP is not a real version
     assert cur["bitrix_version"] == "25.100.200", \
         f"bitrix_version overwritten by IP octets: {cur['bitrix_version']!r}"
+    # Relevance-гейт: заметка-инцидент не ссылается на 'deployment' → даже легитимные
+    # ip/host НЕ должны затираться чужим (атакующим) IP из текста.
+    assert cur["ip"] == "80.80.80.80", f"реальный IP затёрт IP атакующего: {cur['ip']!r}"
+    assert cur["host"] == "example.ru", f"host затёрт: {cur['host']!r}"
 
 
 def test_safe_path_rejects_dot_project(knowledge_dir):
@@ -1143,3 +1148,202 @@ def test_lint_writes_log(knowledge_dir):
     assert log_path.exists()
     text = log_path.read_text(encoding="utf-8")
     assert "lint" in text
+
+
+# ─── Relevance gate: auto_update_tracking must not touch unrelated entities ──
+# Регрессия инцидента (гео-сущность): save_lesson про обновление (4-частная версия
+# конфы) затёр поле address несвязанной гео-сущности. Корень — авто-апдейт
+# трекера срабатывал на ЛЮБОЙ сущности с подходящим по типу ключом, без проверки,
+# что заметка вообще ОТНОСИТСЯ к этой сущности. Это уже 6-й инцидент того же класса
+# (v1.7.9/1.7.16/1.7.17/1.7.18) — лечим структурно: relevance-гейт.
+
+
+def test_auto_update_tracking_does_not_overwrite_unreferenced_field(knowledge_dir):
+    """Точная регрессия: 4-частная версия 1С (валидная как IP) не должна затирать
+    поле address гео-сущности, которую заметка вообще не упоминает."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "coordinates",
+                          {"lat": "48.4827", "lon": "135.0719", "address": "198.51.100.10"})
+
+    note = ("Внедрение заселения через MAX в 1С:Отель. Версия конфы 9.2.5.75, "
+            "требуется обновление до 9.2.6.57. Сканер ШК Mindeo MD6600HD.")
+    updates = auto_update_tracking("testproj", note, topic="Внедрение фичи")
+
+    data = load_tracking("testproj", "coordinates")
+    assert data["current"]["address"] == "198.51.100.10", \
+        f"address затёрт версией 1С: {data['current']}"
+    assert updates == [], f"апдейтов быть не должно — заметка не про coordinates: {updates}"
+
+
+def test_auto_update_tracking_skips_attacker_ip_in_incident_note(knowledge_dir):
+    """Заметка-инцидент про чужой C2-IP не должна перезаписывать реальный IP
+    нашего деплоя: заметка не ссылается на сущность deployment."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "deployment",
+                          {"ip": "80.80.80.80", "host": "srv.example.com"})
+
+    note = "Инцидент: нашли веб-шеллы, C2-сервер 80.81.82.83 (OVH Canada), SEO-спам."
+    updates = auto_update_tracking("testproj", note, topic="incident report")
+
+    cur = load_tracking("testproj", "deployment")["current"]
+    assert cur["ip"] == "80.80.80.80", f"реальный IP затёрт IP атакующего: {cur['ip']!r}"
+    assert updates == [], f"апдейтов быть не должно: {updates}"
+
+
+def test_auto_update_tracking_updates_when_entity_referenced(knowledge_dir):
+    """Гейт ПРОПУСКАЕТ апдейт, когда заметка явно ссылается на сущность по имени —
+    основной сценарий пользы остаётся рабочим (новый IP той же публичной роли)."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "deployment",
+                          {"ip": "80.80.80.80", "host": "srv.example.com"})
+
+    note = "deployment переехал на новый IP 93.184.216.34."
+    auto_update_tracking("testproj", note, topic="миграция")
+    assert load_tracking("testproj", "deployment")["current"]["ip"] == "93.184.216.34"
+
+
+def test_auto_update_tracking_ip_role_must_match(knowledge_dir):
+    """Даже когда сущность упомянута, публичный IP не подменяется приватным (и наоборот):
+    LAN- и WAN-адрес — разные сущности по природе. На авто-пути не угадываем."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "deployment", {"ip": "80.80.80.80"})  # публичный
+
+    note = "deployment: видел в логе приватный 192.168.1.50."
+    auto_update_tracking("testproj", note, topic="лог")
+    assert load_tracking("testproj", "deployment")["current"]["ip"] == "80.80.80.80", \
+        "публичный IP не должен подменяться приватным на авто-пути"
+
+
+def test_address_not_classified_as_ip_key(knowledge_dir):
+    """Ключ 'address' слишком неоднозначен (улица/гео/почта), не должен быть
+    в IP-whitelist авто-апдейта."""
+    from memory_compiler.storage import _AUTOUPDATE_KEY_WHITELIST
+    assert "address" not in _AUTOUPDATE_KEY_WHITELIST["ip"], \
+        "'address' не должен авто-классифицироваться как IP-поле"
+
+
+# ─── find_existing_article: destructive auto-merge must be conservative ──────
+# Регрессия: заметка про «заселение через MAX» молча дописалась в чужую статью
+# «кнопка MAX-мессенджера» (общий редкий токен MAX). Порог 0.75 ниже e5-пола
+# внутрипроектного сходства (~0.78), и нет запаса над вторым кандидатом.
+
+
+def _fake_embed_env(monkeypatch, knowledge_dir, q_sim_a, q_sim_b):
+    """Подготовить find_existing_article: 2 статьи a.md/b.md с заданным косинусом
+    запроса к каждой. q=[1,0], вектор=[sim, sqrt(1-sim^2)] → dot == sim."""
+    import numpy as np
+    import memory_compiler.search as search_mod
+
+    proj = knowledge_dir / "testproj"
+    (proj / "a.md").write_text("# A\n\nрыба", encoding="utf-8")
+    (proj / "b.md").write_text("# B\n\nрыба", encoding="utf-8")
+
+    def unit(sim):
+        return np.array([sim, (1.0 - sim * sim) ** 0.5])
+
+    q = np.array([1.0, 0.0])
+    emb = {"testproj/a.md": unit(q_sim_a), "testproj/b.md": unit(q_sim_b)}
+    monkeypatch.setattr(search_mod, "_embeddings", emb)
+    monkeypatch.setattr(search_mod, "encode_query", lambda text: q)
+
+    class _FakeModel:
+        def encode(self, texts, **kw):
+            return np.array([q])
+    monkeypatch.setattr(search_mod, "get_embed_model", lambda: _FakeModel())
+
+
+def test_find_existing_article_no_merge_below_threshold(knowledge_dir, monkeypatch):
+    """Слабое сходство (ниже e5-порога near-duplicate) → новая статья, не мёрж."""
+    from memory_compiler.storage import find_existing_article
+    _fake_embed_env(monkeypatch, knowledge_dir, q_sim_a=0.80, q_sim_b=0.78)
+    result = find_existing_article("совсем другая тема xyz", "тело заметки", "testproj")
+    assert result is None, f"не должно мёржить при sim 0.80: {result}"
+
+
+def test_find_existing_article_no_merge_when_ambiguous(knowledge_dir, monkeypatch):
+    """Два почти равных кандидата (нет запаса над вторым) → не угадываем, новая статья."""
+    from memory_compiler.storage import find_existing_article
+    _fake_embed_env(monkeypatch, knowledge_dir, q_sim_a=0.93, q_sim_b=0.91)
+    result = find_existing_article("совсем другая тема xyz", "тело заметки", "testproj")
+    assert result is None, f"при двух близких кандидатах мёрж неоднозначен: {result}"
+
+
+def test_find_existing_article_merges_clear_winner(knowledge_dir, monkeypatch):
+    """Явный единственный near-duplicate (высокий sim, большой отрыв) → мёрж."""
+    from memory_compiler.storage import find_existing_article
+    _fake_embed_env(monkeypatch, knowledge_dir, q_sim_a=0.95, q_sim_b=0.50)
+    result = find_existing_article("совсем другая тема xyz", "тело заметки", "testproj")
+    assert result is not None and result.name == "a.md", f"должен смёржить в a.md: {result}"
+
+
+# ─── Контекст-гард версии (v1.7.20): 4-октетная версия после cue-слова ≠ IP ──
+# Узкий остаток v1.7.19: dotted-quad версии 1С (9.2.5.75) — валидный IP по форме.
+# Если число стоит сразу после version-слова, это версия, а не сетевой адрес.
+# Консервативно: только СМЕЖНЫЙ cue, чтобы не выкинуть настоящий IP из фразы с версией.
+
+
+def test_extract_facts_version_after_cue_not_ip():
+    """'Версия конфы 9.2.5.75' — число после cue-слова не извлекается как IP."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("Версия конфы 9.2.5.75 на проде")
+    assert "9.2.5.75" not in facts.get("ip", []), f"версия 1С принята за IP: {facts}"
+
+
+def test_extract_facts_real_ip_after_noncue_word_kept():
+    """Контроль: настоящий IP после обычного слова по-прежнему извлекается."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("Сервер развёрнут на 80.80.80.80")
+    assert "80.80.80.80" in facts.get("ip", []), f"настоящий IP потерян: {facts}"
+
+
+def test_auto_update_tracking_version_after_cue_not_written_to_ip(knowledge_dir):
+    """E2E остаток: даже когда сущность упомянута, версия после cue-слова не должна
+    попасть в ip/host (она не IP)."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "deployment", {"ip": "80.80.80.80"})
+    note = "deployment: обновили конфу до версия 9.2.5.75."
+    auto_update_tracking("testproj", note, topic="обновление")
+    cur = load_tracking("testproj", "deployment")["current"]
+    assert cur["ip"] == "80.80.80.80", f"версия 1С попала в ip: {cur['ip']!r}"
+
+
+# ─── v1.7.21: выравнивание IP-валидации + логи авто-мутаций + connector-cue ──
+
+
+def test_extract_facts_rejects_invalid_octet():
+    """Выравнивание с _extract_facts: октет >255 — не IP (битая версия/сборка)."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("роутер 1.2.3.300 в сети")
+    assert "1.2.3.300" not in facts.get("ip", []), f"невалидный октет принят за IP: {facts}"
+
+
+def test_extract_facts_excludes_zero_net():
+    """0.0.0.0/8 — не хост (это 4-частная версия 0.x)."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("артефакт 0.2.0.5 собран")
+    assert "0.2.0.5" not in facts.get("ip", []), f"0.x принят за IP: {facts}"
+
+
+def test_extract_facts_excludes_cidr():
+    """CIDR-подсеть — не host-IP (нельзя сравнивать с адресом хоста)."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("сервер в подсети 10.10.0.0/16 за фаерволом")
+    assert "10.10.0.0" not in facts.get("ip", []), f"CIDR-сеть принята за host-IP: {facts}"
+
+
+def test_extract_facts_version_after_cue_with_connector():
+    """Connector-cue: 'обновление до 9.2.6.57' — версия через связку 'до', не IP."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("Требуется обновление до 9.2.6.57 на стойке")
+    assert "9.2.6.57" not in facts.get("ip", []), f"версия через connector принята за IP: {facts}"
+
+
+def test_auto_update_tracking_logs_changes(knowledge_dir):
+    """Наблюдаемость: авто-апдейт трекера пишет событие в <project>/_log.md."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking
+    save_tracking_article("testproj", "deployment", {"version": "1.0.0"})
+    auto_update_tracking("testproj", "deployment обновлён до 1.1.0", "deploy")
+    log_path = knowledge_dir / "testproj" / "_log.md"
+    assert log_path.exists(), "авто-апдейт трекера должен логироваться в _log.md"
+    text = log_path.read_text(encoding="utf-8")
+    assert "auto_update" in text and "deployment" in text, f"нет записи об авто-апдейте: {text!r}"

@@ -164,7 +164,7 @@ def merge_case_duplicates() -> list[dict]:
 
 def find_existing_article(topic: str, content: str, project: str) -> Optional[Path]:
     """Find existing article by semantic similarity or slug match."""
-    from memory_compiler.search import _embeddings, get_embed_model
+    from memory_compiler.search import _embeddings, encode_query
     import numpy as np
 
     proj_path = project_dir(project)
@@ -183,24 +183,37 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
         if clean_stem == slug:
             return a
 
-    # 2. Semantic similarity match
+    # 2. Semantic similarity match.
+    # Автомёрж РАЗРУШАЮЩИЙ — дописывает в чужую статью, поэтому порог консервативный:
+    #   • encode_query (e5-префикс 'query:') — документы кодируются 'passage:', без
+    #     симметрии косинус не на калиброванной шкале;
+    #   • 0.90 — линия near-duplicate на e5 (внутрипроектные сходства ~0.78–0.96,
+    #     consolidate тоже 0.90). Прежние 0.75 НИЖЕ пола сходства → мёрж почти в любую
+    #     статью; так заметка про «MAX-заселение» прилипла к «кнопка MAX-мессенджера».
+    #   • запас над вторым кандидатом — при двух близких НЕ угадываем, заводим новую;
+    #   • чанки сводим к родительской статье (ключи вида 'project/file.md#N').
     if not _embeddings:
         return None
-    model = get_embed_model()
-    query_text = f"{topic} {content[:300]}"
-    q_vec = model.encode([query_text], normalize_embeddings=True)[0]
+    q_vec = encode_query(f"{topic} {content[:300]}")
 
-    best_path = None
-    best_sim = 0.0
+    MERGE_MIN_SIM = 0.90
+    MERGE_MARGIN = 0.05
+    best_by_parent: dict[str, float] = {}
     for key, vec in _embeddings.items():
         if not key.startswith(f"{project}/") or key.startswith("daily/"):
             continue
+        parent = key.split("#", 1)[0]
         sim = float(np.dot(q_vec, vec))
-        if sim > best_sim:
-            best_sim = sim
-            best_path = key
+        if sim > best_by_parent.get(parent, -1.0):
+            best_by_parent[parent] = sim
 
-    if best_sim >= 0.75 and best_path:
+    if not best_by_parent:
+        return None
+    ranked = sorted(best_by_parent.items(), key=lambda kv: -kv[1])
+    best_path, best_sim = ranked[0]
+    second_sim = ranked[1][1] if len(ranked) > 1 else 0.0
+
+    if best_sim >= MERGE_MIN_SIM and (best_sim - second_sim) >= MERGE_MARGIN:
         candidate = KNOWLEDGE_DIR / best_path
         if candidate.exists():
             return candidate
@@ -1893,19 +1906,36 @@ _FACT_PATTERNS = {
         r'(?<!\d\.)\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)(?!\.\d)\b',
         re.IGNORECASE,
     ),
-    "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?::(\d{2,5}))?\b'),
+    "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?!/\d)(?::(\d{2,5}))?\b'),
     "port": re.compile(r':(\d{2,5})\b'),
     "url": re.compile(r'(https?://[^\s\)"\']+)'),
 }
+
+# Version cue: dotted-quad сразу ПОСЛЕ такого слова — это ВЕРСИЯ, не IP. Закрывает
+# узкий остаток: версия 1С '9.2.5.75' валидна как IP по форме и при упоминании сущности
+# проскакивала в ip/host. Консервативно — только СМЕЖНЫЙ cue (на конце текста перед
+# числом), чтобы не выкинуть настоящий IP из фразы, где версия рядом. 'ver' только как
+# отдельное слово (\b) — 'server'/'драйвер' не считаются cue.
+_VERSION_CUE = re.compile(
+    r'\b(?:верс\w*|конф\w*|релиз\w*|сборк\w*|платформ\w*|обновлен\w*|билд\w*'
+    r'|version|build|release|platform|ver|1[сc])\b'
+    # допускаем связки между cue-словом и числом: «обновление ДО 9.2.6.57»,
+    # «обновление до ВЕРСИИ 9.2.6.57». Только RU-связки — 'to' рискованно (deploy to <IP>).
+    r'(?:\s+(?:до|версии|версию|новой|последней))*[\s:=]*$',
+    re.IGNORECASE,
+)
 
 # Whitelist of EXACT key names (lowercased) eligible for auto_update_tracking per fact type.
 # Substring matching is dangerous — keys like 'iptables_policy' contain 'ip' but are not IPs,
 # 'hosting' contains 'host' but is a description, 'bitrix_version_date' contains 'version'
 # but is a date. Strict allowlist prevents any IP/version in lesson text from overwriting
 # unrelated fields.
+# 'address' УБРАН из ip: слишком многозначен (улица/гео/почта/e-mail), а dotted-quad
+# версии 1С (9.2.5.75) — валидный IP по форме. Из-за этого версия конфы затёрла гео-поле
+# coordinates.address. IP-поля называем явно: ip/host/server.
 _AUTOUPDATE_KEY_WHITELIST = {
     "version": {"version", "ver"},
-    "ip": {"ip", "host", "server", "address"},
+    "ip": {"ip", "host", "server"},
     "port": {"port"},
     "url": {"url", "link"},
 }
@@ -1929,6 +1959,30 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
     relevant_text = " ".join(p for p in parts if not _HISTORICAL_MARKERS.search(p))
 
     for kind, pattern in _FACT_PATTERNS.items():
+        # IP: отдельная ветка с контекст-гардом — dotted-quad сразу после version-слова
+        # это версия, не IP (нужны позиции совпадений, поэтому finditer, не findall).
+        if kind == "ip":
+            seen = set()
+            values = []
+            for mt in pattern.finditer(relevant_text):
+                v = mt.group(1)
+                if _VERSION_CUE.search(relevant_text[:mt.start()]):
+                    continue  # перед числом стоит cue-слово → это версия
+                # Валидный host-IP: октеты ≤255 и не 0.0.0.0/8 (выравнивание с
+                # _extract_facts — иначе битые версии/сборки 1.2.3.300 / 0.2.0.x лезут в ip).
+                try:
+                    ipaddress.ip_address(v)
+                except ValueError:
+                    continue
+                if v.startswith("0."):
+                    continue
+                if v and v not in seen:
+                    seen.add(v)
+                    values.append(v)
+            if values:
+                facts[kind] = values
+            continue
+
         matches = pattern.findall(relevant_text)
         if not matches:
             continue
@@ -1979,11 +2033,36 @@ def _max_semver(versions):
         return versions[0]
 
 
+def _note_references_entity(entity: str, current: dict, text: str) -> bool:
+    """Относится ли заметка к данной tracking-сущности.
+
+    True, если текст упоминает имя сущности ИЛИ одно из её текущих значений.
+    Relevance-гейт: без него auto_update срабатывал на ЛЮБОЙ сущности с подходящим
+    по типу ключом и затирал несвязанные поля (гео-поле address ← 4-частная версия,
+    валидная как IP; deployment.ip ← IP атакующего из заметки-инцидента). Совпадение
+    по типу факта недостаточно — нужна привязка к конкретной сущности.
+    """
+    hay = text.lower()
+    if re.search(rf'\b{re.escape(entity.lower())}\b', hay):
+        return True
+    for k, v in current.items():
+        if k == "since":
+            continue
+        sval = str(v).strip().lower()
+        # >=4 символов, чтобы порт '80'/октет не давали ложную привязку
+        if len(sval) >= 4 and sval in hay:
+            return True
+    return False
+
+
 def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]:
     """Scan text for facts and update existing tracking articles safely.
     Rules:
       - Only updates existing tracking (no auto-create to avoid noise)
+      - Relevance-гейт: трогаем только сущности, на которые заметка ССЫЛАЕТСЯ
+        (по имени или текущему значению) — см. _note_references_entity
       - Match by fact type (version, ip, port, url) with existing current keys
+      - IP-роль (private/public/...) нового значения должна совпадать со старой
       - Skip if new value same as current
     Returns list of updates performed: [{entity, key, old, new, path}]
     """
@@ -1995,10 +2074,14 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
     if not existing:
         return []
 
+    combined = f"{topic}\n{text}"
     updates = []
     for track in existing:
         current = track["current"] or {}
         entity = track["entity"]
+        # Relevance-гейт: пропускаем сущности, к которым заметка не относится.
+        if not _note_references_entity(entity, current, combined):
+            continue
         new_current = dict(current)
         changed = False
 
@@ -2021,6 +2104,13 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                 # для версий берём МАКСИМАЛЬНУЮ (semver), не первую в тексте —
                 # иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11.
                 candidate = _max_semver(vals) if (fact_type == "version" and len(vals) > 1) else vals[0]
+                # IP-роль должна совпадать: LAN-адрес (192.168.x) и публичный — разные
+                # сущности по природе; не подменяем одну роль другой. Сравниваем, только
+                # когда ОБА значения — валидные IP (host-имена пропускаем).
+                if fact_type == "ip":
+                    old_role, new_role = _ip_role(str(value)), _ip_role(str(candidate))
+                    if "invalid" not in (old_role, new_role) and old_role != new_role:
+                        continue
                 if str(candidate) != str(value):
                     new_current[key] = candidate
                     changed = True
@@ -2036,6 +2126,12 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                     "new": result["new_current"],
                     "path": result["path"],
                 })
+                # Наблюдаемость: авто-апдейт трекера молчаливо менял боевые данные и
+                # вскрывался случайно. Пишем что→куда в журнал проекта.
+                old_cur, new_cur = track["current"], result["new_current"]
+                ck = [k for k in new_cur if k != "since" and old_cur.get(k) != new_cur.get(k)]
+                detail = ", ".join(f"{k}: {old_cur.get(k, '—')}→{new_cur[k]}" for k in ck)
+                log_event(project, "auto_update", f"{entity}: {detail}")
     return updates
 
 
