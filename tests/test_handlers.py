@@ -439,6 +439,107 @@ def test_edit_article_does_not_touch_unrelated(knowledge_dir):
     assert before == after, "Unrelated article was modified unexpectedly"
 
 
+# ─── Security: edit_article must NOT break secret encryption (v1.7.23) ──────
+
+
+def _secret_file(knowledge_dir, project):
+    files = list((knowledge_dir / project).glob("secret_*.md"))
+    assert len(files) == 1, f"expected 1 secret file, got {files}"
+    return files[0].name
+
+
+def _body_indexed(token):
+    """Пути документов, у которых `token` находится в whoosh-поле body.
+
+    Через QueryParser(body), чтобы токен прошёл тот же анализатор, что и при
+    индексации (lowercase/stemming) — иначе exact-Term даёт ложные промахи.
+    """
+    from whoosh.qparser import QueryParser
+    from memory_compiler.search import get_index
+    ix = get_index()
+    with ix.searcher() as s:
+        q = QueryParser("body", ix.schema).parse(token)
+        return [h["path"] for h in s.search(q, limit=20)]
+
+
+def test_edit_article_keeps_secret_encrypted(knowledge_dir, monkeypatch):
+    """save_secret → edit_article(append=False): шифрование, флаг секрета и
+    чистота индекса должны сохраниться. Регрессия High-sev утечки v1.7.21."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import save_secret, edit_article
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    asyncio.run(save_secret(topic="Router creds", project="testproj",
+                            content="oldtokenaaa user=root pass=hunter2 ip 10.0.0.1"))
+    fname = _secret_file(knowledge_dir, "testproj")
+
+    asyncio.run(edit_article(project="testproj", filename=fname,
+                             content="newtokenbbb ssh root@10.0.0.2 pass=qwerty", append=False))
+
+    disk = (knowledge_dir / "testproj" / fname).read_text(encoding="utf-8")
+    assert "ENC:" in disk, "тело должно остаться зашифрованным"
+    assert "**Секрет:** да" in disk, "флаг секретности потерян"
+    assert "newtokenbbb" not in disk, "новый секрет лежит plaintext на диске"
+    assert "oldtokenaaa" not in disk, "старый секрет утёк plaintext"
+
+    got = asyncio.run(read_article(project="testproj", filename=fname))[0].text
+    assert "newtokenbbb" in got, "read_article должен расшифровать новое тело"
+
+    assert f"testproj/{fname}" not in _body_indexed("newtokenbbb")
+    assert f"testproj/{fname}" not in _body_indexed("oldtokenaaa")
+
+
+def test_edit_article_secret_append_stays_encrypted(knowledge_dir, monkeypatch):
+    """append=True к секрету не должен дописывать plaintext."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import save_secret, edit_article
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    asyncio.run(save_secret(topic="VPN keys", project="testproj",
+                            content="basetokenccc wg-key ABCDEF"))
+    fname = _secret_file(knowledge_dir, "testproj")
+
+    asyncio.run(edit_article(project="testproj", filename=fname,
+                             content="appendtokenddd extra line", append=True))
+
+    disk = (knowledge_dir / "testproj" / fname).read_text(encoding="utf-8")
+    assert "appendtokenddd" not in disk, "дописанный секрет лежит plaintext"
+    assert "**Секрет:** да" in disk
+    assert "ENC:" in disk
+
+    got = asyncio.run(read_article(project="testproj", filename=fname))[0].text
+    assert "appendtokenddd" in got, "append-секция должна читаться расшифрованной"
+    assert "basetokenccc" in got, "исходный секрет должен остаться читаемым"
+
+    assert f"testproj/{fname}" not in _body_indexed("appendtokenddd")
+
+
+def test_edit_article_plain_remains_searchable(knowledge_dir, monkeypatch):
+    """Несекретная статья после edit_article должна остаться в индексе по телу —
+    защита от over-encryption обычных статей."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import edit_article
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    proj = knowledge_dir / "testproj"
+    (proj / "note.md").write_text(
+        "# Note\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\noriginal body.\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    rebuild_embeddings()
+
+    asyncio.run(edit_article(project="testproj", filename="note.md",
+                             content="plainsearchtokeneee visible body", append=False))
+
+    disk = (proj / "note.md").read_text(encoding="utf-8")
+    assert "ENC:" not in disk, "обычную статью шифровать нельзя"
+    assert "plainsearchtokeneee" in disk
+    assert "testproj/note.md" in _body_indexed("plainsearchtokeneee"), "несекретная статья пропала из индекса"
+
+
 def test_lint_flags_orphan_article(knowledge_dir):
     """An article not referenced by any other article in the project must be flagged
     with an explicit 'isolated/сирота/no inbound refs' marker."""

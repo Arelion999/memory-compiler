@@ -783,33 +783,61 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    old_text = fpath.read_text(encoding="utf-8")
+    # Секретность определяется ДО записи: тело такой статьи не должно
+    # существовать в открытом виде (инвариант save_secret/read_article).
+    is_secret = ("**Секрет:** да" in old_text) or filename.startswith("secret_")
+    if is_secret:
+        from memory_compiler.config import MC_ENCRYPT_KEY
+        if not MC_ENCRYPT_KEY:
+            return [TextContent(type="text", text=(
+                "❌ Секретная статья, но MC_ENCRYPT_KEY не задан — правка отклонена, "
+                "чтобы не раскрыть секрет в plaintext."))]
+
     if append:
-        text = fpath.read_text(encoding="utf-8")
-        text = text.rstrip() + f"\n\n### {ts}\n{content}\n"
+        # Для секрета шифруем дописываемое тело отдельным ENC:-блоком
+        # (read_article расшифровывает построчно), заголовок секции — нет.
+        body_add = encrypt_content(content) if is_secret else content
+        text = old_text.rstrip() + f"\n\n### {ts}\n{body_add}\n"
         fpath.write_text(text, encoding="utf-8")
     else:
-        # Сохраняем заголовок и метаданные, заменяем тело
-        old_text = fpath.read_text(encoding="utf-8")
-        lines = old_text.splitlines()
+        # Сохраняем ПОЛНУЮ шапку (титул + все **Ключ:** строки, включая
+        # **Секрет:** да и **Обновлено:**), обрываемся на пустой строке после
+        # метаблока или на первом '## ' — НЕ на **Теги:** (старый баг терял
+        # всё, что шло после тегов).
         header_lines = []
-        for line in lines:
+        meta_started = False
+        for line in old_text.splitlines():
+            s = line.strip()
+            if s.startswith("## "):
+                break
+            if s == "" and meta_started:
+                break
             header_lines.append(line)
-            if line.strip() == "" and len(header_lines) > 3:
-                break
-            if line.startswith("**Теги:**"):
-                header_lines.append("")
-                break
-        # Обновляем дату
-        header = "\n".join(header_lines)
+            if re.match(r"\*\*.+?:\*\*", s):
+                meta_started = True
+        header = "\n".join(header_lines).rstrip()
         if "**Обновлено:**" in header:
             header = re.sub(r"\*\*Обновлено:\*\*.*", f"**Обновлено:** {ts}", header)
         else:
-            header = header.rstrip() + f"\n**Обновлено:** {ts}\n"
-        fpath.write_text(f"{header}\n{content}\n", encoding="utf-8")
+            header = header + f"\n**Обновлено:** {ts}"
+        if is_secret and "**Секрет:** да" not in header:
+            header = header + "\n**Секрет:** да"
+        body = encrypt_content(content) if is_secret else content
+        fpath.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
 
-    article_text = fpath.read_text(encoding="utf-8")
-    index_document(article_text, filename, project)
-    embed_document(article_text, filename, project)
+    # Индексация: у секрета в индекс/эмбеддинги идёт ТОЛЬКО плейсхолдер
+    # (титул + теги), как в save_secret — тело не попадает в поиск.
+    if is_secret:
+        disk_lines = fpath.read_text(encoding="utf-8").splitlines()
+        title = disk_lines[0].lstrip("# ").strip() if disk_lines else filename
+        tags_line = next((l for l in disk_lines[:12] if l.lower().startswith("**теги:**")),
+                         "**Теги:** secret")
+        index_src = f"# {title}\n\n{tags_line}\n\n[зашифрованная статья]"
+    else:
+        index_src = fpath.read_text(encoding="utf-8")
+    index_document(index_src, filename, project)
+    embed_document(index_src, filename, project)
 
     # Cascade-mark: refresh marker on lines that link to this file
     cascaded = mark_dependents(project, filename, ts)
