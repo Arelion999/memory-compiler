@@ -540,6 +540,43 @@ def test_edit_article_plain_remains_searchable(knowledge_dir, monkeypatch):
     assert "testproj/note.md" in _body_indexed("plainsearchtokeneee"), "несекретная статья пропала из индекса"
 
 
+def test_merge_into_article_refuses_secret(knowledge_dir, monkeypatch):
+    """Защита в глубину: merge_into_article не дописывает plaintext в секрет."""
+    import pytest
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import save_secret
+    from memory_compiler.storage import merge_into_article
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    asyncio.run(save_secret(topic="DB creds", project="testproj", content="leaktoken pass=hunter2"))
+    f = next((knowledge_dir / "testproj").glob("secret_*.md"))
+    before = f.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        merge_into_article(f, "plaintext daily note", ["t"], "2026-01-01 10:00")
+    assert f.read_text(encoding="utf-8") == before, "секрет не должен меняться"
+    assert "ENC:" in before
+
+
+def test_find_existing_article_never_targets_secret(knowledge_dir, monkeypatch):
+    """Авто-мёрж (save_lesson/compile) не должен выбирать секрет как цель —
+    иначе plaintext дописался бы в зашифрованную статью."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import save_secret
+    from memory_compiler.storage import find_existing_article
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    asyncio.run(save_secret(topic="Mikrotik router access", project="testproj",
+                            content="admin password and ip"))
+    rebuild_index()
+    rebuild_embeddings()
+
+    # запрос с тем же заголовком — без фикса семантика вернула бы секрет
+    res = find_existing_article("Mikrotik router access", "admin password and ip", "testproj")
+    assert res is None or not res.name.startswith("secret_"), f"авто-мёрж нацелился на секрет: {res}"
+
+
 def test_lint_flags_orphan_article(knowledge_dir):
     """An article not referenced by any other article in the project must be flagged
     with an explicit 'isolated/сирота/no inbound refs' marker."""

@@ -172,7 +172,10 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
         return None
 
     slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
-    articles = list(proj_path.glob("*.md"))
+    # Секреты НИКОГДА не цель авто-мёржа: merge_into_article дописал бы plaintext
+    # в зашифрованную статью и проиндексировал бы его (тот же класс утечки, что
+    # чинили в edit_article). Обновление секрета — только save_secret/edit_article.
+    articles = [a for a in proj_path.glob("*.md") if not a.name.startswith("secret_")]
     if not articles:
         return None
 
@@ -203,6 +206,8 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
         if not key.startswith(f"{project}/") or key.startswith("daily/"):
             continue
         parent = key.split("#", 1)[0]
+        if parent.rsplit("/", 1)[-1].startswith("secret_"):
+            continue  # секреты исключены из авто-мёржа (см. выше)
         sim = float(np.dot(q_vec, vec))
         if sim > best_by_parent.get(parent, -1.0):
             best_by_parent[parent] = sim
@@ -227,6 +232,13 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
 def merge_into_article(article_path: Path, new_content: str, new_tags: list[str], ts: str):
     """Merge new content into existing article, update tags and timestamp."""
     text = article_path.read_text(encoding="utf-8")
+    # Защита в глубину: НИКОГДА не дописывать plaintext в секрет — это сняло бы
+    # шифрование. В норме find_existing_article секреты не возвращает; это страховка
+    # на случай будущего вызова из другого места.
+    if article_path.name.startswith("secret_") or "**Секрет:** да" in text:
+        raise ValueError(
+            f"merge_into_article: отказ дописывать в секретную статью {article_path.name}"
+        )
     lines = text.splitlines()
 
     # Update tags — merge old and new
