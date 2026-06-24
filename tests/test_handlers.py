@@ -577,6 +577,26 @@ def test_find_existing_article_never_targets_secret(knowledge_dir, monkeypatch):
     assert res is None or not res.name.startswith("secret_"), f"авто-мёрж нацелился на секрет: {res}"
 
 
+def test_reindex_placeholders_secret_files(knowledge_dir):
+    """Полный reindex/rebuild_embeddings не должен индексировать тело секрета —
+    включая авторские plaintext-секции. Иначе reindex затирает плейсхолдер
+    save_secret и контент секрета снова попадает в поиск."""
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+    proj = knowledge_dir / "testproj"
+    (proj / "secret_mixed.md").write_text(
+        "# Mixed secret\n\n**Дата:** 2026-01-01 10:00\n**Теги:** secret\n**Секрет:** да\n\n"
+        "## Содержание\n\nENC:gAAAAfakeciphertext\n\n"
+        "## Заметки\n\nreindexplainleak плейнтекст-контекст\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    rebuild_embeddings()
+    # плейнтекст-секция секрета НЕ должна быть в индексе после полного reindex
+    assert "testproj/secret_mixed.md" not in _body_indexed("reindexplainleak")
+    # но статья остаётся findable по заголовку (плейсхолдер проиндексирован)
+    assert "testproj/secret_mixed.md" in _body_indexed("mixed")
+
+
 def test_lint_flags_orphan_article(knowledge_dir):
     """An article not referenced by any other article in the project must be flagged
     with an explicit 'isolated/сирота/no inbound refs' marker."""

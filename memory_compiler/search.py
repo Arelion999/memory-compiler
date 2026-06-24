@@ -297,6 +297,7 @@ def rebuild_embeddings():
                 text = md.read_text(encoding="utf-8")
             except Exception:
                 continue  # skip unreadable/binary files
+            text = _index_safe_text(text, md.name)
             key = f"{proj}/{md.name}"
             lines = text.splitlines()
             new_embed_texts[key] = lines[0].lstrip("# ").strip() if lines else md.stem
@@ -386,6 +387,7 @@ def embed_document(text: str, filename: str, project: str):
     of the index — no second-class representation)."""
     global _embeddings, _embed_texts
     model = get_embed_model()
+    text = _index_safe_text(text, filename)
     parent_key = f"{project}/{filename}"
     lines = text.splitlines()
     _embed_texts[parent_key] = lines[0].lstrip("# ").strip() if lines else filename
@@ -434,6 +436,22 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
 # ─── Whoosh index ────────────────────────────────────────────────────────────
 
 _ix = None  # global whoosh index
+
+
+def _index_safe_text(raw_text: str, filename: str) -> str:
+    """Для секретных статей вернуть плейсхолдер (титул + теги) вместо тела — чтобы
+    ЛЮБАЯ индексация (полный reindex, rebuild_embeddings, прямой index_document)
+    соблюдала тот же инвариант, что save_secret/edit_article: содержимое секрета
+    (включая авторские plaintext-секции) не попадает в поиск/эмбеддинги. Сам ENC:
+    это шифртекст и не утечка, но и его держать в индексе незачем. Несекретные
+    статьи возвращаются без изменений."""
+    if not (filename.startswith("secret_") or "**Секрет:** да" in raw_text):
+        return raw_text
+    lines = raw_text.splitlines()
+    title = lines[0].lstrip("# ").strip() if lines else filename
+    tags_line = next((l for l in lines[:12] if l.lower().startswith("**теги:**")),
+                     "**Теги:** secret")
+    return f"# {title}\n\n{tags_line}\n\n[зашифрованная статья]"
 
 
 def _parse_article(text: str, filename: str, project: str) -> dict:
@@ -511,7 +529,7 @@ def rebuild_index():
         if not p.exists():
             continue
         for md in p.glob("*.md"):
-            text = md.read_text(encoding="utf-8")
+            text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
             fields = _parse_article(text, md.name, proj)
             writer.add_document(**fields)
             count += 1
@@ -530,6 +548,7 @@ def rebuild_index():
 def index_document(text: str, filename: str, project: str):
     """Add or update a single document in the index."""
     ix = get_index()
+    text = _index_safe_text(text, filename)
     fields = _parse_article(text, filename, project)
     writer = ix.writer()
     writer.update_document(**fields)
