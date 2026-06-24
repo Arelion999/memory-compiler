@@ -70,7 +70,7 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div id="view-search">
 <div class="search-box">
 <input id="q" type="search" placeholder="Поиск по базе знаний...">
-<select id="q-project"><option value="">Все проекты</option></select>
+<select id="q-project" onchange="onProjectChange()"><option value="">Все проекты</option></select>
 <button onclick="doSearch()">Найти</button>
 </div>
 <div class="tags-bar" id="tags-bar"></div>
@@ -118,6 +118,7 @@ $("f-project").innerHTML=PROJECTS.map(function(p){return '<option value="'+p+'">
 $("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
 const $=id=>document.getElementById(id);
 let current=null;
+let activeTag=null;
 
 function showTab(t){
   ["search","add","graph","compile","analytics","audit"].forEach(v=>{
@@ -139,8 +140,9 @@ let lastQueryWords=[];
 async function doSearch(){
   const q=$("q").value.trim();
   if(!q)return;
-  current=null;renderProjects();
-  const r=await fetch("/api/search?q="+encodeURIComponent(q));
+  activeTag=null;current=null;renderProjects();loadTags();
+  const p=$("q-project").value;
+  const r=await fetch("/api/search?q="+encodeURIComponent(q)+(p?"&project="+encodeURIComponent(p):""));
   const d=await r.json();
   lastQueryWords=(d.query||q).toLowerCase().split(/[\s,;.:]+/).filter(w=>w.length>2);
   renderResults(d.results);
@@ -160,10 +162,10 @@ function highlight(s){
 }
 
 async function loadProject(p){
-  current=p;renderProjects();$("q").value="";
+  current=p;activeTag=null;renderProjects();loadTags();$("q").value="";
   const r=await fetch("/api/projects/"+p);
   const d=await r.json();
-  renderResults(d.articles);
+  lastQueryWords=[];renderResults(d.articles);
 }
 
 async function expandCard(proj,file,el){
@@ -238,13 +240,35 @@ function toggleTheme(){
 
 // Tags bar
 async function loadTags(){
-  const r=await fetch("/api/tags");
+  const p=$("q-project")?$("q-project").value:"";
+  const r=await fetch("/api/tags"+(p?"?project="+encodeURIComponent(p):""));
   const d=await r.json();
   $("tags-bar").innerHTML=d.tags.slice(0,20).map(t=>
-    `<span class="tag-chip" onclick="searchByTag('${esc(t.tag)}')">${esc(t.tag)} (${t.count})</span>`
+    `<span class="tag-chip${t.tag===activeTag?' active':''}" onclick="searchByTag('${esc(t.tag)}')">${esc(t.tag)} (${t.count})</span>`
   ).join("");
 }
-function searchByTag(tag){$("q").value=tag;doSearch();}
+async function runTagFilter(tag){
+  const p=$("q-project").value;
+  const r=await fetch("/api/by-tag?tag="+encodeURIComponent(tag)+(p?"&project="+encodeURIComponent(p):""));
+  const d=await r.json();
+  lastQueryWords=[];renderResults(d.articles);
+}
+async function searchByTag(tag){
+  if(activeTag===tag){activeTag=null;loadTags();$("results").innerHTML="";return;}
+  activeTag=tag;$("q").value="";current=null;renderProjects();loadTags();
+  runTagFilter(tag);
+}
+async function onProjectChange(){
+  loadTags();
+  const q=$("q").value.trim();
+  if(q){doSearch();return;}
+  if(activeTag){runTagFilter(activeTag);return;}
+  const p=$("q-project").value;
+  if(p){
+    const r=await fetch("/api/projects/"+encodeURIComponent(p));
+    const d=await r.json();lastQueryWords=[];renderResults(d.articles);
+  }else{$("results").innerHTML="";}
+}
 
 // Animated graph (Obsidian-style) with zoom, pan, drag
 let graphRaw=null,graphNodes=[],graphEdges=[],graphNmap={},graphAnim=null;

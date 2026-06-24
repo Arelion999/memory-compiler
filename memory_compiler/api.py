@@ -36,7 +36,8 @@ async def web_search(request: Request):
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse({"results": []})
-    results = whoosh_search(q, limit=15)
+    project = request.query_params.get("project", "").strip() or "all"
+    results = whoosh_search(q, project=project, limit=15)
     # Add snippets: lines from article body that contain query words (with context)
     import re as _re
     query_words = [w.lower() for w in _re.split(r'[\s,;.:]+', q) if len(w) > 2]
@@ -349,27 +350,69 @@ async def web_delete_article(request: Request):
     return JSONResponse({"result": result[0].text})
 
 
+def _article_tags(md) -> list[str]:
+    """\u0418\u0437\u0432\u043b\u0435\u0447\u044c \u043d\u043e\u0440\u043c\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u043d\u043d\u044b\u0435 \u0442\u0435\u0433\u0438 \u0438\u0437 \u0441\u0442\u0440\u043e\u043a\u0438 `**\u0422\u0435\u0433\u0438:**` \u0441\u0442\u0430\u0442\u044c\u0438 (\u043f\u0435\u0440\u0432\u044b\u0435 10 \u0441\u0442\u0440\u043e\u043a)."""
+    text = md.read_text(encoding="utf-8")
+    for line in text.splitlines()[:10]:
+        if line.lower().startswith("**\u0442\u0435\u0433\u0438:**"):
+            tags_str = line.split(":", 1)[1].strip()
+            tags = []
+            for t in tags_str.split(","):
+                t = t.strip().lower().strip("*").strip()
+                if t and t != "\u2014":
+                    tags.append(t)
+            return tags
+    return []
+
+
+def _scoped_projects(request: Request) -> list[str]:
+    """\u0421\u043f\u0438\u0441\u043e\u043a \u043f\u0440\u043e\u0435\u043a\u0442\u043e\u0432 \u0441 \u0443\u0447\u0451\u0442\u043e\u043c \u043d\u0435\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e ?project= (\u043f\u0443\u0441\u0442\u043e/all \u2192 \u0432\u0441\u0435)."""
+    project = request.query_params.get("project", "").strip()
+    if project and project != "all":
+        return [project]
+    return _discover_projects()
+
+
 async def web_tags(request: Request):
-    """Get all tags with counts."""
+    """Get all tags with counts, optionally scoped to ?project=."""
     tag_counts: dict[str, int] = {}
-    for proj in _discover_projects():
+    for proj in _scoped_projects(request):
         proj_path = KNOWLEDGE_DIR / proj
         if not proj_path.exists():
             continue
         for md in proj_path.glob("*.md"):
             if md.name.startswith("_"):
                 continue
-            text = md.read_text(encoding="utf-8")
-            for line in text.splitlines()[:10]:
-                if line.lower().startswith("**\u0442\u0435\u0433\u0438:**"):
-                    tags_str = line.split(":", 1)[1].strip()
-                    for t in tags_str.split(","):
-                        t = t.strip().lower().strip("*").strip()
-                        if t and t != "\u2014":
-                            tag_counts[t] = tag_counts.get(t, 0) + 1
-                    break
+            for t in _article_tags(md):
+                tag_counts[t] = tag_counts.get(t, 0) + 1
     sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
     return JSONResponse({"tags": [{"tag": t, "count": c} for t, c in sorted_tags]})
+
+
+async def web_by_tag(request: Request):
+    """\u0421\u0442\u0430\u0442\u044c\u0438 \u0441 \u043a\u043e\u043d\u043a\u0440\u0435\u0442\u043d\u044b\u043c \u0442\u0435\u0433\u043e\u043c (?tag=, \u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e ?project=).
+
+    \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442 \u0442\u043e\u0442 \u0436\u0435 \u0440\u0430\u0437\u0431\u043e\u0440 `**\u0422\u0435\u0433\u0438:**`, \u0447\u0442\u043e \u0438 \u0441\u0447\u0451\u0442\u0447\u0438\u043a \u0432 web_tags, \u043f\u043e\u044d\u0442\u043e\u043c\u0443
+    \u0447\u0438\u0441\u043b\u043e \u0441\u0442\u0430\u0442\u0435\u0439 \u0432 \u0432\u044b\u0434\u0430\u0447\u0435 \u0432\u0441\u0435\u0433\u0434\u0430 \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u0435\u0442 \u0441 \u0446\u0438\u0444\u0440\u043e\u0439 \u043d\u0430 \u0447\u0438\u043f\u0435 \u0442\u0435\u0433\u0430.
+    """
+    tag = request.query_params.get("tag", "").strip().lower()
+    if not tag:
+        return JSONResponse({"articles": []})
+    items = []
+    for proj in _scoped_projects(request):
+        proj_path = KNOWLEDGE_DIR / proj
+        if not proj_path.exists():
+            continue
+        articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for md in articles:
+            if md.name.startswith("_"):
+                continue
+            if tag in _article_tags(md):
+                lines = md.read_text(encoding="utf-8").splitlines()
+                title = lines[0].lstrip("# ").strip() if lines else md.stem
+                preview = "\n".join(lines[:10])
+                items.append({"title": title, "project": proj, "file": md.name, "preview": preview})
+    return JSONResponse({"articles": items, "tag": tag})
 
 
 class AuthMiddleware:
@@ -575,6 +618,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/export/{project}", endpoint=web_export),
             Route("/api/delete", endpoint=web_delete_article, methods=["POST"]),
             Route("/api/tags", endpoint=web_tags),
+            Route("/api/by-tag", endpoint=web_by_tag),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=sse.handle_post_message),
         ],

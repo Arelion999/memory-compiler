@@ -35,6 +35,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.storage as storage_mod
     import memory_compiler.search as search_mod
     import memory_compiler.handlers as handlers_mod
+    import memory_compiler.api as api_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -49,6 +50,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     monkeypatch.setattr(search_mod, "INDEX_DIR", knowledge_dir / ".whoosh_index")
     monkeypatch.setattr(search_mod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
     monkeypatch.setattr(handlers_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(api_mod, "KNOWLEDGE_DIR", knowledge_dir)
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)
