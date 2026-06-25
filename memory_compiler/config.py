@@ -3,8 +3,46 @@ Configuration, constants, schema, and article metadata for memory-compiler.
 """
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+
+# ─── Atomic file writes ──────────────────────────────────────────────────────
+# Деплой = docker restart, который может прервать запись на полуслове. Прямой
+# write_text оставляет обрезанный файл; для .article_meta.json это означает потерю
+# ВСЕЙ аналитики (json.loads падает → article_meta = {}). tmp-в-том-же-каталоге +
+# os.replace атомарен на POSIX и Windows: читатель видит либо старый файл целиком,
+# либо новый целиком, никогда — наполовину. Также защищает от торн-райта при гонке.
+
+def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path, data: bytes) -> None:
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 from whoosh.fields import Schema, TEXT, ID, STORED
 from whoosh.analysis import RegexTokenizer, LowercaseFilter, StemFilter
@@ -115,7 +153,7 @@ def load_article_meta():
 
 
 def save_article_meta():
-    ARTICLE_META_PATH.write_text(json.dumps(article_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(ARTICLE_META_PATH, json.dumps(article_meta, ensure_ascii=False, indent=2))
 
 
 def track_access(paths: list[str]):

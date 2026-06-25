@@ -1347,3 +1347,109 @@ def test_auto_update_tracking_logs_changes(knowledge_dir):
     assert log_path.exists(), "авто-апдейт трекера должен логироваться в _log.md"
     text = log_path.read_text(encoding="utf-8")
     assert "auto_update" in text and "deployment" in text, f"нет записи об авто-апдейте: {text!r}"
+
+
+# ─── v1.7.26: дата-как-версия, semver pre-release, per-key relevance ──────────
+# Регрессия найдена аудитом и воспроизведена ВЖИВУЮ: finish_task сохранил отчёт,
+# auto_update_tracking выхватил из текста '2024.06.25' как версию и затёр release
+# 1.7.18 → 2024.06.25 (год >> мажор в _max_semver, guard не сработал).
+
+
+def test_extract_facts_date_not_version():
+    """Дата ГГГГ.ММ.ДД (2024.06.25) не должна извлекаться как версия — иначе
+    _max_semver выбирает её (год >> мажор) и затирает реальную версию трекера."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("Релиз выкатили 2024.06.25, всё прошло гладко")
+    assert "2024.06.25" not in facts.get("version", []), f"дата принята за версию: {facts}"
+
+
+def test_extract_facts_real_version_still_extracted():
+    """Контроль: обычная семантическая версия по-прежнему извлекается."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("Обновили сервис до 1.7.26 на проде")
+    assert "1.7.26" in facts.get("version", []), f"реальная версия потеряна: {facts}"
+
+
+def test_semver_key_prerelease_below_release():
+    """Pre-release (1.8.0-rc1) должен быть МЕНЬШЕ финального релиза (1.8.0):
+    иначе guard пропускает откат финала на rc, а _max_semver выбирает rc."""
+    from memory_compiler.storage import _semver_key
+    assert _semver_key("1.8.0-rc1") < _semver_key("1.8.0"), \
+        "pre-release должен сортироваться ниже одноимённого финального релиза"
+    # rc2 > rc1, но оба ниже финала
+    assert _semver_key("1.8.0-rc1") < _semver_key("1.8.0-rc2") < _semver_key("1.8.0")
+
+
+def test_max_semver_prefers_release_over_prerelease():
+    """_max_semver не должен выбирать pre-release как «максимальную» версию."""
+    from memory_compiler.storage import _max_semver
+    assert _max_semver(["1.8.0-rc1", "1.8.0"]) == "1.8.0"
+
+
+def test_guard_blocks_release_to_prerelease_downgrade(knowledge_dir):
+    """Guard на авто-пути: финальный релиз 1.8.0 не откатывается на 1.8.0-rc1."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.8.0"})
+    r = save_tracking_article("testproj", "release", {"version": "1.8.0-rc1"},
+                              guard_version_regression=True)
+    assert r["action"] == "unchanged", f"откат финала на rc не заблокирован: {r}"
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.8.0"
+
+
+def test_validate_fetch_url_blocks_ssrf():
+    """SSRF-guard (v1.7.26): не-http схемы (file://, ftp://), loopback, link-local
+    (cloud-metadata 169.254.169.254), приватные LAN-адреса — отклоняются."""
+    import pytest
+    from memory_compiler.storage import _validate_fetch_url
+    for bad in ["file:///etc/passwd", "ftp://host/x",
+                "http://127.0.0.1/", "http://localhost/",
+                "http://169.254.169.254/latest/meta-data/",
+                "http://192.168.1.1/", "http://10.0.0.5/", "http://[::1]/"]:
+        with pytest.raises(ValueError):
+            _validate_fetch_url(bad)
+
+
+def test_validate_fetch_url_allows_public():
+    """Публичный IP-литерал не блокируется (93.184.216.34 = example.com, без DNS)."""
+    from memory_compiler.storage import _validate_fetch_url
+    _validate_fetch_url("https://93.184.216.34/page")  # не должно бросить ValueError
+
+
+def test_make_slug_avoids_secret_prefix():
+    """make_slug не должен порождать имя secret_* для обычных сохранений —
+    префикс secret_ зарезервирован за шифрованными статьями (save_secret)."""
+    from memory_compiler.storage import make_slug
+    assert not make_slug("Secret stuff").startswith("secret_")
+    assert not make_slug("secret").startswith("secret_") or make_slug("secret") == "note_secret"
+    # обычный topic не трогается
+    assert make_slug("nginx config").startswith("nginx")
+
+
+def test_save_lesson_does_not_create_secret_named_file(knowledge_dir):
+    """save_lesson с topic на 'secret' не должен создавать secret_*.md с plaintext-телом:
+    иначе обычный урок выглядит как зашифрованный секрет, но лежит в открытом виде
+    (и коммитится в git). Префикс secret_ — только за save_secret."""
+    import asyncio
+    from memory_compiler.handlers import save_lesson
+    asyncio.run(save_lesson(topic="Secret API notes", content="plaintext тело здесь",
+                            project="testproj"))
+    proj = knowledge_dir / "testproj"
+    secret_files = list(proj.glob("secret_*.md"))
+    assert not secret_files, f"обычное сохранение создало secret_*.md: {secret_files}"
+    # статья всё же создана (под безопасным именем)
+    assert list(proj.glob("note_*.md")), "статья не создана под безопасным note_-именем"
+
+
+def test_auto_update_tracking_ignores_foreign_fact_near_referenced_entity(knowledge_dir):
+    """Per-key relevance: даже когда сущность упомянута, факт из ДРУГОГО предложения
+    (про чужой объект) не должен затирать поле сущности. Заметка про NAS содержит
+    посторонний IP роутера в отдельном предложении — IP NAS затирать нельзя."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "nas", {"ip": "192.168.1.10", "version": "1.2.3"})
+    note = ("NAS обновлён до версии 1.2.4. "
+            "Кстати, у клиента роутер на 192.168.1.99.")
+    auto_update_tracking("testproj", note, topic="обновление NAS")
+    cur = load_tracking("testproj", "nas")["current"]
+    assert cur["version"] == "1.2.4", f"версия NAS должна обновиться (тот же сегмент): {cur}"
+    assert cur["ip"] == "192.168.1.10", \
+        f"IP NAS затёрт посторонним IP из другого предложения: {cur['ip']!r}"

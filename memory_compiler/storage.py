@@ -13,7 +13,7 @@ from typing import Optional
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, save_article_meta,
-    _discover_projects,
+    _discover_projects, atomic_write_text,
 )
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
@@ -162,16 +162,27 @@ def merge_case_duplicates() -> list[dict]:
 # ─── Article finding ─────────────────────────────────────────────────────────
 
 
+def make_slug(topic: str) -> str:
+    """Slug из topic для имени .md-файла. Не-секретные сохранения не должны порождать
+    имя secret_*.md — этот префикс зарезервирован за save_secret (шифрованное тело).
+    Иначе обычный plaintext-урок с topic «secret …» создал бы файл, который выглядит
+    как секрет, но лежит в открытом виде и коммитится в git (нарушение инварианта)."""
+    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+    if slug == "secret" or slug.startswith("secret_"):
+        slug = "note_" + slug
+    return slug
+
+
 def find_existing_article(topic: str, content: str, project: str) -> Optional[Path]:
     """Find existing article by semantic similarity or slug match."""
-    from memory_compiler.search import _embeddings, encode_query
+    from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np
 
     proj_path = project_dir(project)
     if not proj_path.exists():
         return None
 
-    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+    slug = make_slug(topic)
     # Секреты НИКОГДА не цель авто-мёржа: merge_into_article дописал бы plaintext
     # в зашифрованную статью и проиндексировал бы его (тот же класс утечки, что
     # чинили в edit_article). Обновление секрета — только save_secret/edit_article.
@@ -195,14 +206,15 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
     #     статью; так заметка про «MAX-заселение» прилипла к «кнопка MAX-мессенджера».
     #   • запас над вторым кандидатом — при двух близких НЕ угадываем, заводим новую;
     #   • чанки сводим к родительской статье (ключи вида 'project/file.md#N').
-    if not _embeddings:
+    embeddings = snapshot_embeddings()
+    if not embeddings:
         return None
     q_vec = encode_query(f"{topic} {content[:300]}")
 
     MERGE_MIN_SIM = 0.90
     MERGE_MARGIN = 0.05
     best_by_parent: dict[str, float] = {}
-    for key, vec in _embeddings.items():
+    for key, vec in embeddings.items():
         if not key.startswith(f"{project}/") or key.startswith("daily/"):
             continue
         parent = key.split("#", 1)[0]
@@ -343,7 +355,7 @@ def regenerate_index():
 - Последнее обновление: {now}
 """
     index_path = KNOWLEDGE_DIR / "index.md"
-    index_path.write_text(index_text, encoding="utf-8")
+    atomic_write_text(index_path, index_text)  # atomic: regenerate_index зовётся из фона и event loop
 
 
 # ─── Git versioning ──────────────────────────────────────────────────────────
@@ -755,10 +767,11 @@ def update_cross_references(topic: str, project: str, saved_path: str,
     вверх, порог 0.55 калибровался под старую MiniLM) дописывала сотни
     нерелевантных кросс-ссылок через всю базу, в т.ч. в чужие проекты.
     """
-    from memory_compiler.search import _embeddings, encode_query
+    from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np
 
-    if not _embeddings:
+    embeddings = snapshot_embeddings()
+    if not embeddings:
         return
     # D: не кросс-реферим ОТ meta-статьи.
     if _is_meta_article(saved_path.split("/")[-1]):
@@ -768,7 +781,7 @@ def update_cross_references(topic: str, project: str, saved_path: str,
 
     # Кандидаты: тот же проект, не meta, similarity в окне. Затем — top-N.
     cands = []
-    for key, vec in _embeddings.items():
+    for key, vec in embeddings.items():
         if key == saved_path or "#chunk" in key:
             continue
         if key.split("/", 1)[0] != project:        # C: только тот же проект
@@ -909,10 +922,7 @@ def read_project_deps(project: str) -> list[str]:
 def write_project_deps(project: str, depends_on: list[str]):
     """Write project dependencies."""
     deps_file = get_project_deps_file(project)
-    deps_file.write_text(
-        json.dumps({"depends_on": depends_on}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(deps_file, json.dumps({"depends_on": depends_on}, ensure_ascii=False, indent=2))
 
 
 # --- Encryption ---
@@ -1418,7 +1428,7 @@ def write_last_capture(project: str, repo_path: str, commit_hash: str):
         "last_commit": commit_hash,
         "last_capture": datetime.now().isoformat(),
     }
-    cap_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(cap_path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 # ─── Ingest helpers ─────────────────────────────────────────────────────
@@ -1565,17 +1575,50 @@ def parse_obsidian_note(text: str) -> dict:
     return result
 
 
+def _validate_fetch_url(url: str) -> None:
+    """SSRF-guard: только http/https; хост не должен резолвиться в приватный/loopback/
+    link-local/reserved адрес. Блокирует file://, доступ к 127.0.0.1, cloud-metadata
+    169.254.169.254, внутренние LAN-сервисы. Вызывается перед каждым запросом и на
+    каждом редиректе (обход 30x на внутренний адрес)."""
+    import socket
+    import ipaddress
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"запрещённая схема URL: {parsed.scheme or '—'} (только http/https)")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL без хоста")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise ValueError(f"не удалось разрешить хост: {host}")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ValueError(f"доступ к небезопасному адресу запрещён: {ip}")
+
+
 def fetch_url(url: str, timeout: int = 15) -> tuple:
-    """Fetch URL content. Returns (text, content_type, title)."""
+    """Fetch URL content. Returns (text, content_type, title). SSRF-protected."""
     import urllib.request
     import urllib.error
 
+    _validate_fetch_url(url)
+
+    class _NoSSRFRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            _validate_fetch_url(newurl)  # ревалидируем цель каждого редиректа
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = urllib.request.build_opener(_NoSSRFRedirect())
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (compatible; memory-compiler/1.0)",
         "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             content_type = resp.headers.get("Content-Type", "")
             data = resp.read(512 * 1024)  # 512KB limit
             charset = "utf-8"
@@ -1815,8 +1858,18 @@ def load_tracking(project: str, entity: str) -> Optional[dict]:
 
 
 def _semver_key(v):
-    """Числовой ключ версии для сравнения: '1.7.16' → (1, 7, 16)."""
-    return tuple(int(x) for x in re.findall(r'\d+', str(v)))
+    """Числовой ключ версии для сравнения. Pre-release (-rc/-beta/-alpha) сортируется
+    НИЖЕ одноимённого финального релиза: 1.8.0-rc1 < 1.8.0 < 1.8.1.
+      '1.7.16'    → ((1, 7, 16), 1, ())     # релиз: маркер 1 (выше)
+      '1.8.0-rc1' → ((1, 8, 0), 0, (1,))    # pre-release: маркер 0 (ниже) + номер rc
+    Без этого '1.8.0-rc1' давал (1,8,0,1) > (1,8,0) — guard пропускал откат финала
+    на rc, а _max_semver выбирал rc как «максимальную»."""
+    base, _, suffix = str(v).partition("-")
+    nums = tuple(int(x) for x in re.findall(r'\d+', base))
+    if suffix:
+        suf_nums = tuple(int(x) for x in re.findall(r'\d+', suffix))
+        return (nums, 0, suf_nums)
+    return (nums, 1, ())
 
 
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
@@ -1959,6 +2012,21 @@ _HISTORICAL_MARKERS = re.compile(
 )
 
 
+def _looks_like_date(v: str) -> bool:
+    """X.Y.Z, похожее на календарную дату (2024.06.25): год 2000-2099, месяц 1-12,
+    день 1-31. Такие строки — даты, не семантические версии. Без этого фильтра
+    _max_semver выбирал дату как «максимальную» (год >> мажор) и затирал версию
+    трекера — воспроизведено вживую: '2024.06.25' затёрла release 1.7.18."""
+    parts = v.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False
+    return 2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31
+
+
 def extract_facts_from_text(text: str, topic: str = "") -> dict:
     """Extract structural facts from free text. Returns {kind: [values]}.
     Only returns values that appear in non-historical context.
@@ -2003,6 +2071,9 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
         values = []
         for m in matches:
             v = m if isinstance(m, str) else m[0]
+            # Версия, похожая на дату (2024.06.25), — это дата, не версия.
+            if kind == "version" and _looks_like_date(v):
+                continue
             if v and v not in seen:
                 seen.add(v)
                 values.append(v)
@@ -2045,54 +2116,59 @@ def _max_semver(versions):
         return versions[0]
 
 
-def _note_references_entity(entity: str, current: dict, text: str) -> bool:
-    """Относится ли заметка к данной tracking-сущности.
+def _entity_relevant_facts(entity: str, current: dict, topic: str, text: str) -> dict:
+    """Факты для авто-апдейта сущности — ТОЛЬКО из сегментов, привязанных к ней.
 
-    True, если текст упоминает имя сущности ИЛИ одно из её текущих значений.
-    Relevance-гейт: без него auto_update срабатывал на ЛЮБОЙ сущности с подходящим
-    по типу ключом и затирал несвязанные поля (гео-поле address ← 4-частная версия,
-    валидная как IP; deployment.ip ← IP атакующего из заметки-инцидента). Совпадение
-    по типу факта недостаточно — нужна привязка к конкретной сущности.
+    Per-key relevance (v1.7.26): прежний relevance-гейт проверял лишь, что заметка
+    упоминает сущность, и затем обновлял ВСЕ её поля любым фактом того же типа из
+    всего текста. Это пропускало затирание поля посторонним фактом из ДРУГОГО
+    предложения: «NAS обновлён до 1.2.4. У клиента роутер 192.168.1.99» — IP роутера
+    затирал ip NAS. Теперь:
+      - если в ТЕЛЕ есть предложения, упоминающие сущность (имя/значение поля) —
+        факты берём только из них (посторонний сегмент исключён);
+      - если сущность названа лишь в topic (заголовок про неё, тело без повтора имени) —
+        доверяем topic-контексту и берём факты из всего текста;
+      - если сущность не упомянута нигде — пусто (заметка не про неё, гейт-замена).
     """
-    hay = text.lower()
-    if re.search(rf'\b{re.escape(entity.lower())}\b', hay):
-        return True
-    for k, v in current.items():
-        if k == "since":
-            continue
-        sval = str(v).strip().lower()
-        # >=4 символов, чтобы порт '80'/октет не давали ложную привязку
-        if len(sval) >= 4 and sval in hay:
-            return True
-    return False
+    keys_vals = [entity.lower()] + [
+        str(v).strip().lower() for k, v in current.items()
+        if k != "since" and len(str(v).strip()) >= 4
+    ]
+    topic_segs = set(re.split(r'(?:\.\s+|\n)', topic))
+    body_relevant = [
+        seg for seg in re.split(r'(?:\.\s+|\n)', f"{topic}\n{text}")
+        if seg not in topic_segs and any(kv in seg.lower() for kv in keys_vals)
+    ]
+    if body_relevant:
+        return extract_facts_from_text(topic + " . " + " . ".join(body_relevant))
+    if any(kv in f"{topic}\n{text}".lower() for kv in keys_vals):
+        return extract_facts_from_text(text, topic)
+    return {}
 
 
 def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]:
     """Scan text for facts and update existing tracking articles safely.
     Rules:
       - Only updates existing tracking (no auto-create to avoid noise)
-      - Relevance-гейт: трогаем только сущности, на которые заметка ССЫЛАЕТСЯ
-        (по имени или текущему значению) — см. _note_references_entity
+      - Per-key relevance: факты берём только из сегментов, привязанных к сущности
+        (см. _entity_relevant_facts) — посторонний факт из чужого предложения не
+        затирает поле даже когда сущность в заметке упомянута
       - Match by fact type (version, ip, port, url) with existing current keys
       - IP-роль (private/public/...) нового значения должна совпадать со старой
       - Skip if new value same as current
     Returns list of updates performed: [{entity, key, old, new, path}]
     """
-    facts = extract_facts_from_text(text, topic)
-    if not facts:
-        return []
-
     existing = list_tracking_articles(project)
     if not existing:
         return []
 
-    combined = f"{topic}\n{text}"
     updates = []
     for track in existing:
         current = track["current"] or {}
         entity = track["entity"]
-        # Relevance-гейт: пропускаем сущности, к которым заметка не относится.
-        if not _note_references_entity(entity, current, combined):
+        # Per-key relevance: факты только из сегментов, относящихся к этой сущности.
+        facts = _entity_relevant_facts(entity, current, topic, text)
+        if not facts:
             continue
         new_current = dict(current)
         changed = False

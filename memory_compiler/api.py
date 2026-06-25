@@ -1,5 +1,6 @@
 """REST API endpoints and Starlette application factory."""
 import asyncio
+import hmac
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -13,19 +14,75 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
-    _discover_projects, MC_API_KEY, VERSION,
+    _discover_projects, MC_API_KEY, MC_ENCRYPT_KEY, VERSION,
 )
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
     load_embeddings, get_index,
 )
-from memory_compiler.storage import project_dir, regenerate_index, git_init, read_audit_log, decrypt_content, is_encrypted
+from memory_compiler.storage import (
+    project_dir, regenerate_index, git_init, read_audit_log,
+    decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
+)
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
+
+
+def _is_authed(request) -> bool:
+    """Несёт ли запрос валидный MC_API_KEY (Bearer или cookie). Если MC_API_KEY не
+    задан — auth не настроен, доступ считается открытым (как в AuthMiddleware).
+    Сравнение constant-time (hmac.compare_digest)."""
+    if not MC_API_KEY:
+        return True
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], MC_API_KEY):
+        return True
+    token = request.cookies.get("mc_token", "")
+    return bool(token) and hmac.compare_digest(token, MC_API_KEY)
+
+
+def _maybe_decrypt_secret_lines(text: str) -> str:
+    """Дешифровать ENC:-строки для web-ответа ТОЛЬКО когда auth настроен (MC_API_KEY
+    задан и эндпоинт под AuthMiddleware). Fail-closed: при пустом MC_API_KEY middleware
+    не монтируется — не раскрываем секреты по HTTP, отдаём шифртекст как есть. Иначе
+    шифрование секретов на диске не защищало бы ни от чего (сервер сам отдаёт plaintext)."""
+    if not MC_API_KEY or "ENC:" not in text:
+        return text
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        out.append(decrypt_content(s) if s.startswith("ENC:") else line)
+    return "\n".join(out)
+
+
+def _check_key_hygiene() -> list:
+    """Предупреждения о конфигурации ключей (находки аудита #1/#2). Список строк."""
+    warns = []
+    if MC_ENCRYPT_KEY and not MC_API_KEY:
+        warns.append(
+            "⚠️  MC_ENCRYPT_KEY задан, а MC_API_KEY пуст: REST-доступ без аутентификации, "
+            "секреты по HTTP не дешифруются (fail-closed). Задайте MC_API_KEY для Web UI.")
+    if MC_API_KEY and MC_API_KEY == MC_ENCRYPT_KEY:
+        warns.append(
+            "⚠️  MC_API_KEY == MC_ENCRYPT_KEY: ключ доступа совпадает с ключом шифрования. "
+            "Он идёт в каждом запросе — его утечка раскроет ВСЕ секреты (вкл. git-историю). "
+            "Задайте РАЗНЫЕ случайные ключи.")
+    return warns
+
+
+def _safe_proj_path(project: str):
+    """Path к каталогу проекта без побочного создания; None если имя небезопасно
+    (traversal) или каталога нет. Для read-only web-эндпоинтов — не плодим пустые
+    каталоги, но и не даём project='..' уйти за пределы knowledge."""
+    if (not project or project in (".", "..")
+            or "/" in project or "\\" in project or ".." in project):
+        return None
+    p = KNOWLEDGE_DIR / project
+    return p if p.exists() and p.is_dir() else None
 
 
 async def web_index(request: Request):
@@ -51,16 +108,8 @@ async def web_search(request: Request):
         except Exception:
             r["snippets"] = []
             continue
-        # Decrypt ENC: lines for snippets (auth required for endpoint)
-        if "ENC:" in text:
-            from memory_compiler.storage import decrypt_content as _dec
-            new_lines = []
-            for line in text.splitlines():
-                if line.strip().startswith("ENC:"):
-                    new_lines.append(_dec(line.strip()))
-                else:
-                    new_lines.append(line)
-            text = "\n".join(new_lines)
+        # Decrypt ENC: lines for snippets only under configured auth (fail-closed).
+        text = _maybe_decrypt_secret_lines(text)
         lines = text.splitlines()
         snippets = []
         seen_indices = set()
@@ -84,8 +133,8 @@ async def web_search(request: Request):
 
 async def web_project(request: Request):
     project = request.path_params["project"]
-    proj_path = KNOWLEDGE_DIR / project
-    if not proj_path.exists():
+    proj_path = _safe_proj_path(project)
+    if proj_path is None:
         return JSONResponse({"articles": []})
     articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     items = []
@@ -99,22 +148,16 @@ async def web_project(request: Request):
 
 
 async def web_article(request: Request):
-    """Get full article text, with decryption for secrets."""
+    """Get full article text, with decryption for secrets (only under configured auth)."""
     project = request.path_params["project"]
     filename = request.path_params["filename"]
-    fpath = KNOWLEDGE_DIR / project / filename
-    if not fpath.exists() or not fpath.suffix == ".md":
+    try:
+        fpath = safe_article_path(project, filename)  # отвергает traversal (../, абс. путь)
+    except ValueError:
         return JSONResponse({"error": "not found"}, status_code=404)
-    text = fpath.read_text(encoding="utf-8")
-    # Decrypt secret articles for authorized web users
-    if "ENC:" in text:
-        lines_dec = []
-        for line in text.splitlines():
-            if line.strip().startswith("ENC:"):
-                lines_dec.append(decrypt_content(line.strip()))
-            else:
-                lines_dec.append(line)
-        text = "\n".join(lines_dec)
+    if not fpath.exists() or fpath.suffix != ".md":
+        return JSONResponse({"error": "not found"}, status_code=404)
+    text = _maybe_decrypt_secret_lines(fpath.read_text(encoding="utf-8"))
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename
     return JSONResponse({"title": title, "project": project, "file": filename, "content": text})
@@ -139,34 +182,37 @@ async def web_save(request: Request):
 
 
 async def web_health(request: Request):
-    import memory_compiler.config as _cfg
-    _cfg.PROJECTS = _discover_projects()
     ix = get_index()
-    total_chars = 0
-    total_articles = 0
-    project_stats = {}
-    for proj in _cfg.PROJECTS:
-        p = KNOWLEDGE_DIR / proj
-        if not p.exists():
-            continue
-        articles = list(p.glob("*.md"))
-        chars = sum(a.stat().st_size for a in articles)
-        project_stats[proj] = {"articles": len(articles), "size_kb": round(chars / 1024, 1)}
-        total_chars += chars
-        total_articles += len(articles)
-    daily_dir = KNOWLEDGE_DIR / "daily"
-    daily_count = len(list(daily_dir.glob("*.md"))) if daily_dir.exists() else 0
-    return JSONResponse({
-        "status": "ok",
-        "version": VERSION,
-        "documents": ix.doc_count(),
-        "embeddings": len(_search_mod._embeddings),
-        "total_articles": total_articles,
-        "total_size_kb": round(total_chars / 1024, 1),
-        "daily_logs": daily_count,
-        "projects": project_stats,
-        "usage": stats,
-    })
+    payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count()}
+    # Детали (имена проектов = клиентов, размеры, usage-счётчики) — только под
+    # настроенным auth. Публичный /api/health нужен Docker healthcheck (без токена),
+    # поэтому он отдаёт лишь status/version/documents, без разведданных о базе.
+    if _is_authed(request):
+        import memory_compiler.config as _cfg
+        _cfg.PROJECTS = _discover_projects()
+        total_chars = 0
+        total_articles = 0
+        project_stats = {}
+        for proj in _cfg.PROJECTS:
+            p = KNOWLEDGE_DIR / proj
+            if not p.exists():
+                continue
+            articles = list(p.glob("*.md"))
+            chars = sum(a.stat().st_size for a in articles)
+            project_stats[proj] = {"articles": len(articles), "size_kb": round(chars / 1024, 1)}
+            total_chars += chars
+            total_articles += len(articles)
+        daily_dir = KNOWLEDGE_DIR / "daily"
+        daily_count = len(list(daily_dir.glob("*.md"))) if daily_dir.exists() else 0
+        payload.update({
+            "embeddings": len(_search_mod._embeddings),
+            "total_articles": total_articles,
+            "total_size_kb": round(total_chars / 1024, 1),
+            "daily_logs": daily_count,
+            "projects": project_stats,
+            "usage": stats,
+        })
+    return JSONResponse(payload)
 
 
 async def web_version(request: Request):
@@ -211,11 +257,13 @@ async def web_graph(request: Request):
                 "tags": tags,
             })
 
-    # Build edges from embeddings (similarity > 0.5)
-    emb_keys = [k for k in all_keys if k in _search_mod._embeddings]
+    # Build edges from embeddings (similarity > 0.5). Снимок под локом — иначе фоновый
+    # rebuild может свопнуть _embeddings между проверкой членства и доступом (KeyError).
+    emb = _search_mod.snapshot_embeddings()
+    emb_keys = [k for k in all_keys if k in emb]
     for i, k1 in enumerate(emb_keys):
         for k2 in emb_keys[i+1:]:
-            sim = float(np.dot(_search_mod._embeddings[k1], _search_mod._embeddings[k2]))
+            sim = float(np.dot(emb[k1], emb[k2]))
             if sim > 0.45:
                 edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
 
@@ -316,14 +364,15 @@ async def web_compile_run(request: Request):
 
 
 async def web_export(request: Request):
-    """Export all articles from a project as JSON."""
+    """Export all articles from a project as JSON (secrets excluded)."""
     project = request.path_params["project"]
-    proj_path = KNOWLEDGE_DIR / project
-    if not proj_path.exists():
+    proj_path = _safe_proj_path(project)
+    if proj_path is None:
         return JSONResponse({"articles": []})
     articles = []
     for md in sorted(proj_path.glob("*.md")):
-        if md.name.startswith("_"):
+        # Служебные (_*) и секреты (secret_*) не выгружаем — даже шифртекст.
+        if md.name.startswith("_") or md.name.startswith("secret_"):
             continue
         text = md.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -429,7 +478,6 @@ class AuthMiddleware:
             return await self.app(scope, receive, send)
 
         path = scope.get("path", "")
-        query = scope.get("query_string", b"").decode()
 
         # Public routes
         if path in ("/login", "/api/auth/login", "/api/health", "/api/version"):
@@ -444,7 +492,9 @@ class AuthMiddleware:
         if path == "/sse" or path.startswith("/messages"):
             return await self.app(scope, receive, send)
 
-        # Extract token from headers, cookies, or query param
+        # Extract token from Authorization header or mc_token cookie ONLY.
+        # ?key= в query убран намеренно: ключ в URL утекает в access-логи прокси/
+        # uvicorn, Referer и историю браузера. (SSE-путь /sse пропущен выше отдельно.)
         token = None
         headers = dict((k.decode(), v.decode()) for k, v in scope.get("headers", []))
         auth_header = headers.get("authorization", "")
@@ -460,13 +510,8 @@ class AuthMiddleware:
                     token = part[9:]
                     break
 
-        if not token:
-            # Parse query string
-            from urllib.parse import parse_qs
-            params = parse_qs(query)
-            token = params.get("key", [None])[0]
-
-        if token == MC_API_KEY:
+        # Constant-time сравнение — не сливаем длину/префикс ключа по таймингу.
+        if token and hmac.compare_digest(token, MC_API_KEY):
             return await self.app(scope, receive, send)
 
         # Unauthorized
@@ -550,6 +595,8 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         git_init()
+        for _w in _check_key_hygiene():  # операционная гигиена ключей (аудит #1/#2)
+            print(_w)
         # One-time migration: merge case-variant project dirs (e.g. MyProj → myproj).
         # Safe to call every startup — does nothing when no duplicates exist.
         from memory_compiler.storage import merge_case_duplicates

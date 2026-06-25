@@ -17,8 +17,13 @@ from memory_compiler.config import (
 )
 from memory_compiler.search import (
     whoosh_search, index_document, embed_document,
-    rebuild_index, rebuild_embeddings, _embeddings, _embed_texts,
+    rebuild_index, rebuild_embeddings,
 )
+# Модульный импорт: _embeddings/_embed_texts переприсваиваются в rebuild_embeddings
+# (свап нового dict). Импорт `from search import _embeddings` заморозил бы ССЫЛКУ на
+# старый объект — delete/remove чистили бы устаревший dict, а semantic-поиск ходил по
+# новому → удалённая статья оставалась бы фантомом. Обращаемся через модуль.
+import memory_compiler.search as _search
 from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
     merge_into_article, regenerate_index, git_commit,
@@ -30,7 +35,7 @@ from memory_compiler.storage import (
     encrypt_content, decrypt_content, is_encrypted,
     log_event, mark_dependents,
     extract_reflections, append_reflections,
-    safe_article_path, safe_project_dir,
+    safe_article_path, safe_project_dir, make_slug,
 )
 
 
@@ -49,7 +54,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     tags = tags + [t for t in auto if t not in existing_lower]
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d %H:%M")
-    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+    slug = make_slug(topic)
 
     # 1. Always append to daily log (audit trail)
     log_path = today_log_path()
@@ -344,7 +349,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
                 if existing:
                     out.append(f"  \U0001f504 Мерж: \u00ab{entry['topic']}\u00bb \u2192 {existing.name}")
                 else:
-                    slug = re.sub(r'[^\w\-]', '_', entry['topic'].lower())[:50]
+                    slug = make_slug(entry['topic'])
                     out.append(f"  \u2705 Новая: \u00ab{entry['topic']}\u00bb \u2192 {entry['project']}/{slug}.md")
             else:
                 ts = entry["timestamp"] or datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -355,7 +360,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
                     embed_document(article_text, existing.name, entry["project"])
                     updated += 1
                 else:
-                    slug = re.sub(r'[^\w\-]', '_', entry['topic'].lower())[:50]
+                    slug = make_slug(entry['topic'])
                     article_path = project_dir(entry["project"]) / f"{slug}.md"
                     if article_path.exists():
                         article_path = project_dir(entry["project"]) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
@@ -456,8 +461,10 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                             issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 теги с разным регистром: {', '.join(raw_tags)}")
                     break
 
-        # Check 5: Duplicates (semantic similarity) — compare parent articles only
-        proj_embeddings = {k: v for k, v in _embeddings.items()
+        # Check 5: Duplicates (semantic similarity) — compare parent articles only.
+        # Снимок актуального _embeddings под локом (см. snapshot_embeddings) — иначе
+        # фоновый rebuild может мутировать dict во время comprehension (RuntimeError).
+        proj_embeddings = {k: v for k, v in _search.snapshot_embeddings().items()
                           if k.startswith(f"{proj}/") and "#chunk" not in k}
         keys = list(proj_embeddings.keys())
         for i in range(len(keys)):
@@ -760,12 +767,12 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     fpath.unlink()
     # Remove from indexes
     key = f"{project}/{filename}"
-    _embeddings.pop(key, None)
+    _search._embeddings.pop(key, None)
     # Remove chunks too
-    chunk_keys = [k for k in _embeddings if k.startswith(key + "#")]
+    chunk_keys = [k for k in _search._embeddings if k.startswith(key + "#")]
     for ck in chunk_keys:
-        _embeddings.pop(ck, None)
-    _embed_texts.pop(key, None)
+        _search._embeddings.pop(ck, None)
+    _search._embed_texts.pop(key, None)
     article_meta.pop(key, None)
     save_article_meta()
     rebuild_index()
@@ -1752,11 +1759,11 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
         # Удалить все статьи из индексов
         for md in articles:
             key = f"{name}/{md.name}"
-            _embeddings.pop(key, None)
-            chunk_keys = [k for k in list(_embeddings.keys()) if k.startswith(key + "#")]
+            _search._embeddings.pop(key, None)
+            chunk_keys = [k for k in list(_search._embeddings.keys()) if k.startswith(key + "#")]
             for ck in chunk_keys:
-                _embeddings.pop(ck, None)
-            _embed_texts.pop(key, None)
+                _search._embeddings.pop(ck, None)
+            _search._embed_texts.pop(key, None)
             article_meta.pop(key, None)
     # Удалить папку
     shutil.rmtree(str(proj_path))
@@ -1838,7 +1845,7 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
         tags.append("runbook")
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+    slug = make_slug(topic)
 
     steps_text = "\n".join(f"- [ ] {step}" for step in steps)
     article_text = f"""# {topic}
@@ -1971,7 +1978,7 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
         tags.append("decision")
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    slug = re.sub(r"[^\w\-]", "_", title.lower())[:50]
+    slug = make_slug(title)
 
     article_text = f"""# {title}
 

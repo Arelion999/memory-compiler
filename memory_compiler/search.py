@@ -76,8 +76,22 @@ from whoosh.scoring import BM25F
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, INDEX_DIR, PROJECTS, SCHEMA,
-    decay_factor,
+    decay_factor, atomic_write_bytes,
 )
+import threading as _threading
+
+# Единый лок целостности индекса/эмбеддингов: сериализует мутации _embeddings, запись
+# pickle и работу Whoosh writer'а между фоновым reindex (демон-поток) и обработчиками
+# на event loop. RLock — реентрантный. Закрывает: торн-райт pickle, LockError двух
+# writer'ов, lost-update при свопе, RuntimeError «dict changed size» при итерации.
+_index_lock = _threading.RLock()
+
+
+def snapshot_embeddings() -> dict:
+    """Копия _embeddings под локом — для безопасной итерации читателями
+    (semantic_search, lint, graph) пока фон/embed_document мутируют оригинал."""
+    with _index_lock:
+        return dict(_embeddings)
 
 # ─── Semantic search ─────────────────────────────────────────────────────────
 
@@ -315,7 +329,7 @@ def rebuild_embeddings():
             except Exception:
                 continue
             key = f"daily/{md.name}"
-            docs.append(_doc_text_for_embedding(text))
+            docs.append(_doc_text_for_embedding(_index_safe_text(text, md.name)))
             paths.append(key)
             new_embed_texts[key] = md.stem
 
@@ -326,18 +340,18 @@ def rebuild_embeddings():
         for i, path in enumerate(paths):
             new_embeddings[path] = vectors[i]
 
-    # Atomic swap: only commit globals AFTER successful encode.
-    _embeddings = new_embeddings
-    _embed_texts = new_embed_texts
-
-    # Save to disk for faster restart. Tag with model_name — load invalidates on mismatch.
-    with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump({
+    # Atomic swap + pickle под локом: коммитим глобалы и пишем pickle ТОЛЬКО после
+    # успешного encode, и так, чтобы конкурентный embed_document (event loop) не
+    # пересёкся со свопом/записью (торн-райт / lost-update). Запись — atomic_write_bytes.
+    with _index_lock:
+        _embeddings = new_embeddings
+        _embed_texts = new_embed_texts
+        atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
             "model": EMBED_MODEL_NAME,
             "late_chunking": LATE_CHUNKING,
             "embeddings": _embeddings,
             "texts": _embed_texts,
-        }, f)
+        }))
 
     return len(docs)
 
@@ -390,36 +404,36 @@ def embed_document(text: str, filename: str, project: str):
     text = _index_safe_text(text, filename)
     parent_key = f"{project}/{filename}"
     lines = text.splitlines()
-    _embed_texts[parent_key] = lines[0].lstrip("# ").strip() if lines else filename
-
-    # Remove any prior chunks for this article (chunking topology may have changed)
-    for old_key in list(_embeddings.keys()):
-        if old_key == parent_key or old_key.startswith(parent_key + "#"):
-            _embeddings.pop(old_key, None)
-
     chunks = _chunk_article(text, parent_key)
     chunk_texts = [c[1] for c in chunks]
-    vectors = encode_passages(chunk_texts)
-    for (chunk_key, _), vec in zip(chunks, vectors):
-        _embeddings[chunk_key] = vec
+    vectors = encode_passages(chunk_texts)  # encode вне лока — может быть долгим
 
-    # Save updated embeddings (with model tag for cache invalidation)
-    with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump({
+    # Мутация _embeddings + запись pickle — под локом и атомарно (tmp+os.replace),
+    # чтобы не пересечься с фоновым rebuild_embeddings (торн-райт / lost-update).
+    with _index_lock:
+        _embed_texts[parent_key] = lines[0].lstrip("# ").strip() if lines else filename
+        # Remove any prior chunks for this article (chunking topology may have changed)
+        for old_key in list(_embeddings.keys()):
+            if old_key == parent_key or old_key.startswith(parent_key + "#"):
+                _embeddings.pop(old_key, None)
+        for (chunk_key, _), vec in zip(chunks, vectors):
+            _embeddings[chunk_key] = vec
+        atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
             "model": EMBED_MODEL_NAME,
             "late_chunking": LATE_CHUNKING,
             "embeddings": _embeddings,
             "texts": _embed_texts,
-        }, f)
+        }))
 
 
 def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
     """Search by semantic similarity. Returns [(path, score), ...]. Deduplicates chunks to parent articles."""
-    if not _embeddings:
+    snapshot = snapshot_embeddings()  # копия под локом — безопасна от конкурентной мутации
+    if not snapshot:
         return []
     q_vec = encode_query(query)
     raw_scores = []
-    for path, vec in _embeddings.items():
+    for path, vec in snapshot.items():
         sim = float(np.dot(q_vec, vec))
         raw_scores.append((path, sim))
     raw_scores.sort(key=lambda x: x[1], reverse=True)
@@ -482,7 +496,6 @@ def get_index() -> whoosh_index.Index:
 
 
 # ─── Background reindex ────────────────────────────────────────────────────
-import threading as _threading
 _reindex_lock = _threading.Lock()
 _reindex_running = {"v": False}
 
@@ -521,27 +534,33 @@ def rebuild_index():
     """Full reindex of all knowledge files."""
     global _ix
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
-    writer = _ix.writer()
-    count = 0
-    for proj in PROJECTS:
-        p = KNOWLEDGE_DIR / proj
-        if not p.exists():
-            continue
-        for md in p.glob("*.md"):
-            text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
-            fields = _parse_article(text, md.name, proj)
-            writer.add_document(**fields)
-            count += 1
-    # Also index daily logs
-    daily = KNOWLEDGE_DIR / "daily"
-    if daily.exists():
-        for md in daily.glob("*.md"):
-            text = md.read_text(encoding="utf-8")
-            fields = _parse_article(text, md.name, "daily")
-            writer.add_document(**fields)
-            count += 1
-    writer.commit()
+    # Под локом: пересоздание индекса + writer не пересекаются с index_document
+    # (event loop) — два writer'а на одном каталоге дают Whoosh LockError, который
+    # рушил весь save_lesson (статья на диске, в индексе нет — рассинхрон).
+    with _index_lock:
+        _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
+        writer = _ix.writer()
+        count = 0
+        for proj in PROJECTS:
+            p = KNOWLEDGE_DIR / proj
+            if not p.exists():
+                continue
+            for md in p.glob("*.md"):
+                text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
+                fields = _parse_article(text, md.name, proj)
+                writer.add_document(**fields)
+                count += 1
+        # Also index daily logs — через _index_safe_text: если в daily попал секрет
+        # (маркер '**Секрет:** да'), тело не должно стать searchable (симметрично
+        # per-project циклу — это была единственная точка индексации без маскировки).
+        daily = KNOWLEDGE_DIR / "daily"
+        if daily.exists():
+            for md in daily.glob("*.md"):
+                text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
+                fields = _parse_article(text, md.name, "daily")
+                writer.add_document(**fields)
+                count += 1
+        writer.commit()
     return count
 
 
@@ -550,9 +569,10 @@ def index_document(text: str, filename: str, project: str):
     ix = get_index()
     text = _index_safe_text(text, filename)
     fields = _parse_article(text, filename, project)
-    writer = ix.writer()
-    writer.update_document(**fields)
-    writer.commit()
+    with _index_lock:  # сериализуем writer с фоновым rebuild_index (иначе Whoosh LockError)
+        writer = ix.writer()
+        writer.update_document(**fields)
+        writer.commit()
 
 
 def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list[dict]:

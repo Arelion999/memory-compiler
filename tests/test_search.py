@@ -16,6 +16,23 @@ def test_rebuild_index(knowledge_dir):
     assert count >= 1
 
 
+def test_rebuild_index_masks_secret_in_daily(knowledge_dir):
+    """v1.7.26: полный reindex daily-логов должен маскировать секреты через
+    _index_safe_text — единственная точка индексации, где этого не было. Если в daily
+    попал текст с маркером '**Секрет:** да', тело не должно стать searchable."""
+    from memory_compiler.search import whoosh_search
+    daily = knowledge_dir / "daily"
+    daily.mkdir(exist_ok=True)
+    (daily / "2026-06-25.md").write_text(
+        "# Лог\n\n**Секрет:** да\n\nПароль root MEGASECRET42 в проде\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    results = whoosh_search("MEGASECRET42", project="all", limit=10)
+    assert not any("MEGASECRET42" in str(r) for r in results), \
+        f"тело секрета из daily проиндексировано в plaintext: {results}"
+
+
 def test_low_confidence_query_continuation():
     # Generic continuation phrases — should be flagged as low confidence
     assert is_low_confidence_query("давай продолжим")

@@ -2,6 +2,48 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.26 — 2026-06-26
+
+Закрытие 14 находок аудита кодовой базы (продолжение серий v1.7.9–21 «порча tracking» и v1.7.23–25 «утечки секретов»). Триггером стало живое воспроизведение бага: `finish_task` сохранял отчёт об аудите, и `auto_update_tracking` выхватил из текста `2024.06.25`, затерев `release` 1.7.18 → 2024.06.25 (год >> мажор в `_max_semver`, guard не сработал).
+
+### Fixed (tracking / correctness)
+
+- **Дата как версия.** `extract_facts_from_text` ловил `2024.06.25` как версию; `_max_semver` выбирал её (год >> мажор) и затирал боевую версию трекера. Добавлен фильтр `_looks_like_date` (год 2000–2099, месяц 1–12, день 1–31) в version-ветке.
+- **Сравнение версий с pre-release.** `_semver_key` через `re.findall(r'\d+')` давал `1.8.0-rc1` → `(1,8,0,1)` > `(1,8,0)`: guard пропускал откат финала на rc, `_max_semver` выбирал rc. Теперь pre-release сортируется ниже одноимённого релиза: `((1,8,0), 0, (1,)) < ((1,8,0), 1, ())`.
+- **Per-key relevance в auto_update_tracking.** Relevance-гейт уровня сущности (проверка, что заметка упоминает сущность) пропускал затирание поля посторонним фактом того же типа из ДРУГОГО предложения («NAS обновлён до 1.2.4. У клиента роутер 192.168.1.99» → ip NAS затирался IP роутера). Факты теперь берутся только из сегментов, привязанных к сущности (`_entity_relevant_facts`); если сущность лишь в topic — fallback на весь текст. Удалён `_note_references_entity` (логика поглощена).
+
+### Fixed (secrets / indexing)
+
+- **Daily-лог индексировался без `_index_safe_text`** — единственная точка индексации без маскировки секретов (`rebuild_index` + `rebuild_embeddings`, daily-циклы). Если в daily попадал текст с маркером `**Секрет:** да`, тело становилось searchable. Обёрнуто симметрично per-project циклу.
+- **Slug-spoofing.** `save_lesson`/`save_runbook`/`save_decision`/`compile` с topic на «secret» создавали `secret_*.md` с plaintext-телом (инверсия инварианта: префикс `secret_` = шифрованное). Добавлен `make_slug` — не-секретные сохранения не порождают имя `secret_*` (→ `note_secret_*`).
+
+### Fixed (web security)
+
+- **Path traversal в web-эндпоинтах.** `web_article`/`web_project`/`web_export` строили путь напрямую, минуя `safe_article_path` (защита MCP-слоя с v1.7.4). `%2e%2e` в сегменте project уводил за пределы knowledge. Теперь через `safe_article_path`/`_safe_proj_path`.
+- **Fail-closed дешифровка.** При пустом `MC_API_KEY` (auth не настроен) `web_article`/`web_search` дешифровали секреты анонимно. Теперь `_maybe_decrypt_secret_lines` дешифрует только при заданном `MC_API_KEY`; иначе отдаёт шифртекст.
+- **`/api/health` раскрывал имена проектов** (= имён клиентов) без auth. Публичный health (Docker healthcheck) теперь отдаёт `status/version/documents`; детали — только под auth (cookie/Bearer).
+- **`web_export` выгружал секреты** (префикс `secret_`, не `_`). Исключены из экспорта.
+- **`?key=` в URL** аутентифицировал → ключ утекал в access-логи/Referer/историю. Убран; только Bearer/cookie. Сравнение токена — `hmac.compare_digest` (constant-time).
+
+### Fixed (concurrency / integrity)
+
+- **Единый лок `_index_lock`** вокруг мутаций `_embeddings`, записи pickle и Whoosh-writer'ов: закрывает торн-райт pickle, `LockError` двух writer'ов (рушил `save_lesson`), lost-update при свопе, `RuntimeError: dictionary changed size` при итерации (читатели берут `snapshot_embeddings()`).
+- **Атомарная запись** (`atomic_write_text`/`atomic_write_bytes`, tmp + `os.replace`) для `.article_meta.json`, `index.md`, `.embeddings.pkl`, `_deps.json`, `_last_capture.json` — краш при `docker restart` (= деплой) больше не оставляет полуфайл (битый `.article_meta.json` обнулял всю аналитику).
+- **Stale-ссылка `_embeddings`.** `delete_article`/`remove_project`/`lint` обращались к объекту по top-import; после свопа в `rebuild_embeddings` чистили старый dict → удалённая статья оставалась фантомом в semantic-поиске. Перешли на доступ через модуль (`_search._embeddings`).
+
+### Fixed (SSRF / операционное)
+
+- **SSRF в `fetch_url`** (tool `ingest`): нет валидации схемы/хоста. Добавлен `_validate_fetch_url` — только http/https, отказ для приватных/loopback/link-local (cloud-metadata `169.254.169.254`)/reserved адресов; ревалидация на каждом редиректе; `file://` заблокирован.
+- **Гигиена ключей.** Сервер предупреждает при старте (`_check_key_hygiene`), если `MC_API_KEY == MC_ENCRYPT_KEY` (утечка API-ключа раскроет все секреты) или `MC_ENCRYPT_KEY` задан при пустом `MC_API_KEY`. `.env.example` обновлён.
+
+### Tests
+
+- 219 (was 187). +32: дата-как-версия, semver pre-release, per-key relevance, daily-маскировка, slug-spoofing, web path-traversal, fail-closed decrypt, health без auth, `?key=`/constant-time, конкурентность embed/search, атомарность записи, stale-ссылка, SSRF, гигиена ключей.
+
+### Migration
+
+Backward-compatible, деплой рестартом. Рекомендуется развести `MC_API_KEY` и `MC_ENCRYPT_KEY` на разные случайные ключи (сервер предупредит при старте).
+
 ## v1.7.25 — 2026-06-25
 
 Hardening по итогам аудита на утечки (после v1.7.23–24). Аудит подтвердил: расшифрованный секрет нигде в plaintext не утекает (в индексе — `ENC:` шифртекст, не сам секрет; REST-эндпоинты под auth). Закрыт один реальный пробел консистентности.
