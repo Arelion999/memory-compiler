@@ -167,7 +167,15 @@ def make_slug(topic: str) -> str:
     имя secret_*.md — этот префикс зарезервирован за save_secret (шифрованное тело).
     Иначе обычный plaintext-урок с topic «secret …» создал бы файл, который выглядит
     как секрет, но лежит в открытом виде и коммитится в git (нарушение инварианта)."""
-    slug = re.sub(r"[^\w\-]", "_", topic.lower())[:50]
+    slug = re.sub(r"[^\w\-]", "_", topic.lower())
+    # Схлопнуть кратные _ (из «(прод) +» получалось «__прод____») и срезать крайние.
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    # Обрезка по границе слова: грубый срез [:50] резал слово посередине
+    # («…лимиты» → «…лим»). Режем до 50, затем откатываемся к последнему «_».
+    if len(slug) > 50:
+        slug = slug[:50].rsplit("_", 1)[0].strip("_") or slug[:50].strip("_")
+    if not slug:
+        slug = "note"
     if slug == "secret" or slug.startswith("secret_"):
         slug = "note_" + slug
     return slug
@@ -449,6 +457,21 @@ def _normalize_url(u: str) -> str:
     return u
 
 
+def _url_parts(u: str) -> tuple[str, str]:
+    """(hostname без порта, path) из нормализованного URL для сравнения.
+
+    Используется детектором противоречий: два URL конфликтуют ТОЛЬКО если это
+    один и тот же хост и путь, описанные по-разному (сменился порт/схема).
+    Разный хост = разные сервисы, разный путь = разные эндпоинты одного хоста —
+    это не противоречия (раньше любой отличающийся URL давал ложный конфликт)."""
+    m = re.match(r'https?://([^/]+)(/.*)?$', u)
+    if not m:
+        return (u, "")
+    hostname = re.sub(r':\d+$', '', m.group(1))  # отбросить порт (IPv6 не поддерживаем)
+    path = (m.group(2) or "").rstrip("/")
+    return (hostname, path)
+
+
 def _extract_facts(text: str) -> dict[str, set[str]]:
     """Извлечь факты из текста, избегая пересечений между паттернами."""
     facts: dict[str, set[str]] = {}
@@ -636,6 +659,21 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
                             continue
                         # Иначе: одна подсеть ИЛИ общая сущность — возможный реальный конфликт
                         # (миграция в другую сеть с тем же именем — ВАЖНОЕ предупреждение)
+
+                    elif label == "URL":
+                        host_d, path_d = _url_parts(d)
+                        host_e, path_e = _url_parts(e)
+                        # Конфликт URL только если ТОТ ЖЕ хост и ТОТ ЖЕ путь, но
+                        # различается порт/схема. Разный хост/путь = разные ресурсы.
+                        if host_d != host_e or path_d != path_e:
+                            continue
+
+                    elif label == "порт":
+                        # Порт сам по себе не привязан к сущности: два разных порта
+                        # в разных статьях — это разные сервисы. Конфликт только при
+                        # общей сущности (та же логика, что для IP).
+                        if not (new_entities & existing_entities):
+                            continue
 
                     warnings.append(f"В {md.name} {label}: {e}, а в новой записи: {d}")
                     break

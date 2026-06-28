@@ -264,6 +264,60 @@ def test_detect_contradictions_url_trailing_punctuation_no_warning(knowledge_dir
     assert warnings == [], f"Идентичный URL не должен давать FP, получено: {warnings}"
 
 
+def test_detect_contradictions_different_url_hosts_no_warning(knowledge_dir):
+    """Разные хосты в URL = разные сервисы, НЕ противоречие.
+    Регресс: раньше любой отличающийся URL флагался (шум из 5 FP в проде)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "rel.md").write_text("Прод: https://niksdesk.niksdv.ru", encoding="utf-8")
+    warnings = detect_contradictions(
+        "Картинки из okdesk: https://niks27.okdesk.ru/ckeditor/pictures/5", "testproj"
+    )
+    assert warnings == [], f"Разные хосты не должны давать FP: {warnings}"
+
+
+def test_detect_contradictions_same_host_different_path_no_warning(knowledge_dir):
+    """Разные пути на одном хосте = разные эндпоинты, не противоречие."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "a.md").write_text("Док: https://niksdesk.niksdv.ru/api/v1/kb", encoding="utf-8")
+    warnings = detect_contradictions(
+        "Админка: https://niksdesk.niksdv.ru/admin", "testproj"
+    )
+    assert warnings == [], f"Разные пути одного хоста не должны давать FP: {warnings}"
+
+
+def test_detect_contradictions_same_endpoint_port_change_warning(knowledge_dir):
+    """Тот же хост и путь, но другой порт = реальное противоречие (эндпоинт переехал)."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "ep.md").write_text("API: http://service.lan:8000/api", encoding="utf-8")
+    warnings = detect_contradictions(
+        "API теперь: http://service.lan:9000/api", "testproj"
+    )
+    assert any("URL" in w for w in warnings), \
+        f"Смена порта того же эндпоинта должна предупреждать: {warnings}"
+
+
+def test_detect_contradictions_ports_no_shared_entity_no_warning(knowledge_dir):
+    """Разные порты без общей сущности = разные сервисы, не противоречие."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "p.md").write_text("Сервис А слушает порт 8080", encoding="utf-8")
+    warnings = detect_contradictions("Сервис Б слушает порт 9090", "testproj")
+    assert warnings == [], f"Порты без общей сущности не должны давать FP: {warnings}"
+
+
+def test_make_slug_collapses_and_word_boundary():
+    """slug не должен порождать кратные _ и резать слово посередине при обрезке."""
+    from memory_compiler.storage import make_slug
+    s = make_slug("Перенос базы знаний Okdesk в NiksDesk (прод) + лимиты файлов до 1 ГБ")
+    assert "__" not in s, f"Не должно быть кратных подчёркиваний: {s}"
+    assert not s.startswith("_") and not s.endswith("_"), f"Крайние _ недопустимы: {s}"
+    assert len(s) <= 50, f"Slug длиннее 50: {s}"
+    assert not s.endswith("лим"), f"Слово обрезано посередине: {s}"
+
+
 # ─── update_cross_references: защита от загрязнения (B+C+D) ───────────────────
 
 def _vec(sim):
