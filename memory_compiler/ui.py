@@ -144,7 +144,7 @@ async function doSearch(){
   const p=$("q-project").value;
   const r=await fetch("/api/search?q="+encodeURIComponent(q)+(p?"&project="+encodeURIComponent(p):""));
   const d=await r.json();
-  lastQueryWords=(d.query||q).toLowerCase().split(/[\s,;.:]+/).filter(w=>w.length>2);
+  lastQueryWords=(d.query||q).toLowerCase().split(/[\\s,;.:]+/).filter(w=>w.length>2);
   renderResults(d.results);
 }
 

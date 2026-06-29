@@ -13,7 +13,7 @@ from typing import Optional
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, save_article_meta,
-    _discover_projects, atomic_write_text,
+    _discover_projects, atomic_write_text, is_secret_article,
 )
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
     # Защита в глубину: НИКОГДА не дописывать plaintext в секрет — это сняло бы
     # шифрование. В норме find_existing_article секреты не возвращает; это страховка
     # на случай будущего вызова из другого места.
-    if article_path.name.startswith("secret_") or "**Секрет:** да" in text:
+    if is_secret_article(text, article_path.name):
         raise ValueError(
             f"merge_into_article: отказ дописывать в секретную статью {article_path.name}"
         )

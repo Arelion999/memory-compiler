@@ -76,7 +76,7 @@ from whoosh.scoring import BM25F
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, INDEX_DIR, PROJECTS, SCHEMA,
-    decay_factor, atomic_write_bytes,
+    decay_factor, atomic_write_bytes, is_secret_article,
 )
 import threading as _threading
 
@@ -459,7 +459,7 @@ def _index_safe_text(raw_text: str, filename: str) -> str:
     (включая авторские plaintext-секции) не попадает в поиск/эмбеддинги. Сам ENC:
     это шифртекст и не утечка, но и его держать в индексе незачем. Несекретные
     статьи возвращаются без изменений."""
-    if not (filename.startswith("secret_") or "**Секрет:** да" in raw_text):
+    if not is_secret_article(raw_text, filename):
         return raw_text
     lines = raw_text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename

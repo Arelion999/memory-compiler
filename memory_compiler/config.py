@@ -3,9 +3,41 @@ Configuration, constants, schema, and article metadata for memory-compiler.
 """
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+
+# ─── Secret detection ────────────────────────────────────────────────────────
+# Признак секретности — флаг СТРОГО в меташапке (как его пишет save_secret,
+# отдельной строкой рядом с **Дата:**/**Теги:**) и/или префикс имени secret_.
+# Раньше проверка была подстрокой `"**Секрет:** да" in text` и ловила флаг где
+# угодно — в теле, инлайн-коде, документации про секреты (баг 1.7.27): обычные
+# статьи молча шифровались и выпадали из поиска. Единый helper (DRY) исключает
+# расхождение между точками проверки.
+
+SECRET_FLAG = "**Секрет:** да"
+
+
+def is_secret_article(text: str, filename: str) -> bool:
+    """True, если статья секретная: имя начинается с secret_ ИЛИ флаг SECRET_FLAG
+    стоит отдельной строкой в меташапке (до первого '## ' или пустой строки после
+    метаблока). Упоминание флага в теле признаком не является."""
+    if filename.startswith("secret_"):
+        return True
+    meta_started = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            break
+        if s == "" and meta_started:
+            break
+        if s == SECRET_FLAG:  # точное совпадение строки, не подстрока
+            return True
+        if re.match(r"\*\*.+?:\*\*", s):
+            meta_started = True
+    return False
 
 
 # ─── Atomic file writes ──────────────────────────────────────────────────────

@@ -1,10 +1,36 @@
 """Tests for config module."""
 import memory_compiler.config as cfg
-from memory_compiler.config import decay_factor, track_access, _bilingual_stem
+from memory_compiler.config import decay_factor, track_access, _bilingual_stem, is_secret_article
 
 
 def test_decay_factor_unknown_path():
     assert decay_factor("nonexistent/file.md") == 0.7
+
+
+# ─── is_secret_article: флаг только в меташапке, не в теле (баг 1.7.27) ──────
+
+def test_is_secret_by_filename_prefix():
+    assert is_secret_article("# x\n\nтело", "secret_router.md") is True
+
+
+def test_is_secret_by_header_flag():
+    text = ("# Router creds\n\n**Дата:** 2026-01-01 10:00\n**Теги:** secret\n"
+            "**Секрет:** да\n\n## Содержание\n\nENC:gAAA\n")
+    assert is_secret_article(text, "secret_router.md") is True
+    assert is_secret_article(text, "any.md") is True
+
+
+def test_is_not_secret_when_flag_only_in_body():
+    """Несекретная статья, лишь упоминающая флаг в теле/инлайн-коде, секретом НЕ является."""
+    text = ("# Документация про секреты\n\n**Дата:** 2026-01-01 10:00\n"
+            "**Теги:** docs, security\n\n## Записи\n\n"
+            "save_secret кладёт в шапку `**Секрет:** да`, а тело шифрует.\n")
+    assert is_secret_article(text, "doc_pro_secrets.md") is False
+
+
+def test_is_not_secret_plain_article():
+    text = "# Note\n\n**Дата:** 2026-01-01 10:00\n**Теги:** topic\n\n## Записи\n\nтекст\n"
+    assert is_secret_article(text, "note.md") is False
 
 
 def test_track_access(knowledge_dir):

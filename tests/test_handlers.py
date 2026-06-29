@@ -540,6 +540,31 @@ def test_edit_article_plain_remains_searchable(knowledge_dir, monkeypatch):
     assert "testproj/note.md" in _body_indexed("plainsearchtokeneee"), "несекретная статья пропала из индекса"
 
 
+def test_edit_article_nonsecret_mentioning_flag_not_encrypted(knowledge_dir, monkeypatch):
+    """Баг 1.7.27: обычная статья, цитирующая '**Секрет:** да' в ТЕЛЕ, не должна
+    ошибочно шифроваться при edit_article (флаг — только признак меташапки)."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import edit_article
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    proj = knowledge_dir / "testproj"
+    (proj / "doc_pro_secrets.md").write_text(
+        "# Документация про секреты\n\n"
+        "**Дата:** 2026-01-01 10:00\n**Проект:** testproj\n**Теги:** docs, security\n\n"
+        "## Записи\n\n"
+        "Чтобы пометить статью секретной, save_secret кладёт в шапку `**Секрет:** да`, "
+        "а тело шифрует в блок ENC:.\n",
+        encoding="utf-8",
+    )
+    asyncio.run(edit_article(project="testproj", filename="doc_pro_secrets.md",
+                             content="docvisibletoken Обновлённая документация о флаге."))
+
+    disk = (proj / "doc_pro_secrets.md").read_text(encoding="utf-8")
+    assert "ENC:" not in disk, "документацию ошибочно зашифровало"
+    assert "**Секрет:** да" not in disk, "флаг секретности ошибочно добавлен в шапку"
+    assert "docvisibletoken" in disk, "тело должно остаться открытым"
+
+
 def test_merge_into_article_refuses_secret(knowledge_dir, monkeypatch):
     """Защита в глубину: merge_into_article не дописывает plaintext в секрет."""
     import pytest

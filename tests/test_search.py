@@ -33,6 +33,20 @@ def test_rebuild_index_masks_secret_in_daily(knowledge_dir):
         f"тело секрета из daily проиндексировано в plaintext: {results}"
 
 
+def test_index_safe_text_body_mention_not_masked():
+    """Баг 1.7.27: '**Секрет:** да' в теле (после '## ') — не признак секрета,
+    статья индексируется по телу. Флаг в меташапке — по-прежнему маскируется."""
+    from memory_compiler.search import _index_safe_text
+    body_mention = ("# Документация про секреты\n\n**Дата:** 2026-01-01 10:00\n"
+                    "**Теги:** docs\n\n## Записи\n\nфлаг `**Секрет:** да` в инлайн-коде\n")
+    assert _index_safe_text(body_mention, "doc.md") == body_mention, \
+        "несекретную статью с упоминанием флага в теле замаскировало"
+
+    header_flag = ("# Secret\n\n**Дата:** 2026-01-01 10:00\n**Теги:** secret\n"
+                   "**Секрет:** да\n\n## Содержание\n\nENC:gAAA\n")
+    assert "[зашифрованная статья]" in _index_safe_text(header_flag, "secret_x.md")
+
+
 def test_low_confidence_query_continuation():
     # Generic continuation phrases — should be flagged as low confidence
     assert is_low_confidence_query("давай продолжим")

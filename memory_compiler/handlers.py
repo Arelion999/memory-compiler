@@ -13,7 +13,7 @@ from mcp.types import TextContent
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, track_access, article_meta, save_article_meta,
-    _discover_projects,
+    _discover_projects, is_secret_article,
 )
 from memory_compiler.search import (
     whoosh_search, index_document, embed_document,
@@ -246,7 +246,7 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
 
     out = [f"# Поиск: '{query}'\n"]
     for r in results:
-        if "**Секрет:** да" in r.get("preview", ""):
+        if is_secret_article(r.get("preview", ""), r.get("file", "")):
             r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
         preview_lines = r["preview"].splitlines()[:10]
         scores = f"score: {r['score']}"
@@ -793,7 +793,7 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     old_text = fpath.read_text(encoding="utf-8")
     # Секретность определяется ДО записи: тело такой статьи не должно
     # существовать в открытом виде (инвариант save_secret/read_article).
-    is_secret = ("**Секрет:** да" in old_text) or filename.startswith("secret_")
+    is_secret = is_secret_article(old_text, filename)
     if is_secret:
         from memory_compiler.config import MC_ENCRYPT_KEY
         if not MC_ENCRYPT_KEY:
