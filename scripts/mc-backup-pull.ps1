@@ -45,11 +45,14 @@ Get-ChildItem -Path $Source -Filter "knowledge-*.tar.gz" -File | ForEach-Object 
 if (Test-Path $EnvFile) {
     $stamp = Get-Date -Format "yyyy-MM-dd"
     Copy-Item $EnvFile (Join-Path $secretsDir ".env-$stamp") -Force
-    Get-ChildItem -Path $secretsDir -Filter ".env-*" -File |
-        # Sort by name works because stamp is yyyy-MM-dd (lexical == chronological)
+    # Sort by name works because stamp is yyyy-MM-dd (lexical == chronological)
+    $prunedSecrets = @(Get-ChildItem -Path $secretsDir -Filter ".env-*" -File |
         Sort-Object Name -Descending |
-        Select-Object -Skip $KeepSecrets |
-        Remove-Item -Force
+        Select-Object -Skip $KeepSecrets)
+    $prunedSecrets | Remove-Item -Force
+    if ($prunedSecrets.Count -gt 0) {
+        Write-Log ("pruned {0} old .env snapshot(s)" -f $prunedSecrets.Count)
+    }
 } else {
     Write-Log "WARN: env file not found: $EnvFile"
 }
@@ -67,8 +70,10 @@ Get-ChildItem -Path $archivesDir -Filter "knowledge-*.tar.gz" -File | ForEach-Ob
     }
 }
 
-# NAS source keeps ~7 daily archives; if newest source archive is >7 days old,
-# the task has been down long enough to risk losing a monthly (-01) archive.
+# Heartbeat: NAS keeps only ~7 daily archives. A >7-day-old newest source means the
+# pull has been idle long enough that NAS-side archives (incl. a monthly -01) may have
+# rotated away before ever being pulled. Informational only — retention above never
+# deletes local -01 archives; this just flags that the source looks stale, act soon.
 $newest = Get-ChildItem -Path $Source -Filter "knowledge-*.tar.gz" -File |
     Where-Object { $_.Name -match 'knowledge-(\d{4})-(\d{2})-(\d{2})\.tar\.gz' } |
     Sort-Object Name -Descending | Select-Object -First 1
