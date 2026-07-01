@@ -22,6 +22,8 @@ function Write-Log($msg) {
 
 New-Item -ItemType Directory -Force -Path $archivesDir | Out-Null
 New-Item -ItemType Directory -Force -Path $secretsDir  | Out-Null
+# secrets\ holds cleartext .env (MC_ENCRYPT_KEY) — restrict to current user
+icacls $secretsDir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
 
 if (-not (Test-Path $Source)) {
     Write-Log "FATAL: source not found: $Source"
@@ -31,6 +33,7 @@ if (-not (Test-Path $Source)) {
 # 1. Копируем только отсутствующие архивы (сравнение по имени)
 $copied = 0
 Get-ChildItem -Path $Source -Filter "knowledge-*.tar.gz" -File | ForEach-Object {
+    if ($_.Length -eq 0) { Write-Log ("WARN: skip zero-byte source {0}" -f $_.Name); return }
     $target = Join-Path $archivesDir $_.Name
     if (-not (Test-Path $target)) {
         Copy-Item $_.FullName $target
@@ -43,6 +46,7 @@ if (Test-Path $EnvFile) {
     $stamp = Get-Date -Format "yyyy-MM-dd"
     Copy-Item $EnvFile (Join-Path $secretsDir ".env-$stamp") -Force
     Get-ChildItem -Path $secretsDir -Filter ".env-*" -File |
+        # Sort by name works because stamp is yyyy-MM-dd (lexical == chronological)
         Sort-Object Name -Descending |
         Select-Object -Skip $KeepSecrets |
         Remove-Item -Force
@@ -60,6 +64,18 @@ Get-ChildItem -Path $archivesDir -Filter "knowledge-*.tar.gz" -File | ForEach-Ob
             Remove-Item $_.FullName -Force
             $deleted++
         }
+    }
+}
+
+# NAS source keeps ~7 daily archives; if newest source archive is >7 days old,
+# the task has been down long enough to risk losing a monthly (-01) archive.
+$newest = Get-ChildItem -Path $Source -Filter "knowledge-*.tar.gz" -File |
+    Where-Object { $_.Name -match 'knowledge-(\d{4})-(\d{2})-(\d{2})\.tar\.gz' } |
+    Sort-Object Name -Descending | Select-Object -First 1
+if ($newest -and $newest.Name -match 'knowledge-(\d{4})-(\d{2})-(\d{2})\.tar\.gz') {
+    $newestDate = Get-Date -Year ([int]$Matches[1]) -Month ([int]$Matches[2]) -Day ([int]$Matches[3])
+    if ($newestDate -lt (Get-Date).AddDays(-7)) {
+        Write-Log ("WARN: newest source archive {0} older than 7 days — pull may be missing archives" -f $newest.Name)
     }
 }
 
