@@ -1,7 +1,22 @@
+# Local off-site pull-backup for the memory-compiler knowledge base (Windows side).
+#
+# The NAS produces daily backups/knowledge-YYYY-MM-DD.tar.gz (see scripts/mc-backup.sh)
+# and Synology Drive syncs them to this PC. Sync is not a backup (deletions propagate),
+# so this script copies fresh archives into an INDEPENDENT folder outside the synced
+# tree, snapshots .env, and prunes by retention (daily kept KeepDays, monthly -01 kept
+# forever). Pass -Verify to run mc-backup-verify.ps1 on the newest archive afterwards.
+#
+# Defaults assume this script lives in <repo>/scripts/; Source and EnvFile resolve
+# relative to the repo root. Override any path via parameters.
+#
+# Schedule (point -File at your checkout):
+#   schtasks /Create /TN "memory-compiler backup pull" /SC DAILY /ST 05:00 /F ^
+#     /TR "pwsh.exe -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\mc-backup-pull.ps1 -Verify"
+
 [CmdletBinding()]
 param(
-    [string]$Source   = "C:\Users\areli\SynologyDrive\DEV\memory-compiler\backups",
-    [string]$EnvFile  = "C:\Users\areli\SynologyDrive\DEV\memory-compiler\.env",
+    [string]$Source   = (Join-Path (Split-Path $PSScriptRoot -Parent) "backups"),
+    [string]$EnvFile  = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env"),
     [string]$Dest     = "C:\Backups\memory-compiler",
     [int]$KeepDays    = 30,
     [int]$KeepSecrets = 5,

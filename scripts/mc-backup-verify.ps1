@@ -1,3 +1,8 @@
+# Restore drill for the local memory-compiler backup: extract the newest archive into a
+# temp dir and verify it is a usable knowledge-base snapshot (knowledge/ + .git present,
+# at least MinFiles .md files). Invoked by mc-backup-pull.ps1 -Verify, or run standalone.
+# Exit 0 = PASS, exit 1 = FAIL.
+
 [CmdletBinding()]
 param(
     [string]$ArchiveDir = "C:\Backups\memory-compiler\archives",
