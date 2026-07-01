@@ -14,14 +14,19 @@ if (-not $latest) {
     exit 1
 }
 
-$tmp = Join-Path $env:TEMP ("mc-verify-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+    Write-Host "FAIL: tar not found in PATH"
+    exit 1
+}
+
+$tmp = Join-Path $env:TEMP ("mc-verify-" + (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + [guid]::NewGuid().ToString('N').Substring(0,6))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 $fail = @()
 $mdCount = 0
 try {
-    tar -xzf $latest.FullName -C $tmp 2>$null
-    if ($LASTEXITCODE -ne 0) { $fail += "tar extract failed" }
+    $tarErr = tar -xzf $latest.FullName -C $tmp 2>&1
+    if ($LASTEXITCODE -ne 0) { $fail += "tar extract failed: $($tarErr -join ' ')" }
 
     $kb = Join-Path $tmp "knowledge"
     if (-not (Test-Path $kb)) {
