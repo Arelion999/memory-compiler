@@ -2,6 +2,14 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## Infra / tooling — 2026-07-01
+
+Инфраструктура вне релиза Python/контейнера (VERSION не меняется).
+
+### Added (off-site backup на ПК)
+
+- **Локальный off-site бэкап.** К ежедневному NAS-архиву `knowledge/` (`scripts/mc-backup.sh`, cron 04:00) добавлено независимое звено на ПК: `scripts/mc-backup-pull.ps1` копирует свежие архивы из синхронизируемого `backups/` в `C:\Backups\memory-compiler\archives`, снимает копию `.env` в `secrets\`, ретенция 30 дней + месячные срезы (`-01`) бессрочно, предупреждает о протухании источника (>7 дней). Restore-drill `scripts/mc-backup-verify.ps1` распаковывает свежий архив и проверяет целостность. Запуск автоматизирован задачей Task Scheduler «memory-compiler backup pull» (ежедневно 05:00, с `-Verify`).
+
 ## v1.7.28 — 2026-06-29
 
 Фикс ложного срабатывания детектора секретности (баг-репорт из Telegram, воспроизведён на 1.7.27). Не утечка — наоборот, ИЗБЫТОЧНАЯ защита: несекретные статьи молча шифровались и выпадали из поиска.
