@@ -25,6 +25,21 @@ def test_auto_tags_1c():
     assert "bugfix" in tags
 
 
+def test_find_existing_matches_underscore_slug_variant(knowledge_dir):
+    """find_existing_article матчит старый '__'-слаг с новым '_'-слагом (иначе дубль).
+
+    make_slug со временем стал collapse'ить _+→_. Старые файлы 'foo__bar' должны
+    находиться по topic, дающему 'foo_bar', — иначе save создаёт дубликат."""
+    from memory_compiler.storage import find_existing_article
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    # старый файл с двойным подчёркиванием (как генерил прежний make_slug)
+    (proj / "foo__bar_baz.md").write_text("# Foo: bar baz\n\nтело", encoding="utf-8")
+    # новый topic → slug 'foo_bar_baz' (одинарное) — должен НАЙТИ старый файл
+    found = find_existing_article("Foo: bar baz", "новый контент", "testproj")
+    assert found is not None and found.name == "foo__bar_baz.md", found
+
+
 def test_extract_secret_identifiers_login_and_ip():
     """Логин после логин-слова + IP извлекаются; пароль — НЕТ."""
     content = ("ADMIN (SSH): логин svcadmin / пароль 7$Kp!wQz. "

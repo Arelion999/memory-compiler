@@ -198,11 +198,16 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
     if not articles:
         return None
 
-    # 1. Exact slug match (strip date prefix from old-format filenames)
+    # 1. Slug match (strip date prefix; нормализуем подчёркивания).
+    # make_slug со временем менялся (добавился collapse _+→_), поэтому старые файлы
+    # имеют «__»-слаги, а новый topic даёт «_»-слаг → точный матч промахивался и
+    # плодил дубли (secret_… исключены выше). Сравниваем нормализованно.
+    def _nslug(s: str) -> str:
+        return re.sub(r"_+", "_", s).strip("_")
+    nslug = _nslug(slug)
     for a in articles:
-        stem = a.stem
-        clean_stem = re.sub(r"^\d{8}_", "", stem)  # remove YYYYMMDD_ prefix
-        if clean_stem == slug:
+        clean_stem = re.sub(r"^\d{8}_", "", a.stem)  # remove YYYYMMDD_ prefix
+        if _nslug(clean_stem) == nslug:
             return a
 
     # 2. Semantic similarity match.
