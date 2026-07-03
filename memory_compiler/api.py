@@ -615,14 +615,22 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         # other long-context model can take 5-15 minutes and would prevent
         # /api/health from responding, marking the container unhealthy).
         bg_rebuild_task = None  # noqa: keep reference so asyncio doesn't GC it
-        if load_embeddings() and len(_search_mod._embeddings) >= 1:
-            print(f"Embeddings loaded from cache: {len(_search_mod._embeddings)} documents")
+        # Кэш валиден ТОЛЬКО если покрывает большинство статей. Раньше стоял слабый
+        # `len(_embeddings) >= 1`: частичный/битый pkl (напр. перезаписанный
+        # embed_document'ом во время прерванной пересборки — оставалось 2 эмбеддинга
+        # на 1400+ статей) проходил проверку и НИКОГДА не пересобирался → семантика
+        # молча ломалась. Сравниваем число РОДИТЕЛЬСКИХ эмбеддингов (без #chunkN) с
+        # числом документов в Whoosh; ниже половины — считаем кэш битым, пересобираем.
+        _loaded = load_embeddings()
+        _emb_parents = {k.split("#", 1)[0] for k in _search_mod._embeddings}
+        if _loaded and len(_emb_parents) >= max(1, int(count * 0.5)):
+            print(f"Embeddings loaded from cache: {len(_search_mod._embeddings)} vectors / {len(_emb_parents)} articles")
             # Warn if dict grew unusually large (memory pressure check)
             n_emb = len(_search_mod._embeddings)
             if n_emb > 10000:
                 print(f"⚠️ Embeddings dict has {n_emb} entries — consider archival/pruning")
         else:
-            print("Embeddings cache invalid/empty — scheduling rebuild in background")
+            print(f"Embeddings cache invalid/insufficient ({len(_emb_parents)} articles vs {count} docs) — scheduling rebuild in background")
 
             async def _bg_rebuild():
                 import asyncio as _asy
