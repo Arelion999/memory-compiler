@@ -47,6 +47,42 @@ def test_index_safe_text_body_mention_not_masked():
     assert "[зашифрованная статья]" in _index_safe_text(header_flag, "secret_x.md")
 
 
+def test_shared_article_crosses_projects(knowledge_dir, monkeypatch):
+    """Статья с тегом shared находится при поиске из ДРУГОГО проекта (B)."""
+    from memory_compiler.search import whoosh_search, rebuild_index
+    import memory_compiler.search as _smod
+    monkeypatch.setattr(_smod, "PROJECTS", ["testproj", "general"])
+    (knowledge_dir / "general" / "notify.md").write_text(
+        "# Канал уведомлений MAX\n\n**Дата:** 2026-01-01 10:00\n"
+        "**Теги:** shared, уведомления, notify\n\n## Записи\n\n"
+        "### 2026-01-01 10:00\nВебхук уведомлений в мессенджер.\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    assert "general/notify.md" in _smod._shared_paths
+    results = whoosh_search("уведомления", project="testproj", limit=10)
+    titles = [r["title"] for r in results]
+    assert any("Канал уведомлений MAX" in t for t in titles), \
+        f"shared-статья не пробилась в чужой проект: {titles}"
+
+
+def test_non_shared_article_stays_in_its_project(knowledge_dir, monkeypatch):
+    """Обычная (не shared) статья НЕ протекает в чужой проект — скоуп работает."""
+    from memory_compiler.search import whoosh_search, rebuild_index
+    import memory_compiler.search as _smod
+    monkeypatch.setattr(_smod, "PROJECTS", ["testproj", "general"])
+    (knowledge_dir / "general" / "plain.md").write_text(
+        "# Обычная заметка zzyzx\n\n**Дата:** 2026-01-01 10:00\n"
+        "**Теги:** zzyzx\n\n## Записи\n\n### 2026-01-01 10:00\nБез тега shared.\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+    assert "general/plain.md" not in _smod._shared_paths
+    results = whoosh_search("zzyzx", project="testproj", limit=10)
+    assert not any("zzyzx" in r["title"].lower() for r in results), \
+        f"не-shared статья протекла в чужой проект: {[r['title'] for r in results]}"
+
+
 def test_low_confidence_query_continuation():
     # Generic continuation phrases — should be flagged as low confidence
     assert is_low_confidence_query("давай продолжим")

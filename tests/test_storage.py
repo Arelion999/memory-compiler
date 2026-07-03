@@ -1,6 +1,6 @@
 """Tests for storage module."""
 from memory_compiler.storage import (
-    auto_tags, extract_git_refs, format_git_refs,
+    auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     detect_contradictions, merge_into_article,
     project_dir, today_log_path,
     extract_snippets, extract_errors, TEMPLATES,
@@ -23,6 +23,35 @@ def test_auto_tags_1c():
     tags = auto_tags("Исправил обработку в 1С", "Баг обработки")
     assert "1c" in tags
     assert "bugfix" in tags
+
+
+def test_extract_secret_identifiers_login_and_ip():
+    """Логин после логин-слова + IP извлекаются; пароль — НЕТ."""
+    content = ("ADMIN (SSH): логин svcadmin / пароль 7$Kp!wQz. "
+               "Группа administrators. IP 192.0.2.50")
+    ids = extract_secret_identifiers(content, "сервер доступ")
+    assert "svcadmin" in ids
+    assert "192.0.2.50" in ids
+    joined = " ".join(ids)
+    assert "7$Kp" not in joined              # значение пароля не утекло
+    assert not any("wQz" in i for i in ids)
+    assert "administrators" not in ids       # стоп-слово / не после логин-слова
+
+
+def test_extract_secret_identifiers_never_leaks_secret_values():
+    """Значения после пароль/token/key НЕ захватываются ни при каком формате."""
+    ids = extract_secret_identifiers(
+        "пароль SuperSecret123 login bob token=AbcToken999 key: Zzz999Key")
+    assert "bob" in ids
+    for leak in ("SuperSecret123", "AbcToken999", "Zzz999Key"):
+        assert leak not in ids, f"секрет {leak} утёк в теги"
+
+
+def test_extract_secret_identifiers_stopwords_and_versions():
+    """Общие токены (root/admin/ssh) отсеиваются; версии 1.2.3 не считаются IP."""
+    ids = extract_secret_identifiers("логин root пользователь admin ssh версия 1.7.28")
+    assert "root" not in ids and "admin" not in ids and "ssh" not in ids
+    assert "1.7.28" not in ids
 
 
 def test_extract_git_refs():

@@ -2,6 +2,8 @@
 Tool handler implementations for memory-compiler MCP server.
 All async functions return list[TextContent].
 """
+import asyncio
+import os
 import re
 import shutil
 import subprocess
@@ -28,7 +30,7 @@ from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
     merge_into_article, regenerate_index, git_commit,
     update_active_context, detect_contradictions,
-    auto_tags, extract_git_refs, format_git_refs,
+    auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
     extract_snippets, extract_errors, TEMPLATES,
     read_project_deps, write_project_deps,
@@ -195,10 +197,9 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
 
 async def get_context(project: str, query: str = None) -> list[TextContent]:
     if query:
-        from memory_compiler.search import rerank
         # Wider pool for reranker — top results refined by cross-encoder
-        results = whoosh_search(query, project=project, limit=10)
-        cross = whoosh_search(query, project="all", limit=10) if project != "all" else []
+        results = await _whoosh_async(query, project=project, limit=10)
+        cross = await _whoosh_async(query, project="all", limit=10) if project != "all" else []
         seen = {r["file"] for r in results}
         for r in cross:
             if r["file"] not in seen and r["project"] != project:
@@ -207,7 +208,7 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
                     break
         if not results:
             return [TextContent(type="text", text=f"Ничего не найдено по '{query}' в {project}.")]
-        results = rerank(query, results, top_k=5)
+        results = await _rerank_async(query, results, top_k=5)
         out = [f"# Контекст: {project} (query: {query})\n"]
         for r in results:
             preview = "\n".join(r["preview"].splitlines()[:8])
@@ -231,20 +232,60 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
 
 # ─── search ──────────────────────────────────────────────────────────────────
 
+# Бюджет времени на cross-encoder rerank. Если модель холодная (лениво грузится
+# при первом запросе на NAS) или кандидатов много — predict может не уложиться в
+# MCP-таймаут клиента и весь запрос падал в -32001, теряя уже найденные hybrid-хиты.
+# По истечении бюджета отдаём результат БЕЗ rerank (мягкая деградация: hybrid-порядок
+# хуже reranked, но это лучше пустой ошибки). Настраивается env SEARCH_RERANK_BUDGET_S.
+SEARCH_RERANK_BUDGET_S = float(os.environ.get("SEARCH_RERANK_BUDGET_S", "20"))
+
+
+async def _whoosh_async(query: str, project: str = "all", limit: int = 10) -> list[dict]:
+    """whoosh_search в потоке: он CPU-тяжёлый (semantic dot-product по всем эмбеддингам +
+    при холодном старте ленивая загрузка embed-модели). На event loop он замораживал весь
+    сервер (/api/health, параллельные запросы). Общий помощник для всех async-хендлеров."""
+    return await asyncio.to_thread(whoosh_search, query, project=project, limit=limit)
+
+
+async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dict]:
+    """rerank под бюджетом времени в потоке. При таймауте/ошибке — best-effort: отдаём
+    hybrid-результаты как есть (обрезанные до top_k) вместо -32001. wait_for отменяет
+    ожидание, но фоновый поток допишет predict вхолостую — результат уже у пользователя."""
+    from memory_compiler.search import rerank
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(rerank, query, results, top_k=top_k),
+            timeout=SEARCH_RERANK_BUDGET_S,
+        )
+    except (asyncio.TimeoutError, Exception):
+        return results[:top_k]
+
 
 async def search(query: str, project: str = "all") -> list[TextContent]:
-    from memory_compiler.search import rerank
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
     # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
-    results = whoosh_search(query, project=project, limit=20)
+    results = await _whoosh_async(query, project=project, limit=20)
+
+    # Авто-фолбэк на project=all: узкий скоуп часто промахивается по общей сущности,
+    # физически лежащей в другом проекте (напр. канал уведомлений / общий креденшл).
+    # Вместо «Ничего не найдено» переспрашиваем по всем проектам и помечаем выдачу.
+    fallback_all = False
+    if not results and project != "all":
+        results = await _whoosh_async(query, project="all", limit=20)
+        fallback_all = bool(results)
+
     if not results:
         return [TextContent(type="text", text=f"Ничего не найдено: '{query}'")]
 
-    results = rerank(query, results, top_k=8)
+    results = await _rerank_async(query, results, top_k=8)
 
     track_access([f"{r['project']}/{r['file']}" for r in results])
 
-    out = [f"# Поиск: '{query}'\n"]
+    header = f"# Поиск: '{query}'\n"
+    if fallback_all:
+        header += (f"\n*В проекте «{project}» ничего не найдено — показаны результаты "
+                   f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
+    out = [header]
     for r in results:
         if is_secret_article(r.get("preview", ""), r.get("file", "")):
             r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
@@ -708,7 +749,7 @@ async def get_summary(project: str) -> list[TextContent]:
 
 
 async def ask(question: str, project: str = "all") -> list[TextContent]:
-    results = whoosh_search(question, project=project, limit=5)
+    results = await _whoosh_async(question, project=project, limit=5)
     if not results:
         return [TextContent(type="text", text=f"Не найдено информации по: '{question}'")]
 
@@ -939,7 +980,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     skip semantic search entirely — load active context + last session for the project.
     Industry pattern: continuation is session restoration, not RAG.
     """
-    from memory_compiler.search import rerank, is_low_confidence_query
+    from memory_compiler.search import is_low_confidence_query
     MIN_SCORE = 15  # min hybrid score
     MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
@@ -957,9 +998,9 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         relevant = []
     else:
         # 1. Hybrid retrieval — берём top-20, ререйнкер выбирает top-3
-        candidates = whoosh_search(topic, project=project, limit=20)
+        candidates = await _whoosh_async(topic, project=project, limit=20)
         candidates = [r for r in candidates if r.get("score", 0) >= MIN_SCORE]
-        reranked = rerank(topic, candidates, top_k=5)
+        reranked = await _rerank_async(topic, candidates, top_k=5)
         # Final filter by rerank_score (reranker may say all are weak)
         relevant = [r for r in reranked if r.get("rerank_score", 1.0) >= MIN_RERANK]
         if not relevant and reranked:
@@ -1032,7 +1073,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     if deps:
         dep_results = []
         for dep in deps:
-            dr = whoosh_search(topic, project=dep, limit=2)
+            dr = await _whoosh_async(topic, project=dep, limit=2)
             dep_results.extend([r for r in dr if r.get("score", 0) >= MIN_SCORE])
         if dep_results:
             dep_results.sort(key=lambda r: -r.get("score", 0))
@@ -1042,7 +1083,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
 
     # 5. Relevant decisions (brief, only high-score)
-    decision_results = whoosh_search(topic, project=target_project, limit=10)
+    decision_results = await _whoosh_async(topic, project=target_project, limit=10)
     decisions_found = []
     for r in decision_results:
         if r.get("score", 0) < 30:
@@ -1171,7 +1212,7 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
         # 3. Content match — есть ли в проекте статьи на тему текста
         if text_lower.strip():
             try:
-                results = whoosh_search(text, project=proj, limit=3)
+                results = await _whoosh_async(text, project=proj, limit=3)
                 content_score = sum(r.get("score", 0) for r in results) / 100
                 s += min(20, content_score * 2)
             except Exception:
@@ -1571,7 +1612,7 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
             break
         checks += 1
         try:
-            results = whoosh_search(q, project=item["project"] if item["project"] != "all" else "all", limit=3)
+            results = await _whoosh_async(q, project=item["project"] if item["project"] != "all" else "all", limit=3)
         except Exception:
             continue
         # whoosh_search вернул что-то с приличным score — это НЕ gap
@@ -1582,7 +1623,7 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
         # для целей gap-анализа это означает «знание есть, просто scope неверный»,
         # что является retrieval-проблемой, а не gap.
         try:
-            sem_hits = semantic_search(q, limit=1)
+            sem_hits = await asyncio.to_thread(semantic_search, q, limit=1)
             if sem_hits and sem_hits[0][1] >= SOLVED_THRESHOLD:
                 continue  # solved somewhere — not a real gap
         except Exception:
@@ -1795,7 +1836,7 @@ async def list_projects() -> list[TextContent]:
 
 async def search_snippets(query: str, lang: str = None, project: str = "all") -> list[TextContent]:
     """Search code snippets in knowledge base."""
-    results = whoosh_search(query, project=project, limit=10)
+    results = await _whoosh_async(query, project=project, limit=10)
     if not results:
         return [TextContent(type="text", text=f"Сниппетов не найдено: '{query}'")]
 
@@ -1905,7 +1946,7 @@ async def search_error(error_text: str, project: str = "all") -> list[TextConten
         search_terms = [lines[-1][:100]] if lines else [error_text[:100]]
 
     query = " ".join(search_terms)[:200]
-    results = whoosh_search(query, project=project, limit=10)
+    results = await _whoosh_async(query, project=project, limit=10)
 
     # Re-rank by error pattern overlap
     ranked = []
@@ -2012,7 +2053,7 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
 
 async def search_decisions(query: str, project: str = "all") -> list[TextContent]:
     """Search only decision articles."""
-    results = whoosh_search(query, project=project, limit=15)
+    results = await _whoosh_async(query, project=project, limit=15)
 
     # Filter to decision articles only
     decisions = []
@@ -2074,10 +2115,16 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
         return [TextContent(type="text", text="MC_ENCRYPT_KEY не задан. Шифрование невозможно.")]
 
     tags = tags or []
-    auto = auto_tags(content, topic)
+    # auto_tags (фикс.словарь) + безопасные идентификаторы (логин/хост/IP из тела) —
+    # чтобы секрет находился по имени сущности (логин/хост), т.к. тело не
+    # индексируется. extract_secret_identifiers НЕ тянет значения паролей/токенов.
+    auto = auto_tags(content, topic) + extract_secret_identifiers(content, topic)
     existing_lower = {t.lower() for t in tags}
-    tags = tags + [t for t in auto if t not in existing_lower]
-    if "secret" not in [t.lower() for t in tags]:
+    for t in auto:
+        if t.lower() not in existing_lower:
+            tags.append(t)
+            existing_lower.add(t.lower())
+    if "secret" not in existing_lower:
         tags.append("secret")
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")

@@ -635,6 +635,21 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
 
             # Keep strong reference — asyncio.create_task can GC dangling tasks
             bg_rebuild_task = asyncio.create_task(_bg_rebuild())
+
+        # Прогрев ML-моделей в фоне: embed-модель и cross-encoder reranker грузятся
+        # лениво при ПЕРВОМ search. На NAS холодная загрузка bge-reranker-v2-m3 +
+        # предикт не укладывались в MCP-таймаут клиента → первый поиск падал в -32001.
+        # Грузим заранее в executor'е, не блокируя старт; к первому запросу модели готовы.
+        async def _warm_models():
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(None, _search_mod.get_embed_model)
+                await loop.run_in_executor(None, _search_mod.get_reranker_model)
+                print("[warm] ML models preloaded (embed + reranker)")
+            except Exception as e:
+                print(f"[warm] model preload failed (lazy-load on first use): {e}")
+
+        warm_task = asyncio.create_task(_warm_models())  # strong ref: avoid GC
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
         print("Auto-compile scheduled daily at 02:00, auto-lint weekly Sun 03:00")

@@ -180,6 +180,60 @@ async def test_search(knowledge_dir):
 
 
 @pytest.mark.asyncio
+async def test_search_survives_rerank_failure(knowledge_dir, monkeypatch):
+    """Если rerank падает — search отдаёт hybrid-результаты, а не ошибку."""
+    import memory_compiler.search as smod
+
+    def _boom(*a, **k):
+        raise RuntimeError("reranker exploded")
+
+    monkeypatch.setattr(smod, "rerank", _boom)
+    result = await search("docker", "testproj")
+    # Мягкая деградация: нашли статью по hybrid, несмотря на упавший rerank
+    assert "Test Article" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_search_survives_rerank_timeout(knowledge_dir, monkeypatch):
+    """Если rerank не укладывается в бюджет — best-effort hybrid, без -32001."""
+    import time
+    import memory_compiler.search as smod
+    import memory_compiler.handlers as hmod
+
+    def _slow(query, candidates, top_k=8):
+        time.sleep(1.0)
+        return candidates[:top_k]
+
+    monkeypatch.setattr(smod, "rerank", _slow)
+    monkeypatch.setattr(hmod, "SEARCH_RERANK_BUDGET_S", 0.1)
+    result = await search("docker", "testproj")
+    assert "Test Article" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_search_falls_back_to_all_projects(knowledge_dir, monkeypatch):
+    """Пусто в узком проекте → авто-фолбэк на project=all с пометкой (#3)."""
+    import memory_compiler.search as smod
+    monkeypatch.setattr(smod, "PROJECTS", ["testproj", "general"])
+    # Изоляция: глобальный _embeddings переживает тесты (conftest сбрасывает только
+    # whoosh _ix). Стейл-эмбеддинги прошлых тестов иначе вернут посторонний семантик-хит
+    # в testproj и фолбэк не сработает. Чистим → semantic пуст, поиск идёт по BM25.
+    smod._embeddings.clear()
+    smod._embed_texts.clear()
+    # Уникальная сущность лежит в general (без тега shared), ищем из testproj
+    (knowledge_dir / "general" / "widget.md").write_text(
+        "# Zzyzx настройка\n\n**Дата:** 2026-01-01 10:00\n**Теги:** zzyzx\n\n"
+        "## Записи\n\n### 2026-01-01 10:00\nУникальная сущность zzyzx.\n",
+        encoding="utf-8",
+    )
+    smod.rebuild_index()
+    result = await search("zzyzx", "testproj")
+    text = result[0].text
+    assert "Zzyzx" in text, f"фолбэк не нашёл статью в другом проекте: {text}"
+    assert "по всем проектам" in text, "нет пометки о кросс-проектном фолбэке"
+
+
+@pytest.mark.asyncio
 async def test_read_article(knowledge_dir):
     result = await read_article("testproj", "test_article.md")
     assert "Test Article" in result[0].text
@@ -487,6 +541,32 @@ def test_edit_article_keeps_secret_encrypted(knowledge_dir, monkeypatch):
 
     assert f"testproj/{fname}" not in _body_indexed("newtokenbbb")
     assert f"testproj/{fname}" not in _body_indexed("oldtokenaaa")
+
+
+def test_save_secret_findable_by_login_not_password(knowledge_dir, monkeypatch):
+    """Секрет ищется по логину/IP (теги), но значение пароля НЕ индексируется.
+
+    Регрессия бага ретрива: секрет индексируется только по title/tags, а
+    логин лежит в зашифрованном теле → был ненаходим. Фикс: extract_secret_identifiers
+    заносит логин/IP в теги. Инвариант: пароль в теги/индекс НЕ попадает."""
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import save_secret
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+
+    asyncio.run(save_secret(topic="Сервер доступ", project="testproj",
+        content="логин svcadmin / пароль Topsecret42xyz. IP 10.9.8.7"))
+    fname = _secret_file(knowledge_dir, "testproj")
+    disk = (knowledge_dir / "testproj" / fname).read_text(encoding="utf-8")
+
+    tagline = next(l for l in disk.splitlines() if l.lower().startswith("**теги:**"))
+    assert "svcadmin" in tagline, "логин не попал в теги — секрет ненаходим"
+    assert "10.9.8.7" in tagline, "IP не попал в теги"
+    assert "Topsecret42xyz" not in disk, "пароль лежит plaintext на диске"
+
+    res = asyncio.run(search("svcadmin", "testproj"))[0].text
+    assert "Сервер доступ" in res, "секрет не находится по логину"
+    # значение пароля НЕ должно быть searchable ни по body, ни по tags
+    assert f"testproj/{fname}" not in _body_indexed("Topsecret42xyz")
 
 
 def test_edit_article_secret_append_stays_encrypted(knowledge_dir, monkeypatch):

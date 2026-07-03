@@ -451,6 +451,21 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
 
 _ix = None  # global whoosh index
 
+# Кросс-проектные (shared/global) статьи. Общая сущность (канал уведомлений, единый
+# пароль, общий креденшл) физически лежит в ОДНОМ проекте, но нужна инфраструктурно.
+# При скоупе поиска на проект такие статьи раньше не находились. Помеченные тегом
+# `shared` или `global` попадают в выдачу ЛЮБОГО проекта. Множество путей
+# ("project/filename") наполняется при индексации (rebuild_index/index_document) —
+# там теги уже парсятся, лишних сканов диска нет. Мутации под _index_lock.
+_SHARED_TAG_MARKERS = frozenset({"shared", "global", "общий", "общая", "общее"})
+_shared_paths: set[str] = set()
+
+
+def _tags_are_shared(tags: str) -> bool:
+    """True, если среди тегов есть маркер кросс-проектности (shared/global/общий)."""
+    toks = set(re.findall(r"[\wа-яё-]+", tags.lower()))
+    return bool(toks & _SHARED_TAG_MARKERS)
+
 
 def _index_safe_text(raw_text: str, filename: str) -> str:
     """Для секретных статей вернуть плейсхолдер (титул + теги) вместо тела — чтобы
@@ -532,7 +547,7 @@ def start_background_reindex() -> bool:
 
 def rebuild_index():
     """Full reindex of all knowledge files."""
-    global _ix
+    global _ix, _shared_paths
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     # Под локом: пересоздание индекса + writer не пересекаются с index_document
     # (event loop) — два writer'а на одном каталоге дают Whoosh LockError, который
@@ -540,6 +555,7 @@ def rebuild_index():
     with _index_lock:
         _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
         writer = _ix.writer()
+        new_shared: set[str] = set()
         count = 0
         for proj in PROJECTS:
             p = KNOWLEDGE_DIR / proj
@@ -549,6 +565,8 @@ def rebuild_index():
                 text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
                 fields = _parse_article(text, md.name, proj)
                 writer.add_document(**fields)
+                if _tags_are_shared(fields["tags"]):
+                    new_shared.add(fields["path"])
                 count += 1
         # Also index daily logs — через _index_safe_text: если в daily попал секрет
         # (маркер '**Секрет:** да'), тело не должно стать searchable (симметрично
@@ -561,6 +579,7 @@ def rebuild_index():
                 writer.add_document(**fields)
                 count += 1
         writer.commit()
+        _shared_paths = new_shared  # атомарный своп под локом
     return count
 
 
@@ -573,6 +592,12 @@ def index_document(text: str, filename: str, project: str):
         writer = ix.writer()
         writer.update_document(**fields)
         writer.commit()
+        # Поддерживаем _shared_paths актуальным: тег shared могли добавить/снять
+        # при редактировании статьи.
+        if _tags_are_shared(fields["tags"]):
+            _shared_paths.add(fields["path"])
+        else:
+            _shared_paths.discard(fields["path"])
 
 
 def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list[dict]:
@@ -593,9 +618,10 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             hits = s.search(q, limit=limit * 2)
             max_bm25 = max((h.score for h in hits), default=1.0) or 1.0
             for hit in hits:
-                if project != "all" and hit["project"] != project:
-                    continue
                 path = hit["path"]
+                # Скоуп на проект, НО shared/global-статьи из других проектов пропускаем.
+                if project != "all" and hit["project"] != project and path not in _shared_paths:
+                    continue
                 bm25_scores[path] = {
                     "title": hit["title"],
                     "project": hit["project"],
@@ -608,7 +634,8 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     sem_scores: dict[str, float] = {}
     sem_results = semantic_search(query_str, limit=limit * 2)
     for path, sim in sem_results:
-        if project != "all" and not path.startswith(project + "/"):
+        # Скоуп на проект, НО shared/global-статьи пропускаем в любой проект.
+        if project != "all" and not path.startswith(project + "/") and path not in _shared_paths:
             continue
         sem_scores[path] = max(sim, 0)  # cosine sim, already 0-1
 
