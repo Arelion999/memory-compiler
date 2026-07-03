@@ -204,7 +204,7 @@ def test_detect_contradictions_mixed_roles_no_warning(knowledge_dir):
     )
     # Новая статья — устранение конфликта LAN-подсети
     new = ("Router gamma: LAN сменил с 192.168.1.0/24 "
-           "на 192.168.50.0/24, шлюз 192.168.50.1, DMZ via VPN 10.10.250.1")
+           "на 192.168.50.0/24, шлюз 192.168.50.1, DMZ via VPN 198.51.100.1")
     warnings = detect_contradictions(new, "testproj")
     assert warnings == [], f"Смесь ролей IP не должна давать FP, получено: {warnings}"
 
