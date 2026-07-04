@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 import numpy as np
 from mcp.server import Server
@@ -488,8 +489,30 @@ class AuthMiddleware:
             response = JSONResponse({"error": "not found"}, status_code=404)
             return await response(scope, receive, send)
 
-        # SSE/MCP + /messages/ — pass through (auth via key in SSE URL)
-        if path == "/sse" or path.startswith("/messages"):
+        # SSE/MCP: GET /sse ТРЕБУЕТ ключ — Bearer-хедер или ?key= в URL (аудит
+        # 2026-07-03: раньше /sse шёл мимо auth, и весь MCP с расшифровкой секретов
+        # был открыт любому, кто дотянется до порта). ?key= для /sse — осознанный
+        # компромисс: mcp-remote-клиенты уже шлют ключ в URL и не умеют кастомные
+        # хедеры без --header; утечка ограничена своими же access-логами (при
+        # публикации через nginx — не логировать query). Для REST-путей ?key=
+        # по-прежнему НЕ аутентифицирует (см. ниже).
+        if path == "/sse":
+            hdrs = dict((k.decode(), v.decode()) for k, v in scope.get("headers", []))
+            auth = hdrs.get("authorization", "")
+            token = auth[7:] if auth.startswith("Bearer ") else None
+            if not token:
+                qs = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+                token = (qs.get("key") or [None])[0]
+            if token and hmac.compare_digest(token, MC_API_KEY):
+                return await self.app(scope, receive, send)
+            response = JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return await response(scope, receive, send)
+
+        # /messages/?session_id=<uuid4> — session_id и есть токен: клиент получает
+        # его ТОЛЬКО из уже аутентифицированного SSE-стрима (endpoint-событие),
+        # угадать uuid4 нереально, чужой/несуществующий session_id транспорт
+        # отвергает сам (404).
+        if path.startswith("/messages"):
             return await self.app(scope, receive, send)
 
         # Extract token from Authorization header or mc_token cookie ONLY.

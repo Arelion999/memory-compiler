@@ -185,6 +185,17 @@ def test_route_project_single_strong_candidate(knowledge_dir, monkeypatch):
     assert "Неоднозначно" not in out
 
 
+def test_article_history_rejects_traversal(knowledge_dir):
+    """LOW из аудита 2026-07-03: article_history строил путь напрямую (без
+    safe_article_path) — traversal-зонд существования файлов вне базы."""
+    from memory_compiler.handlers import article_history
+    (knowledge_dir.parent / "outside.md").write_text("# Вне базы", encoding="utf-8")
+    out = asyncio.run(article_history("..", "outside.md"))[0].text
+    assert "Небезопасный путь" in out, f"traversal через project не отклонён: {out}"
+    out = asyncio.run(article_history("testproj", "../../outside.md"))[0].text
+    assert "Небезопасный путь" in out, f"traversal через filename не отклонён: {out}"
+
+
 @pytest.fixture(autouse=True)
 def setup_indexes(knowledge_dir):
     rebuild_index()

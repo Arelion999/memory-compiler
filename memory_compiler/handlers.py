@@ -949,7 +949,12 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
 
 
 async def article_history(project: str, filename: str) -> list[TextContent]:
-    fpath = KNOWLEDGE_DIR / project / filename
+    # safe_article_path как в read/delete/edit — иначе traversal-зонд существования
+    # файлов вне базы (LOW из аудита 2026-07-03)
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     rel_path = f"{project}/{filename}"

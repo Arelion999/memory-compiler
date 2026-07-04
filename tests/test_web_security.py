@@ -127,9 +127,9 @@ def test_web_health_open_when_no_api_key(knowledge_dir, monkeypatch):
 
 # ─── #10 middleware: ?key= в URL не аутентифицирует ──────────────────────────
 
-def _run_mw(monkeypatch, scope):
+def _run_mw(monkeypatch, scope, api_key="secret-key"):
     import memory_compiler.api as api_mod
-    monkeypatch.setattr(api_mod, "MC_API_KEY", "secret-key")
+    monkeypatch.setattr(api_mod, "MC_API_KEY", api_key)
     state = {"passed": False, "responses": []}
 
     async def app(scope, receive, send):
@@ -170,6 +170,67 @@ def test_auth_middleware_accepts_cookie(monkeypatch):
              "headers": [(b"cookie", b"mc_token=secret-key")]}
     state = _run_mw(monkeypatch, scope)
     assert state["passed"], "cookie mc_token должна аутентифицировать"
+
+
+# ─── /sse под авторизацией (КРИТИЧНО из аудита 2026-07-03) ──────────────────
+# Раньше /sse и /messages шли МИМО auth: любой, кто дотянется до порта, открывал
+# MCP-сессию со всеми tools, включая read_article с расшифровкой секретов.
+
+def test_sse_unauthorized_without_key(monkeypatch):
+    scope = {"type": "http", "path": "/sse", "query_string": b"", "headers": []}
+    state = _run_mw(monkeypatch, scope)
+    assert not state["passed"], "/sse без ключа прошёл мимо auth — дыра из аудита открыта"
+    assert any(m.get("status") == 401 for m in state["responses"]
+               if m.get("type") == "http.response.start")
+
+
+def test_sse_rejects_wrong_key(monkeypatch):
+    scope = {"type": "http", "path": "/sse",
+             "query_string": b"key=wrong-key", "headers": []}
+    state = _run_mw(monkeypatch, scope)
+    assert not state["passed"], "/sse с неверным ключом аутентифицировался"
+
+
+def test_sse_accepts_key_in_query(monkeypatch):
+    """mcp-remote-клиенты шлют ключ в URL SSE (?key=) — для /sse это принимается
+    (осознанный компромисс, REST-путей не касается)."""
+    scope = {"type": "http", "path": "/sse",
+             "query_string": b"key=secret-key", "headers": []}
+    state = _run_mw(monkeypatch, scope)
+    assert state["passed"], "?key= в URL /sse должен аутентифицировать"
+
+
+def test_sse_key_in_query_urldecoded(monkeypatch):
+    """Ключ в URL приходит URL-encoded (например $ → %24) — должен декодироваться."""
+    scope = {"type": "http", "path": "/sse",
+             "query_string": b"key=p%24ss-key", "headers": []}
+    state = _run_mw(monkeypatch, scope, api_key="p$ss-key")
+    assert state["passed"], "URL-encoded ключ в ?key= не декодирован"
+
+
+def test_sse_accepts_bearer(monkeypatch):
+    scope = {"type": "http", "path": "/sse", "query_string": b"",
+             "headers": [(b"authorization", b"Bearer secret-key")]}
+    state = _run_mw(monkeypatch, scope)
+    assert state["passed"], "Bearer-токен на /sse должен аутентифицировать"
+
+
+def test_sse_open_when_no_api_key(monkeypatch):
+    """MC_API_KEY пуст (dev-режим) — auth выключен целиком, /sse открыт как раньше."""
+    scope = {"type": "http", "path": "/sse", "query_string": b"", "headers": []}
+    state = _run_mw(monkeypatch, scope, api_key="")
+    assert state["passed"]
+
+
+def test_messages_rides_on_session_id(monkeypatch):
+    """/messages/?session_id=... проходит middleware: session_id (uuid4) клиент
+    получает только из уже аутентифицированного SSE-стрима, чужой session_id
+    отвергает сам транспорт (404)."""
+    scope = {"type": "http", "path": "/messages/",
+             "query_string": b"session_id=00000000-0000-4000-8000-000000000000",
+             "headers": []}
+    state = _run_mw(monkeypatch, scope)
+    assert state["passed"], "/messages должен ехать на session_id из auth-стрима"
 
 
 # ─── #1/#2 операционная гигиена ключей ───────────────────────────────────────
