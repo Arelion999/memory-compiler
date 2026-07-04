@@ -160,6 +160,31 @@ def test_route_project_cwd_override(knowledge_dir):
     assert "cwd-match" in text
 
 
+def test_route_project_deterministic_tie_break(knowledge_dir, monkeypatch):
+    """Равные score: тай-брейк по алфавиту (не по порядку listdir — он зависит от ФС
+    и давал разный роутинг в разных сессиях → кросс-проектные дубли), а сам случай
+    честно помечается «Неоднозначно» вместо молчаливого выбора первого."""
+    import memory_compiler.config as _cfg
+    # намеренно НЕ-алфавитный порядок в PROJECTS
+    monkeypatch.setattr(_cfg, "PROJECTS", ["zeta-app", "alpha-app"])
+    out = asyncio.run(route_project(text="миграция данных zeta-app и alpha-app"))[0].text
+    candidates = [l for l in out.splitlines() if l.startswith("- **")]
+    assert len(candidates) == 2, f"ожидались 2 кандидата: {out}"
+    assert candidates[0].startswith("- **alpha-app**"), \
+        f"при равном score первым должен идти алфавитно меньший: {candidates}"
+    assert "Неоднозначно" in out
+    assert 'project="alpha-app"' not in out, "при неоднозначности не должно быть однозначного совета"
+
+
+def test_route_project_single_strong_candidate(knowledge_dir, monkeypatch):
+    """Один сильный кандидат — прежнее поведение: прямой совет project=..."""
+    import memory_compiler.config as _cfg
+    monkeypatch.setattr(_cfg, "PROJECTS", ["zeta-app", "alpha-app"])
+    out = asyncio.run(route_project(text="настроить бэкапы alpha-app"))[0].text
+    assert 'project="alpha-app"' in out
+    assert "Неоднозначно" not in out
+
+
 @pytest.fixture(autouse=True)
 def setup_indexes(knowledge_dir):
     rebuild_index()

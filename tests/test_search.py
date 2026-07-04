@@ -200,6 +200,46 @@ def test_rebuild_embeddings_atomic_on_failure(knowledge_dir, monkeypatch):
         "rebuild_embeddings must not wipe state on failure"
 
 
+def test_rebuild_embeddings_incremental(knowledge_dir, monkeypatch):
+    """Инкрементальная пересборка: неизменённые чанки реюзаются (encode не зовётся),
+    кодируются только новые/изменённые. Полный encode базы e5-base на ARM ~35-40 мин —
+    реюз сводит self-heal/фоновые пересборки к секундам."""
+    import numpy as np
+    import memory_compiler.search as _smod
+    calls = []
+
+    def fake_encode(texts):
+        calls.append(list(texts))
+        return [np.array([1.0, 0.0]) for _ in texts]
+
+    monkeypatch.setattr(_smod, "encode_passages", fake_encode)
+    _smod._embeddings.clear()
+    _smod._embed_texts.clear()
+    _smod._chunk_hashes.clear()
+
+    # 1. Первая пересборка кодирует всё
+    total1 = _smod.rebuild_embeddings()
+    assert sum(len(c) for c in calls) == total1 >= 1
+
+    # 2. Без изменений — encode не вызывается вовсе (быстрый self-heal путь)
+    calls.clear()
+    assert _smod.rebuild_embeddings() == total1
+    assert sum(len(c) for c in calls) == 0, f"без изменений encode лишний: {calls}"
+
+    # 3. Новая статья — кодируется ТОЛЬКО она
+    fresh = knowledge_dir / "testproj" / "fresh.md"
+    fresh.write_text("# Fresh\n\n**Теги:** t\n\nновое тело", encoding="utf-8")
+    calls.clear()
+    assert _smod.rebuild_embeddings() == total1 + 1
+    assert sum(len(c) for c in calls) == 1, f"кодироваться должна только новая: {calls}"
+
+    # 4. Правка существующей — пере-кодируется только она
+    fresh.write_text("# Fresh\n\n**Теги:** t\n\nизменённое тело", encoding="utf-8")
+    calls.clear()
+    _smod.rebuild_embeddings()
+    assert sum(len(c) for c in calls) == 1, f"пере-кодироваться должна только правленая: {calls}"
+
+
 def test_embed_batch_size_default_safe():
     """Default EMBED_BATCH_SIZE must be small enough to avoid OOM on NAS-class hosts."""
     import importlib

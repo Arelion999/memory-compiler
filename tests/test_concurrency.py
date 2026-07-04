@@ -77,6 +77,67 @@ def test_atomic_write_text_roundtrip(knowledge_dir):
     assert not list(knowledge_dir.glob(".atomic_target.txt.*")), "tmp-файл не убран"
 
 
+# ─── lost-update / zombie при свопе rebuild_embeddings ───────────────────────
+
+def test_embed_during_rebuild_survives_swap(knowledge_dir, monkeypatch):
+    """Статья, сохранённая ПОКА rebuild_embeddings кодирует базу (encode идёт вне
+    лока, на живой базе ~35-40 мин), не должна теряться при свопе новых диктов."""
+    import memory_compiler.search as search_mod
+    state = {"rebuild_encode": True}
+
+    def fake_encode(texts):
+        if state["rebuild_encode"]:
+            state["rebuild_encode"] = False  # не рекурсим на encode от embed_document
+            # конкурентное сохранение во время «долгого» encode пересборки
+            search_mod.embed_document("# Fresh\n\nтело", "fresh.md", "testproj")
+        return [np.array([1.0, 0.0]) for _ in texts]
+
+    monkeypatch.setattr(search_mod, "encode_passages", fake_encode)
+    search_mod._embeddings.clear()
+    search_mod._embed_texts.clear()
+    search_mod._chunk_hashes.clear()
+    search_mod.rebuild_embeddings()
+    assert "testproj/fresh.md" in search_mod._embeddings, \
+        "свежесохранённая статья потеряна при свопе rebuild_embeddings"
+    assert "testproj/fresh.md" in search_mod._embed_texts
+
+
+def test_delete_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
+    """Статья, удалённая ПОКА rebuild_embeddings кодирует (файл уже прочитан с
+    диска пересборкой), не должна «воскресать» при свопе."""
+    import memory_compiler.search as search_mod
+    state = {"rebuild_encode": True}
+
+    def fake_encode(texts):
+        if state["rebuild_encode"]:
+            state["rebuild_encode"] = False
+            search_mod.remove_embedding("testproj/test_article.md")
+        return [np.array([1.0, 0.0]) for _ in texts]
+
+    monkeypatch.setattr(search_mod, "encode_passages", fake_encode)
+    search_mod._embeddings.clear()
+    search_mod._embed_texts.clear()
+    search_mod._chunk_hashes.clear()
+    search_mod.rebuild_embeddings()
+    zombie = [k for k in search_mod._embeddings if k.startswith("testproj/test_article.md")]
+    assert not zombie, f"удалённая статья воскресла при свопе: {zombie}"
+
+
+def test_delete_article_persists_pkl(knowledge_dir):
+    """После delete_article статьи нет и в .embeddings.pkl — иначе после рестарта
+    сервер поднимет её из кэша фантомом (файл удалён, а semantic её находит)."""
+    import pickle
+    import memory_compiler.search as search_mod
+    from memory_compiler.handlers import delete_article
+    proj = knowledge_dir / "testproj"
+    (proj / "todel2.md").write_text("# Del2\n\nтело", encoding="utf-8")
+    search_mod._embeddings["testproj/todel2.md"] = np.array([1.0, 0.0])
+    search_mod._embed_texts["testproj/todel2.md"] = "Del2"
+    asyncio.run(delete_article("testproj", "todel2.md"))
+    data = pickle.loads((knowledge_dir / ".embeddings.pkl").read_bytes())
+    assert "testproj/todel2.md" not in data["embeddings"], "фантом в pkl после удаления"
+
+
 # ─── #3 конкурентность embed/search ──────────────────────────────────────────
 
 def test_concurrent_embed_and_search_no_crash(knowledge_dir, monkeypatch):

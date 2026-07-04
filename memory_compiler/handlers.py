@@ -806,14 +806,10 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     if not fpath.exists():
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     fpath.unlink()
-    # Remove from indexes
+    # Remove from indexes: под локом + журнал _deleted_parents (фоновый rebuild
+    # не воскресит) + персист pkl (иначе после рестарта статья вернётся из кэша).
     key = f"{project}/{filename}"
-    _search._embeddings.pop(key, None)
-    # Remove chunks too
-    chunk_keys = [k for k in _search._embeddings if k.startswith(key + "#")]
-    for ck in chunk_keys:
-        _search._embeddings.pop(ck, None)
-    _search._embed_texts.pop(key, None)
+    _search.remove_embedding(key)
     article_meta.pop(key, None)
     save_article_meta()
     rebuild_index()
@@ -1230,7 +1226,10 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
             f"Если уверен — передай `project=` явно. Иначе используй `general`."
         ))]
 
-    sorted_scores = sorted(scores.items(), key=lambda kv: -kv[1])[:top_k]
+    # Детерминизм: при равном score тай-брейк по алфавиту, а не по порядку PROJECTS
+    # (= os.listdir — зависит от ФС). Иначе один и тот же запрос в разных сессиях
+    # роутился в разные проекты → кросс-проектные дубли статей.
+    sorted_scores = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:top_k]
     parts = [f"# Route project\n\n*Запрос:* «{text[:120]}»\n"]
     parts.append("\n## Топ кандидатов\n")
     for proj, sc in sorted_scores:
@@ -1238,7 +1237,16 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
         parts.append(f"- **{proj}** — score {sc} ({confidence})")
 
     best, best_score = sorted_scores[0]
-    if best_score >= 25:
+    # Почти равные сильные кандидаты: алфавитный тай-брейк детерминирован, но не
+    # «правилен» — молчаливый выбор одного из двух и порождал дубли. Просим уточнить.
+    ambiguous = (len(sorted_scores) > 1 and sorted_scores[1][1] >= 25
+                 and best_score - sorted_scores[1][1] < 5)
+    if ambiguous:
+        second = sorted_scores[1][0]
+        parts.append(f"\n→ Неоднозначно: «{best}» и «{second}» почти равны (разрыв "
+                     f"{round(best_score - sorted_scores[1][1], 1)}) — уточни проект явно "
+                     f"или используй `general`.")
+    elif best_score >= 25:
         parts.append(f"\n→ Используй `project=\"{best}\"` для save/start_task.")
     else:
         parts.append("\n→ Все совпадения слабые — лучше уточнить у пользователя или использовать `general`.")
@@ -1797,15 +1805,12 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     if articles and not confirm:
         return [TextContent(type="text", text=f"⚠️ Проект '{name}' содержит {len(articles)} статей. Для удаления передайте confirm=True. Это действие необратимо.")]
     if articles:
-        # Удалить все статьи из индексов
+        # Удалить все статьи из индексов (persist=False в цикле, один персист в конце)
         for md in articles:
             key = f"{name}/{md.name}"
-            _search._embeddings.pop(key, None)
-            chunk_keys = [k for k in list(_search._embeddings.keys()) if k.startswith(key + "#")]
-            for ck in chunk_keys:
-                _search._embeddings.pop(ck, None)
-            _search._embed_texts.pop(key, None)
+            _search.remove_embedding(key, persist=False)
             article_meta.pop(key, None)
+        _search.persist_embeddings()
     # Удалить папку
     shutil.rmtree(str(proj_path))
     save_article_meta()

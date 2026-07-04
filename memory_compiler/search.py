@@ -79,6 +79,7 @@ from memory_compiler.config import (
     decay_factor, atomic_write_bytes, is_secret_article,
 )
 import threading as _threading
+import hashlib as _hashlib
 
 # Единый лок целостности индекса/эмбеддингов: сериализует мутации _embeddings, запись
 # pickle и работу Whoosh writer'а между фоновым reindex (демон-поток) и обработчиками
@@ -134,6 +135,15 @@ def _splade_search(query: str, project: str = "all", limit: int = 20) -> dict[st
 _embed_model: Optional[SentenceTransformer] = None
 _embeddings: dict[str, np.ndarray] = {}  # path -> embedding
 _embed_texts: dict[str, str] = {}  # path -> title+tags for display
+# chunk_key -> sha1(chunk_text): позволяет rebuild_embeddings пере-кодировать ТОЛЬКО
+# изменившиеся чанки (encode всей базы e5-base на ARM ~35-40 мин, инкрементально — секунды).
+_chunk_hashes: dict[str, str] = {}
+# Журнал конкурентных изменений на время долгого encode в rebuild_embeddings: статьи,
+# сохранённые (dirty) или удалённые (deleted) ПОКА шла пересборка. При свопе rebuild
+# накатывает их поверх свежесобранных диктов — иначе сохранённая статья теряется до
+# следующей пересборки, а удалённая «воскресает». Мутации — только под _index_lock.
+_dirty_parents: set[str] = set()
+_deleted_parents: set[str] = set()
 
 
 def get_embed_model() -> SentenceTransformer:
@@ -287,20 +297,88 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     return chunks
 
 
-def rebuild_embeddings():
-    """Rebuild all embeddings from knowledge files with chunking.
+def _chunk_hash(text: str) -> str:
+    """Хэш текста чанка — ключ инкрементальности rebuild_embeddings."""
+    return _hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
 
-    Atomic: builds new dicts locally and only swaps them into the globals AFTER
-    successful encode + pickle dump. If encode raises (OOM, network, etc.), the
-    previous in-memory _embeddings stays intact — semantic search keeps working
-    with stale-but-functional data instead of silently returning empty results.
+
+def _persist_embeddings_locked():
+    """Записать .embeddings.pkl атомарно. Вызывать ТОЛЬКО под _index_lock."""
+    atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
+        "model": EMBED_MODEL_NAME,
+        "late_chunking": LATE_CHUNKING,
+        "embeddings": _embeddings,
+        "texts": _embed_texts,
+        "chunk_hashes": _chunk_hashes,
+    }))
+
+
+def persist_embeddings():
+    """Публичная точка персиста pkl (берёт лок сама) — для батч-операций
+    (remove_project), где remove_embedding вызывается с persist=False в цикле."""
+    with _index_lock:
+        _persist_embeddings_locked()
+
+
+def remove_embedding(parent_key: str, persist: bool = True):
+    """Удалить эмбеддинги статьи (parent + все #chunkN) из индекса и pkl.
+
+    Единственная корректная точка удаления: под _index_lock и с журналированием
+    в _deleted_parents — фоновая rebuild_embeddings, уже прочитавшая файл с диска,
+    при свопе выкинет статью, а не вернёт её «зомби». Вызывать из delete_article /
+    remove_project вместо ручных .pop по _embeddings.
     """
-    global _embeddings, _embed_texts
-    model = get_embed_model()
+    with _index_lock:
+        for k in [k for k in _embeddings if k == parent_key or k.startswith(parent_key + "#")]:
+            _embeddings.pop(k, None)
+            _chunk_hashes.pop(k, None)
+        _embed_texts.pop(parent_key, None)
+        _dirty_parents.discard(parent_key)
+        _deleted_parents.add(parent_key)
+        if persist:
+            _persist_embeddings_locked()
+
+
+def rebuild_embeddings():
+    """Rebuild embeddings from knowledge files with chunking. Возвращает общее
+    число документов/чанков в индексе.
+
+    Атомарность: новые дикты собираются локально и свопятся в глобалы ТОЛЬКО после
+    успешного encode + pickle. Упавший encode (OOM и т.п.) оставляет прежние
+    _embeddings — semantic search продолжает работать на устаревших данных.
+
+    Инкрементальность: чанк пере-кодируется только если его sha1 изменился
+    (_chunk_hashes); остальные вектора реюзаются из текущего кэша. Полная база
+    e5-base на ARM — ~35-40 мин, инкрементально при 1-2 изменённых статьях — секунды.
+
+    Конкурентность: статьи, сохранённые/удалённые во время долгого encode
+    (журнал _dirty_parents/_deleted_parents), накатываются при свопе — без этого
+    свежее сохранение терялось, а удаление «воскресало».
+    """
+    global _embeddings, _embed_texts, _chunk_hashes
+    with _index_lock:
+        old_embeddings = dict(_embeddings)
+        old_hashes = dict(_chunk_hashes)
+        _dirty_parents.clear()
+        _deleted_parents.clear()
+
     new_embeddings: dict[str, np.ndarray] = {}
     new_embed_texts: dict[str, str] = {}
-    docs = []
-    paths = []
+    new_hashes: dict[str, str] = {}
+    docs = []   # тексты, требующие encode (новые/изменённые)
+    paths = []  # их chunk-keys
+    total = 0
+
+    def _collect(chunk_key: str, chunk_text: str):
+        nonlocal total
+        total += 1
+        h = _chunk_hash(chunk_text)
+        new_hashes[chunk_key] = h
+        if old_hashes.get(chunk_key) == h and chunk_key in old_embeddings:
+            new_embeddings[chunk_key] = old_embeddings[chunk_key]  # реюз, без encode
+        else:
+            docs.append(chunk_text)
+            paths.append(chunk_key)
 
     for proj in PROJECTS:
         p = KNOWLEDGE_DIR / proj
@@ -316,10 +394,8 @@ def rebuild_embeddings():
             lines = text.splitlines()
             new_embed_texts[key] = lines[0].lstrip("# ").strip() if lines else md.stem
             # Chunk article for finer-grained search
-            chunks = _chunk_article(text, key)
-            for chunk_key, chunk_text in chunks:
-                docs.append(chunk_text)
-                paths.append(chunk_key)
+            for chunk_key, chunk_text in _chunk_article(text, key):
+                _collect(chunk_key, chunk_text)
 
     daily = KNOWLEDGE_DIR / "daily"
     if daily.exists():
@@ -329,8 +405,7 @@ def rebuild_embeddings():
             except Exception:
                 continue
             key = f"daily/{md.name}"
-            docs.append(_doc_text_for_embedding(_index_safe_text(text, md.name)))
-            paths.append(key)
+            _collect(key, _doc_text_for_embedding(_index_safe_text(text, md.name)))
             new_embed_texts[key] = md.stem
 
     if docs:
@@ -339,21 +414,35 @@ def rebuild_embeddings():
         vectors = encode_passages(docs)
         for i, path in enumerate(paths):
             new_embeddings[path] = vectors[i]
+        print(f"rebuild_embeddings: encoded {len(docs)}, reused {total - len(docs)}")
 
     # Atomic swap + pickle под локом: коммитим глобалы и пишем pickle ТОЛЬКО после
     # успешного encode, и так, чтобы конкурентный embed_document (event loop) не
     # пересёкся со свопом/записью (торн-райт / lost-update). Запись — atomic_write_bytes.
     with _index_lock:
+        # Накат конкурентных изменений времён encode: сохранённое во время пересборки
+        # свежее прочитанного с диска, удалённое — не должно вернуться со свопом.
+        for parent in _dirty_parents:
+            for k, v in _embeddings.items():
+                if k == parent or k.startswith(parent + "#"):
+                    new_embeddings[k] = v
+                    if k in _chunk_hashes:
+                        new_hashes[k] = _chunk_hashes[k]
+            if parent in _embed_texts:
+                new_embed_texts[parent] = _embed_texts[parent]
+        for parent in _deleted_parents:
+            for k in [k for k in new_embeddings if k == parent or k.startswith(parent + "#")]:
+                new_embeddings.pop(k, None)
+                new_hashes.pop(k, None)
+            new_embed_texts.pop(parent, None)
+        _dirty_parents.clear()
+        _deleted_parents.clear()
         _embeddings = new_embeddings
         _embed_texts = new_embed_texts
-        atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
-            "model": EMBED_MODEL_NAME,
-            "late_chunking": LATE_CHUNKING,
-            "embeddings": _embeddings,
-            "texts": _embed_texts,
-        }))
+        _chunk_hashes = new_hashes
+        _persist_embeddings_locked()
 
-    return len(docs)
+    return total
 
 
 def load_embeddings():
@@ -363,7 +452,7 @@ def load_embeddings():
     (different dimensionality / different semantics) — caller should rebuild.
     Logs the reason for visibility instead of failing silently.
     """
-    global _embeddings, _embed_texts
+    global _embeddings, _embed_texts, _chunk_hashes
     if not EMBEDDINGS_PATH.exists():
         return False
     try:
@@ -389,6 +478,9 @@ def load_embeddings():
     try:
         _embeddings = data["embeddings"]
         _embed_texts = data["texts"]
+        # Legacy pkl без chunk_hashes → пустой дикт: первый rebuild пере-кодирует
+        # всё (нет ложного реюза), дальше кэш хэшей живёт в pkl.
+        _chunk_hashes = data.get("chunk_hashes") or {}
         return True
     except (KeyError, TypeError) as e:
         print(f"load_embeddings: pkl schema invalid ({e}) — will rebuild")
@@ -416,14 +508,15 @@ def embed_document(text: str, filename: str, project: str):
         for old_key in list(_embeddings.keys()):
             if old_key == parent_key or old_key.startswith(parent_key + "#"):
                 _embeddings.pop(old_key, None)
-        for (chunk_key, _), vec in zip(chunks, vectors):
+                _chunk_hashes.pop(old_key, None)
+        for (chunk_key, chunk_text), vec in zip(chunks, vectors):
             _embeddings[chunk_key] = vec
-        atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
-            "model": EMBED_MODEL_NAME,
-            "late_chunking": LATE_CHUNKING,
-            "embeddings": _embeddings,
-            "texts": _embed_texts,
-        }))
+            _chunk_hashes[chunk_key] = _chunk_hash(chunk_text)
+        # Журнал для идущей параллельно rebuild_embeddings: эта статья свежее
+        # прочитанного ею с диска — при свопе её нужно сохранить, не потерять.
+        _dirty_parents.add(parent_key)
+        _deleted_parents.discard(parent_key)
+        _persist_embeddings_locked()
 
 
 def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
