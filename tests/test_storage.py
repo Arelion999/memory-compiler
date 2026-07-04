@@ -1551,3 +1551,120 @@ def test_auto_update_tracking_ignores_foreign_fact_near_referenced_entity(knowle
     assert cur["version"] == "1.2.4", f"версия NAS должна обновиться (тот же сегмент): {cur}"
     assert cur["ip"] == "192.168.1.10", \
         f"IP NAS затёрт посторонним IP из другого предложения: {cur['ip']!r}"
+
+
+# ─── Issue #1/#2: preview от тела статьи + дедуп секций ──────────────────────
+
+ARTICLE_WITH_UPDATED = (
+    "# Тестовая статья\n\n"
+    "**Дата:** 2026-07-01 10:00\n"
+    "**Обновлено:** 2026-07-02 11:00\n"
+    "**Проект:** testproj\n"
+    "**Теги:** docker, test\n\n"
+    "## Записи\n\n"
+    "### 2026-07-01 10:00\n"
+    "Первая строка тела.\n"
+    "Вторая строка тела.\n"
+)
+
+
+def test_make_preview_shows_body_for_article_with_updated():
+    """Issue #1: шапка с «Обновлено» занимает 10 строк — preview из первых строк
+    ФАЙЛА не содержал ни одной строки контента."""
+    from memory_compiler.storage import make_preview
+    p = make_preview(ARTICLE_WITH_UPDATED)
+    assert p.splitlines()[0] == "# Тестовая статья"
+    assert "Первая строка тела." in p
+    assert "Вторая строка тела." in p
+    assert "**Обновлено:**" not in p
+    assert "**Дата:**" not in p
+    assert "## Записи" not in p
+
+
+def test_make_preview_old_format_without_sections():
+    from memory_compiler.storage import make_preview
+    text = ("# Старая статья\n\n**Дата:** 2026-01-01 10:00\n**Теги:** x\n\n"
+            "Тело без секций, строка 1.\nСтрока 2.\n")
+    p = make_preview(text)
+    assert "Тело без секций, строка 1." in p
+    assert "**Дата:**" not in p
+
+
+def test_make_preview_caps_body_lines_and_handles_empty():
+    from memory_compiler.storage import make_preview
+    body = "\n".join(f"строка {i}" for i in range(20))
+    text = f"# Т\n\n**Дата:** 2026-01-01 10:00\n\n## Записи\n\n### 2026-01-01 10:00\n{body}\n"
+    p = make_preview(text, n=8)
+    assert len(p.splitlines()) == 1 + 8
+    assert make_preview("") == ""
+
+
+def test_merge_into_article_skips_duplicate_entry(knowledge_dir):
+    """Issue #2: compile приносит из daily-лога запись, которую save_lesson уже
+    записал в статью, — повтор не дописывается и «Обновлено» не ставится."""
+    ts = "2026-07-04 12:00"
+    art = knowledge_dir / "testproj" / "dup.md"
+    art.write_text(
+        f"# Дубль\n\n**Дата:** {ts}\n**Проект:** testproj\n**Теги:** t1\n\n"
+        f"## Записи\n\n### {ts}\nуникальный текст дубля\n",
+        encoding="utf-8",
+    )
+    res = merge_into_article(art, "уникальный текст дубля", ["t2"], ts)
+    text = art.read_text(encoding="utf-8")
+    assert res == "duplicate"
+    assert text.count(f"### {ts}") == 1
+    assert text.count("уникальный текст дубля") == 1
+    assert "**Обновлено:**" not in text
+    assert "t2" in text, "новые теги должны слиться даже при дубле"
+
+
+def test_merge_into_article_appends_new_content_returns_merged(knowledge_dir):
+    article = knowledge_dir / "testproj" / "test_article.md"
+    res = merge_into_article(article, "Совсем новый контент", [], "2026-04-13 12:00")
+    text = article.read_text(encoding="utf-8")
+    assert res == "merged"
+    assert "### 2026-04-13 12:00\nСовсем новый контент" in text
+    assert "**Обновлено:** 2026-04-13 12:00" in text
+
+
+def test_dedupe_article_sections_removes_duplicate_and_stale_updated():
+    from memory_compiler.storage import dedupe_article_sections
+    ts = "2026-07-04 12:00"
+    text = (
+        f"# Дубль\n\n**Дата:** {ts}\n**Обновлено:** {ts}\n**Проект:** p\n**Теги:** t\n\n"
+        f"## Записи\n\n### {ts}\nодин и тот же текст\n\n### {ts}\nодин и тот же текст\n"
+    )
+    fixed, removed = dedupe_article_sections(text)
+    assert removed == 1
+    assert fixed.count(f"### {ts}") == 1
+    assert fixed.count("один и тот же текст") == 1
+    assert "**Обновлено:**" not in fixed, "Обновлено==Дата без других правок — убрать"
+
+
+def test_dedupe_article_sections_handles_git_refs_tail():
+    """Дубль распознаётся, даже если внутри первой секции хвост '## Git-ссылки'
+    (save_lesson дописывает его ПОСЛЕ контента, а compile — дубль ПОСЛЕ git-ссылок)."""
+    from memory_compiler.storage import dedupe_article_sections
+    ts = "2026-07-04 12:00"
+    text = (
+        f"# Дубль\n\n**Дата:** {ts}\n**Обновлено:** {ts}\n\n"
+        f"## Записи\n\n### {ts}\nтекст с коммитом abc1234\n\n"
+        "## Git-ссылки\n- abc1234 fix\n\n"
+        f"### {ts}\nтекст с коммитом abc1234\n"
+    )
+    fixed, removed = dedupe_article_sections(text)
+    assert removed == 1
+    assert fixed.count(f"### {ts}") == 1
+    assert "## Git-ссылки" in fixed, "git-ссылки должны сохраниться"
+
+
+def test_dedupe_article_sections_keeps_distinct_content():
+    from memory_compiler.storage import dedupe_article_sections
+    text = (
+        "# Ок\n\n**Дата:** 2026-07-01 10:00\n**Обновлено:** 2026-07-02 11:00\n\n"
+        "## Записи\n\n### 2026-07-01 10:00\nпервая запись\n\n"
+        "### 2026-07-02 11:00\nвторая запись\n"
+    )
+    fixed, removed = dedupe_article_sections(text)
+    assert removed == 0
+    assert fixed == text, "без дублей текст не меняется"

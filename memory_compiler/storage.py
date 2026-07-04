@@ -251,11 +251,74 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
     return None
 
 
+# ─── Article preview ─────────────────────────────────────────────────────────
+
+# Метаданные шапки статьи и daily-записей — не контент.
+_HEADER_META_PREFIXES = (
+    "**Дата:**", "**Обновлено:**", "**Проект:**", "**Теги:**", "**Время:**",
+)
+
+
+def article_body_lines(text: str, limit: int = 40) -> list[str]:
+    """Содержательные строки статьи: без строки-заголовка, метаданных шапки,
+    '## Записи' и датных разделителей '### ...'. Максимум limit строк."""
+    out = []
+    for line in text.splitlines()[1:]:
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith(_HEADER_META_PREFIXES):
+            continue
+        if s == "## Записи" or s.startswith("### "):
+            continue
+        out.append(line)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def make_preview(text: str, n: int = 8) -> str:
+    """Preview статьи: заголовок + первые n содержательных строк ТЕЛА.
+    Раньше preview был первыми 10 строками файла: у статей с «**Обновлено:**»
+    шапка занимает ровно 10 строк, и в search/get_context/start_task не попадало
+    ни одной строки контента, а reranker скорил пустой текст (issue #1)."""
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    return "\n".join(lines[:1] + article_body_lines(text, limit=n))
+
+
 # ─── Article merging ─────────────────────────────────────────────────────────
 
 
-def merge_into_article(article_path: Path, new_content: str, new_tags: list[str], ts: str):
-    """Merge new content into existing article, update tags and timestamp."""
+def is_duplicate_entry(text: str, new_content: str, ts: str) -> bool:
+    """True, если секция '### ts' с этим же контентом уже есть в статье."""
+    return (bool(ts) and f"### {ts}" in text
+            and bool(new_content.strip()) and new_content.strip() in text)
+
+
+def _merge_tags_only(text: str, new_tags: list[str]) -> str:
+    """Слить new_tags в строку '**Теги:**', не трогая остальной текст."""
+    if not new_tags:
+        return text
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("**Теги:**"):
+            old_str = line.split(":", 1)[1].strip().strip("*").strip()
+            old = {t.strip().strip("*").strip() for t in old_str.split(",")
+                   if t.strip().strip("*").strip() and t.strip() != "—"}
+            merged = sorted(old | set(new_tags))
+            if merged == sorted(old):
+                return text
+            lines[i] = f"**Теги:** {', '.join(merged)}"
+            out = "\n".join(lines)
+            return out + "\n" if text.endswith("\n") else out
+    return text
+
+
+def merge_into_article(article_path: Path, new_content: str, new_tags: list[str], ts: str) -> str:
+    """Merge new content into existing article, update tags and timestamp.
+    Возвращает 'merged' | 'duplicate'."""
     text = article_path.read_text(encoding="utf-8")
     # Защита в глубину: НИКОГДА не дописывать plaintext в секрет — это сняло бы
     # шифрование. В норме find_existing_article секреты не возвращает; это страховка
@@ -264,6 +327,15 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
         raise ValueError(
             f"merge_into_article: отказ дописывать в секретную статью {article_path.name}"
         )
+    # Дедуп (issue #2): save_lesson пишет запись сразу в статью И в daily-лог,
+    # а compile позже приносит из лога ту же запись — раньше она дописывалась
+    # второй раз и появлялось ложное «Обновлено» == «Дата». Повтор (тот же ts
+    # и тот же контент) не дописывается — только сливаются теги.
+    if is_duplicate_entry(text, new_content, ts):
+        merged = _merge_tags_only(text, new_tags)
+        if merged != text:
+            article_path.write_text(merged, encoding="utf-8")
+        return "duplicate"
     lines = text.splitlines()
 
     # Update tags — merge old and new
@@ -316,6 +388,71 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
         updated_text += f"\n\n### {ts}\n{new_content}\n"
 
     article_path.write_text(updated_text, encoding="utf-8")
+    return "merged"
+
+
+def dedupe_article_sections(text: str) -> tuple[str, int]:
+    """Ремедиация issue #2: удалить повторные секции '### <ts>' с тем же контентом
+    (их плодил compile, повторно мержа запись, уже созданную save_lesson).
+    Тело секции сравнивается нормализованно и без хвоста '## Git-ссылки' — save_lesson
+    дописывает git-ссылки ПОСЛЕ контента, а дубль попадает ПОСЛЕ git-ссылок.
+    Если после дедупа осталась одна запись и «Обновлено» == «Дата» — строка
+    «Обновлено» убирается (статью реально никто не обновлял).
+    Возвращает (текст, сколько секций удалено); при 0 текст возвращается как есть."""
+    lines = text.splitlines()
+    first = next((i for i, l in enumerate(lines) if l.startswith("### ")), None)
+    if first is None:
+        return text, 0
+
+    sections: list[tuple[str, list[str]]] = []
+    for line in lines[first:]:
+        if line.startswith("### "):
+            sections.append((line, []))
+        else:
+            sections[-1][1].append(line)
+
+    def _norm(body: list[str]) -> str:
+        s = "\n".join(body).split("## Git-ссылки")[0]
+        return "\n".join(l.rstrip() for l in s.splitlines() if l.strip())
+
+    seen: dict[str, str] = {}
+    kept: list[tuple[str, list[str]]] = []
+    removed = 0
+    for header, body in sections:
+        key = header.strip()
+        nb = _norm(body)
+        prev = seen.get(key)
+        # Дубль = тот же заголовок-ts и тот же контент, либо повтор — префикс первой
+        # копии (в первой могут быть дописанные хвосты: «## Осмысление» и т.п.).
+        # Обратное направление (повтор ДЛИННЕЕ первой) НЕ удаляем — в хвосте повтора
+        # могут быть поздние дописки, их терять нельзя.
+        if prev is not None and nb and (nb == prev or prev.startswith(nb)):
+            removed += 1
+            continue
+        if prev is None:
+            seen[key] = nb
+        kept.append((header, body))
+
+    if not removed:
+        return text, 0
+
+    out = lines[:first]
+    for header, body in kept:
+        out.append(header)
+        out.extend(body)
+
+    if len(kept) == 1:
+        date_val = next((l[len("**Дата:**"):].strip() for l in out
+                         if l.startswith("**Дата:**")), None)
+        upd_val = next((l[len("**Обновлено:**"):].strip() for l in out
+                        if l.startswith("**Обновлено:**")), None)
+        if date_val and upd_val == date_val:
+            out = [l for l in out if not l.startswith("**Обновлено:**")]
+
+    new_text = "\n".join(out)
+    if text.endswith("\n") and not new_text.endswith("\n"):
+        new_text += "\n"
+    return new_text, removed
 
 
 # ─── Index regeneration ──────────────────────────────────────────────────────

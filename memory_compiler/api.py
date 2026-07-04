@@ -25,6 +25,7 @@ from memory_compiler.search import (
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
+    make_preview,
 )
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
@@ -143,7 +144,7 @@ async def web_project(request: Request):
         text = a.read_text(encoding="utf-8")
         lines = text.splitlines()
         title = lines[0].lstrip("# ").strip() if lines else a.stem
-        preview = "\n".join(lines[:10])
+        preview = make_preview(text)
         items.append({"title": title, "project": project, "file": a.name, "preview": preview})
     return JSONResponse({"articles": items})
 
@@ -458,9 +459,10 @@ async def web_by_tag(request: Request):
             if md.name.startswith("_"):
                 continue
             if tag in _article_tags(md):
-                lines = md.read_text(encoding="utf-8").splitlines()
+                text = md.read_text(encoding="utf-8")
+                lines = text.splitlines()
                 title = lines[0].lstrip("# ").strip() if lines else md.stem
-                preview = "\n".join(lines[:10])
+                preview = make_preview(text)
                 items.append({"title": title, "project": proj, "file": md.name, "preview": preview})
     return JSONResponse({"articles": items, "tag": tag})
 

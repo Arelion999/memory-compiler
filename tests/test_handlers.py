@@ -1092,3 +1092,22 @@ async def test_finish_task_does_not_roll_back_tracking_version(knowledge_dir):
 
     assert load_tracking("testproj", "release")["current"]["version"] == "1.7.17", "release откатился"
     assert load_tracking("testproj", "deployment")["current"]["version"] == "1.7.17", "deployment откатился"
+
+
+def test_compile_after_save_lesson_does_not_duplicate(knowledge_dir):
+    """Issue #2 (репро из issue): save_lesson пишет и в статью, и в daily-лог;
+    последующий compile НЕ должен мержить ту же запись второй раз и не должен
+    ставить ложное «Обновлено»."""
+    from memory_compiler.handlers import compile as compile_tool
+    asyncio.run(save_lesson(
+        topic="тест дубля компиляции",
+        content="уникальный текст дубля",
+        project="general",
+    ))
+    asyncio.run(compile_tool(dry_run=False))
+    arts = [p for p in (knowledge_dir / "general").glob("*.md")
+            if not p.name.startswith("_")]
+    assert len(arts) == 1, [a.name for a in arts]
+    text = arts[0].read_text(encoding="utf-8")
+    assert text.count("уникальный текст дубля") == 1, "запись задвоена compile'ом"
+    assert "**Обновлено:**" not in text, "ложное «Обновлено» при дубле"

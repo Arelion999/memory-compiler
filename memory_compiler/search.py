@@ -78,6 +78,7 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, INDEX_DIR, PROJECTS, SCHEMA,
     decay_factor, atomic_write_bytes, is_secret_article,
 )
+from memory_compiler.storage import make_preview, article_body_lines
 import threading as _threading
 import hashlib as _hashlib
 
@@ -239,7 +240,9 @@ def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
 
 
 def _doc_text_for_embedding(text: str) -> str:
-    """Extract meaningful text for embedding (title + tags + first 500 chars of body)."""
+    """Extract meaningful text for embedding (title + tags + first 500 chars of body).
+    Тело — содержательные строки (article_body_lines): раньше lines[:30] включали
+    шапку-метаданные и пустые строки, съедавшие бюджет 500 символов (issue #1)."""
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else ""
     tags = ""
@@ -247,7 +250,7 @@ def _doc_text_for_embedding(text: str) -> str:
         if line.lower().startswith("**теги:**"):
             tags = line.split(":", 1)[1].strip()
             break
-    body_preview = " ".join(lines[:30])[:500]
+    body_preview = " ".join(article_body_lines(text, limit=40))[:500]
     return f"{title} {tags} {body_preview}"
 
 
@@ -285,7 +288,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
 
     # If no ### sections or only 1, return single chunk
     if len(sections) <= 1:
-        return [(path_key, f"{title} {tags} {' '.join(lines[:30])[:500]}")]
+        return [(path_key, f"{title} {tags} {' '.join(article_body_lines(text, limit=40))[:500]}")]
 
     # Multiple sections — create chunk per section, prepend title+tags for context
     chunks = []
@@ -585,7 +588,9 @@ def _parse_article(text: str, filename: str, project: str) -> dict:
         if line.lower().startswith("**теги:**"):
             tags = line.split(":", 1)[1].strip().replace(",", " ")
             break
-    preview = "\n".join(lines[:10])
+    # Preview — от ТЕЛА статьи, не от начала файла: шапка с «Обновлено» занимает
+    # 10 строк и вытесняла весь контент из выдачи search (issue #1).
+    preview = make_preview(text, n=10)
     return dict(title=title, tags=tags, body=text, preview=preview, project=project, path=f"{project}/{filename}")
 
 
@@ -777,8 +782,8 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
             fpath = KNOWLEDGE_DIR / path
             preview = ""
             if fpath.exists():
-                lines = fpath.read_text(encoding="utf-8").splitlines()[:20]
-                preview = "\n".join(lines)
+                raw = fpath.read_text(encoding="utf-8")
+                preview = make_preview(_index_safe_text(raw, fname), n=10)
             info = {"title": title, "project": proj, "file": fname, "preview": preview}
 
         # Apply temporal decay

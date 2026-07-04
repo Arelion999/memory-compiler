@@ -28,7 +28,8 @@ from memory_compiler.search import (
 import memory_compiler.search as _search
 from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
-    merge_into_article, regenerate_index, git_commit,
+    merge_into_article, is_duplicate_entry, make_preview,
+    regenerate_index, git_commit,
     update_active_context, detect_contradictions,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
@@ -367,6 +368,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
     total_entries = 0
     updated = 0
     created = 0
+    skipped = 0  # дубли: запись уже в статье (save_lesson пишет и в статью, и в лог)
     processed_logs = []
 
     for log in logs:
@@ -387,7 +389,10 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             existing = find_existing_article(entry["topic"], entry["content"], entry["project"])
 
             if dry_run:
-                if existing:
+                if existing and is_duplicate_entry(existing.read_text(encoding="utf-8"),
+                                                   entry["content"], entry["timestamp"] or ""):
+                    out.append(f"  ⏭ Уже в статье: «{entry['topic']}» → {existing.name}")
+                elif existing:
                     out.append(f"  \U0001f504 Мерж: \u00ab{entry['topic']}\u00bb \u2192 {existing.name}")
                 else:
                     slug = make_slug(entry['topic'])
@@ -395,7 +400,9 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             else:
                 ts = entry["timestamp"] or datetime.now().strftime("%Y-%m-%d %H:%M")
                 if existing:
-                    merge_into_article(existing, entry["content"], entry["tags"], ts)
+                    if merge_into_article(existing, entry["content"], entry["tags"], ts) == "duplicate":
+                        skipped += 1  # уже в статье (issue #2) — не дописываем и не переиндексируем
+                        continue
                     article_text = existing.read_text(encoding="utf-8")
                     index_document(article_text, existing.name, entry["project"])
                     embed_document(article_text, existing.name, entry["project"])
@@ -426,8 +433,8 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             log.rename(archive_dir / log.name)
 
         regenerate_index()
-        git_commit(f"compile: {total_entries} entries, {updated} updated, {created} created")
-        summary = f"\u2705 Скомпилировано: {total_entries} записей \u2014 {updated} обновлено, {created} создано, {len(processed_logs)} логов архивировано"
+        git_commit(f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
+        summary = f"\u2705 Скомпилировано: {total_entries} записей \u2014 {updated} обновлено, {created} создано, {len(processed_logs)} логов архивировано" + (f" (пропущено дублей: {skipped})" if skipped else "")
         return [TextContent(type="text", text=summary)]
 
 
@@ -936,7 +943,7 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
                     tags_str = line.split(":", 1)[1].strip()
                     article_tags = [t.strip().lower().strip("*").strip() for t in tags_str.split(",")]
                     if tag_lower in article_tags:
-                        preview = "\n".join(lines[:8])
+                        preview = make_preview(text)
                         results.append({"title": title, "project": proj, "file": md.name, "preview": preview})
                     break
     if not results:

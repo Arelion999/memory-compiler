@@ -559,3 +559,35 @@ def test_background_reindex_runs_and_guards(monkeypatch):
         time.sleep(0.05)
     assert s.reindex_running() is False
     assert calls["idx"] == 1 and calls["emb"] == 1
+
+
+# ─── Issue #1: preview/embedding-текст от тела, а не от шапки ────────────────
+
+_UPDATED_ARTICLE = (
+    "# Тестовая статья\n\n"
+    "**Дата:** 2026-07-01 10:00\n"
+    "**Обновлено:** 2026-07-02 11:00\n"
+    "**Проект:** testproj\n"
+    "**Теги:** docker, test\n\n"
+    "## Записи\n\n"
+    "### 2026-07-01 10:00\n"
+    "Первая строка тела.\n"
+)
+
+
+def test_parse_article_preview_shows_body_not_header():
+    """Issue #1: у статьи с «Обновлено» шапка = 10 строк, preview был без тела —
+    search/get_context/start_task отдавали «пустые» статьи, reranker скорил 0.00."""
+    from memory_compiler.search import _parse_article
+    doc = _parse_article(_UPDATED_ARTICLE, "a.md", "testproj")
+    assert "Первая строка тела." in doc["preview"]
+    assert "**Обновлено:**" not in doc["preview"]
+    assert doc["title"] == "Тестовая статья"
+
+
+def test_doc_text_for_embedding_content_without_header_meta():
+    from memory_compiler.search import _doc_text_for_embedding
+    t = _doc_text_for_embedding(_UPDATED_ARTICLE)
+    assert "Первая строка тела." in t
+    assert "docker, test" in t, "теги остаются в тексте эмбеддинга"
+    assert "**Проект:**" not in t, "метаданные шапки не должны съедать бюджет 500 символов"
