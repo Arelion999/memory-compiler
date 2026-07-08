@@ -1,6 +1,9 @@
 mcp[cli]>=1.0.0
 uvicorn>=0.30.0
-starlette>=0.40.0
+# Запинено на 1.0.0 (проверенная на NAS версия). Starlette 1.0 требует, чтобы
+# endpoint возвращал Response — handle_sse это делает (см. фикс -32602 v1.7.34).
+# Не откатывать без проверки: разные ветки Starlette по-разному завершают SSE.
+starlette==1.0.0
 whoosh>=2.7.4
 sentence-transformers>=2.2.0
 numpy>=1.24.0
