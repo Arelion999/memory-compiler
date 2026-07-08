@@ -11,7 +11,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route, Mount
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
@@ -581,6 +581,13 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             await mcp_server.run(
                 streams[0], streams[1], mcp_server.create_initialization_options()
             )
+        # Starlette 1.0+ вызывает `await response(...)` на возврате endpoint'а.
+        # Если вернуть None (как раньше) — TypeError: 'NoneType' object is not
+        # callable при КАЖДОМ завершении SSE-стрима. Это рвало сессию, клиент
+        # переподключался, и tool-call в окне переподключения падал с
+        # "-32602 Invalid request parameters". Пустой Response() — официальный
+        # фикс из docstring mcp/server/sse.py.
+        return Response()
 
     async def auto_compile_loop():
         """Run compile daily at 2 AM."""
