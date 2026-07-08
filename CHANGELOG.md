@@ -2,6 +2,14 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.7.34 — 2026-07-08
+
+Устранена частая ошибка транспорта `-32602`, из-за которой MCP регулярно «переподключался».
+
+### Fixed
+
+- **`handle_sse` теперь возвращает `Response()` — конец SSE-стрима больше не падает.** Клиенты часто ловили `MCP error -32602: Invalid request parameters` (особенно на `edit_article`/`finish_task` в конце задачи). Причина — не валидация параметров: `handle_sse` (api.py) ничего не возвращал (`None`), а в связке `starlette==1.0.0` + `mcp==1.27.0` Starlette в конце запроса делает `await response(...)` → `TypeError: 'NoneType' object is not callable` при **каждом** завершении `/sse`-стрима. Стрим рвался аварийно, клиент считал сессию битой и переподключался; tool-call, попавший в окно переподключения, возвращался с `-32602`. В логах NAS накопилось 327 таких `TypeError`. Фикс — вернуть пустой `Response()` после `connect_sse` (официальная рекомендация из docstring `mcp/server/sse.py`; `connect_sse` внутри использует `sse_starlette.EventSourceResponse`, поэтому пустой `Response()` безопасен). Проверено на NAS: после рестарта 6 циклов `GET /sse` — 0 ошибок (раньше ~1:1).
+
 ## v1.7.30 — 2026-07-03
 
 Надёжность базы после полного аудита (шифрование/индекс — чисто; выявлены и закрыты дубли + тихо сломанная семантика).
