@@ -52,6 +52,29 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .msg{padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:0.9em}
 .msg.ok{background:#1a3a1a;color:#3fb950;border:1px solid var(--green)}
 .msg.err{background:#3a1a1a;color:#f85149;border:1px solid var(--red)}
+/* Отрендеренный Markdown (серверный HTML) */
+.card .body.rendered{white-space:normal;word-break:normal}
+.card .body.rendered p{margin:6px 0}
+.card .body.rendered h1,.card .body.rendered h2,.card .body.rendered h3,.card .body.rendered h4,.card .body.rendered h5,.card .body.rendered h6{color:var(--accent);margin:10px 0 4px;line-height:1.3}
+.card .body.rendered h1{font-size:1.25em}
+.card .body.rendered h2{font-size:1.15em}
+.card .body.rendered h3{font-size:1.05em}
+.card .body.rendered h4,.card .body.rendered h5,.card .body.rendered h6{font-size:1em}
+.card .body.rendered ul,.card .body.rendered ol{margin:6px 0 6px 22px}
+.card .body.rendered li{margin:2px 0}
+.card .body.rendered blockquote{border-left:3px solid var(--border);margin:8px 0;padding:2px 10px;color:var(--text2)}
+.card .body.rendered code{background:var(--bg3);padding:1px 4px;border-radius:3px;font-size:0.9em;font-family:ui-monospace,monospace}
+.card .body.rendered pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;overflow-x:auto;margin:8px 0;white-space:pre;line-height:1.4}
+.card .body.rendered pre code{background:none;padding:0;white-space:pre;display:block}
+.card .body.rendered a{color:var(--accent);text-decoration:none}
+.card .body.rendered a:hover{text-decoration:underline}
+.card .body.rendered hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+.card .body.rendered img{max-width:100%}
+.card .body.rendered del,.card .body.rendered s{opacity:0.6}
+.card .body.rendered table{border-collapse:collapse;margin:8px 0;font-size:0.9em;display:block;overflow-x:auto}
+.card .body.rendered th,.card .body.rendered td{border:1px solid var(--border);padding:4px 8px;text-align:left}
+.card .body.rendered th{background:var(--bg3)}
+/*PYGMENTS_CSS*/
 </style>
 </head>
 <body>
@@ -161,6 +184,34 @@ function highlight(s){
   return out;
 }
 
+// Подсветка слов запроса по ТЕКСТОВЫМ узлам готового HTML (не ломает теги/атрибуты).
+function highlightDom(root){
+  if(!lastQueryWords.length)return;
+  const parts=lastQueryWords.map(escRegex).filter(Boolean);
+  if(!parts.length)return;
+  let re;try{re=new RegExp("("+parts.join("|")+")","gi");}catch(e){return;}
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null);
+  const targets=[];let n;
+  while(n=walker.nextNode()){
+    const pn=n.parentNode?n.parentNode.nodeName:"";
+    if(pn==="CODE"||pn==="PRE"||pn==="MARK")continue;   // не трогаем код и уже подсвеченное
+    re.lastIndex=0;
+    if(re.test(n.nodeValue))targets.push(n);
+  }
+  for(const t of targets){
+    const s=t.nodeValue,frag=document.createDocumentFragment();
+    let last=0,m;re.lastIndex=0;
+    while(m=re.exec(s)){
+      if(m.index>last)frag.appendChild(document.createTextNode(s.slice(last,m.index)));
+      const mk=document.createElement("mark");mk.textContent=m[0];frag.appendChild(mk);
+      last=m.index+m[0].length;
+      if(re.lastIndex===m.index)re.lastIndex++;   // защита от зацикливания
+    }
+    if(last<s.length)frag.appendChild(document.createTextNode(s.slice(last)));
+    t.parentNode.replaceChild(frag,t);
+  }
+}
+
 async function loadProject(p){
   current=p;activeTag=null;renderProjects();loadTags();$("q").value="";
   const r=await fetch("/api/projects/"+p);
@@ -178,7 +229,14 @@ async function expandCard(proj,file,el){
   snippets.forEach(s=>s.remove());
   let bodyEl=card.querySelector(".body");
   if(!bodyEl){bodyEl=document.createElement("div");bodyEl.className="body";card.querySelector(".meta").after(bodyEl);}
-  bodyEl.innerHTML=highlight(md2html(d.content||"Ошибка загрузки"));
+  if(d.content_html!==undefined){
+    bodyEl.className="body rendered";
+    bodyEl.innerHTML=d.content_html||"";
+    highlightDom(bodyEl);
+  }else{
+    bodyEl.className="body";
+    bodyEl.innerHTML=highlight(md2html(d.content||"Ошибка загрузки"));
+  }
   card.classList.add("expanded");
   el.textContent="Свернуть";
   // Scroll to first match

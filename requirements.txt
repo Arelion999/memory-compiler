@@ -5,6 +5,9 @@ uvicorn>=0.30.0
 # Не откатывать без проверки: разные ветки Starlette по-разному завершают SSE.
 starlette==1.0.0
 whoosh>=2.7.4
+markdown-it-py>=3.0.0
+pygments>=2.17.0
+nh3>=0.2.17
 sentence-transformers>=2.2.0
 numpy>=1.24.0
 cryptography>=42.0.0

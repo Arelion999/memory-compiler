@@ -2,6 +2,19 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.8.0 — 2026-07-09
+
+Полноценный рендеринг Markdown в веб-просмотре статей (раньше разметка показывалась «сырой»).
+
+### Added
+
+- **Серверный рендеринг Markdown статей (CommonMark + GFM).** Веб-UI рендерил лишь `**жирный**` и инлайн-код наивным JS `md2html`; заголовки, тройные backtick, списки, цитаты, ссылки, таблицы и `---` показывались дословно. Добавлен модуль `markdown_render.py`: `render_markdown()` на **markdown-it-py** (CommonMark + включённые `table`/`strikethrough`), подсветка синтаксиса через **Pygments** (highlight-callback, две темы: `native` для тёмной и `friendly` под `[data-theme=light]`), санитайзинг через **nh3**. `web_article` теперь отдаёт поле `content_html`, `web_index` подставляет CSS Pygments вместо плейсхолдера. В UI код разворачивается в `.body.rendered`, а подсветка слов запроса переехала на `highlightDom()` (обход текстовых узлов через `TreeWalker` — не ломает теги, пропускает код).
+- **Защита от XSS в теле статьи — два рубежа.** (1) markdown-it с `html=False`: любой сырой HTML во вводе экранируется, а `validateLink` режет `javascript:`/`vbscript:`/`data:` в ссылках и картинках; (2) `nh3.clean` по строгому allowlist тегов/атрибутов, `url_schemes={http,https,mailto}`, `link_rel="noopener noreferrer nofollow"`. HTML-инъекции из текста статьи не исполняются.
+
+### Deploy
+
+- **Нужна пересборка образа** (`python deploy_image.py`), а не только `restart`: добавлены Python-зависимости `markdown-it-py`, `pygments`, `nh3`.
+
 ## v1.7.34 — 2026-07-08
 
 Устранена частая ошибка транспорта `-32602`, из-за которой MCP регулярно «переподключался».

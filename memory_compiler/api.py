@@ -29,6 +29,7 @@ from memory_compiler.storage import (
 )
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
+from memory_compiler.markdown_render import render_markdown, pygments_css
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -88,7 +89,8 @@ def _safe_proj_path(project: str):
 
 
 async def web_index(request: Request):
-    return HTMLResponse(WEB_HTML)
+    # CSS подсветки Pygments генерится на сервере и вставляется в шаблон
+    return HTMLResponse(WEB_HTML.replace("/*PYGMENTS_CSS*/", pygments_css()))
 
 
 async def web_search(request: Request):
@@ -162,7 +164,10 @@ async def web_article(request: Request):
     text = _maybe_decrypt_secret_lines(fpath.read_text(encoding="utf-8"))
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename
-    return JSONResponse({"title": title, "project": project, "file": filename, "content": text})
+    return JSONResponse({
+        "title": title, "project": project, "file": filename,
+        "content": text, "content_html": render_markdown(text),
+    })
 
 
 async def web_save(request: Request):

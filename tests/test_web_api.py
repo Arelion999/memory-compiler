@@ -8,7 +8,7 @@
 import asyncio
 import json
 
-from memory_compiler.api import web_tags, web_by_tag, web_search
+from memory_compiler.api import web_tags, web_by_tag, web_search, web_article
 
 
 class FakeRequest:
@@ -34,6 +34,23 @@ def _write(kd, project, name, tags, title="T"):
         "## Записи\nтело статьи\n",
         encoding="utf-8",
     )
+
+
+def test_web_article_returns_rendered_html(knowledge_dir):
+    """web_article отдаёт и сырой content, и отрендеренный безопасный content_html."""
+    _write(knowledge_dir, "testproj", "md.md", "test")
+    (knowledge_dir / "testproj" / "md.md").write_text(
+        "# Заголовок\n\n## Подзаголовок\n\n**жирный**\n\n```powershell\nGet-Process\n```\n",
+        encoding="utf-8",
+    )
+    data = _json(asyncio.run(web_article(FakeRequest(path={"project": "testproj", "filename": "md.md"}))))
+    assert "content" in data and "content_html" in data
+    html = data["content_html"]
+    assert "<h1>Заголовок</h1>" in html
+    assert "<h2>Подзаголовок</h2>" in html
+    assert "<strong>жирный</strong>" in html
+    assert "<pre>" in html and "language-powershell" in html
+    assert "```" not in html and "##" not in html  # разметка не «сырая»
 
 
 def test_by_tag_returns_every_article_with_that_tag(knowledge_dir):
