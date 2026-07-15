@@ -591,3 +591,40 @@ def test_doc_text_for_embedding_content_without_header_meta():
     assert "Первая строка тела." in t
     assert "docker, test" in t, "теги остаются в тексте эмбеддинга"
     assert "**Проект:**" not in t, "метаданные шапки не должны съедать бюджет 500 символов"
+
+
+# ─── Недеструктивный rebuild_index (build без create_in, атомарный commit) ────
+
+def test_rebuild_index_idempotent(knowledge_dir):
+    """Повторный rebuild_index не дублирует документы (update_document по unique path)."""
+    import memory_compiler.search as sm
+    n1 = sm.rebuild_index()
+    n2 = sm.rebuild_index()
+    assert n1 == n2
+    assert sm.get_index().doc_count() == n1
+
+
+def test_rebuild_index_removes_stale(knowledge_dir):
+    """rebuild_index убирает из индекса документ, чей файл исчез с диска."""
+    import memory_compiler.search as sm
+    proj = knowledge_dir / "testproj"
+    (proj / "temp_stale.md").write_text("# Stale\n\nтело stale", encoding="utf-8")
+    sm.rebuild_index()
+    n_with = sm.get_index().doc_count()
+    (proj / "temp_stale.md").unlink()
+    sm.rebuild_index()
+    assert sm.get_index().doc_count() == n_with - 1
+
+
+def test_rebuild_index_nondestructive_count_stable(knowledge_dir):
+    """Изменение существующего файла + повторный rebuild: doc_count тот же (обновление
+    на месте, индекс не пересобирается с нуля и не проходит через пустое состояние)."""
+    import memory_compiler.search as sm
+    sm.rebuild_index()
+    before = sm.get_index().doc_count()
+    assert before >= 1
+    art = knowledge_dir / "testproj" / "test_article.md"
+    art.write_text(art.read_text(encoding="utf-8") + "\n\nдобавка", encoding="utf-8")
+    after = sm.rebuild_index()
+    assert after == before
+    assert sm.get_index().doc_count() == before

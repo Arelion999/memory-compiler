@@ -144,18 +144,19 @@ def test_startup_prepare_index_cold_build(knowledge_dir):
     assert count >= 1  # в knowledge_dir есть test_article.md
 
 
-def test_startup_prepare_index_warm_open_no_rebuild(knowledge_dir, monkeypatch):
-    """Индекс уже на диске → открывает его и отдаёт тот же doc_count БЕЗ пересборки
-    (rebuild_index через create_in опустошал бы живой индекс — blackout-окно)."""
+def test_startup_prepare_index_warm_open(knowledge_dir, monkeypatch):
+    """Индекс на диске → открывает его, отдаёт doc_count и планирует НЕДЕСТРУКТИВНОЕ
+    фоновое обновление (rebuild_index теперь без blackout), без синхронной пересборки
+    на event-пути старта."""
     import memory_compiler.search as sm
     n1 = sm.rebuild_index()
     monkeypatch.setattr(sm, "_ix", None)  # заставить открыть с диска, а не из памяти
-    called = {"rebuild": False}
-    monkeypatch.setattr(sm, "rebuild_index",
-                        lambda: called.__setitem__("rebuild", True) or 999)
+    called = {"bg": False}
+    monkeypatch.setattr(sm, "start_background_index_refresh",
+                        lambda: called.__setitem__("bg", True) or True)
     n2 = sm.startup_prepare_index()
-    assert n2 == n1                    # реальный doc_count из открытого индекса
-    assert called["rebuild"] is False  # НЕ пересобирал — без blackout-окна
+    assert n2 == n1                 # реальный doc_count из открытого индекса
+    assert called["bg"] is True     # запланировано фоновое (недеструктивное) обновление
 
 
 def test_search_candidate_pool_default():

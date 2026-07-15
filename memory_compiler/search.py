@@ -648,64 +648,104 @@ def start_background_reindex() -> bool:
 
 
 def rebuild_index():
-    """Full reindex of all knowledge files."""
-    global _ix, _shared_paths
+    """Полная переиндексация всех knowledge-файлов — НЕДЕСТРУКТИВНО.
+
+    Раньше делала create_in (пересоздавала ПУСТОЙ индекс) → на всё время наполнения
+    индекс был пуст (blackout: поиск возвращал ничего), и прерывание оставляло пустой
+    индекс. Теперь обновляет существующий индекс через update_document (add/replace по
+    unique path) и удаляет устаревшие документы (были в индексе, но исчезли с диска).
+    Изменения буферизуются writer'ом и коммитятся АТОМАРНО — читатели видят прежнюю
+    полную версию индекса до commit, затем новую полную; пустого окна нет. Кросс-
+    платформенно (без переименования каталогов, которое ломается на Windows при
+    открытых файлах индекса).
+
+    Схема считается стабильной: при изменении SCHEMA нужен холодный пересбор (удалить
+    каталог индекса → get_index соберёт заново на старте)."""
+    global _shared_paths
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    # Под локом: пересоздание индекса + writer не пересекаются с index_document
-    # (event loop) — два writer'а на одном каталоге дают Whoosh LockError, который
-    # рушил весь save_lesson (статья на диске, в индексе нет — рассинхрон).
+    ix = get_index()  # существующий с диска или пустой (create_in на холодном старте)
+    # Под локом: writer не пересекается с index_document/фоновым rebuild (event loop) —
+    # два writer'а на одном каталоге дают Whoosh LockError, рушивший save_lesson.
     with _index_lock:
-        _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
-        writer = _ix.writer()
+        # Текущие path в индексе — чтобы вычислить устаревшие (снапшот до записи).
+        with ix.reader() as reader:
+            old_paths = {sf.get("path") for sf in reader.all_stored_fields()}
+        old_paths.discard(None)
+
+        writer = ix.writer()
         new_shared: set[str] = set()
+        seen: set[str] = set()
         count = 0
-        for proj in PROJECTS:
-            p = KNOWLEDGE_DIR / proj
-            if not p.exists():
-                continue
-            for md in p.glob("*.md"):
+
+        def _index_dir(proj_name: str, dir_path):
+            nonlocal count
+            for md in dir_path.glob("*.md"):
+                # _index_safe_text: секрет (маркер '**Секрет:** да') не становится
+                # searchable — тело маскируется плейсхолдером (симметрично для daily).
                 text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
-                fields = _parse_article(text, md.name, proj)
-                writer.add_document(**fields)
+                fields = _parse_article(text, md.name, proj_name)
+                writer.update_document(**fields)  # add или replace по unique path
+                seen.add(fields["path"])
                 if _tags_are_shared(fields["tags"]):
                     new_shared.add(fields["path"])
                 count += 1
-        # Also index daily logs — через _index_safe_text: если в daily попал секрет
-        # (маркер '**Секрет:** да'), тело не должно стать searchable (симметрично
-        # per-project циклу — это была единственная точка индексации без маскировки).
+
+        for proj in PROJECTS:
+            p = KNOWLEDGE_DIR / proj
+            if p.exists():
+                _index_dir(proj, p)
         daily = KNOWLEDGE_DIR / "daily"
         if daily.exists():
-            for md in daily.glob("*.md"):
-                text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
-                fields = _parse_article(text, md.name, "daily")
-                writer.add_document(**fields)
-                count += 1
+            _index_dir("daily", daily)
+
+        # Удалить документы, исчезнувшие с диска (были в индексе, но не встречены).
+        for stale in old_paths - seen:
+            writer.delete_by_term("path", stale)
+
         writer.commit()
         _shared_paths = new_shared  # атомарный своп под локом
     return count
 
 
+def start_background_index_refresh() -> bool:
+    """Фоновое НЕДЕСТРУКТИВНОЕ обновление Whoosh-индекса (rebuild_index через
+    update_document — без blackout). Для старта: открытый с диска индекс мог устареть,
+    если knowledge правили в обход index_document (bulk-edit на NAS, git pull). Не
+    блокирует старт. Возвращает False, если полный reindex уже идёт."""
+    if not _reindex_lock.acquire(blocking=False):
+        return False
+    _reindex_running["v"] = True
+
+    def _run():
+        try:
+            rebuild_index()
+        finally:
+            _reindex_running["v"] = False
+            _reindex_lock.release()
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def startup_prepare_index() -> int:
-    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро, БЕЗ
-    пересборки); иначе собрать синхронно (холодный первый старт). Возвращает число
-    документов.
+    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро) и
+    догнать внешние правки НЕДЕСТРУКТИВНЫМ фоновым rebuild_index (без blackout); иначе
+    собрать синхронно (холодный первый старт). Возвращает число документов.
 
-    Раньше на КАЖДОМ старте шёл полный синхронный rebuild_index (create_in по всей
-    базе) прямо в lifespan — блокировал готовность сервера и /api/health до конца
-    реиндекса; при росте базы рисковал упереться в healthcheck-таймаут Docker.
-
-    Внешние правки knowledge в обход index_document (bulk-edit на NAS, git pull)
-    подхватываются ЯВНЫМ reindex, а НЕ автоматической фоновой пересборкой на старте:
-    rebuild_index через create_in на короткое время опустошает живой индекс (окно, когда
-    поиск возвращает пусто) — на каждом рестарте это неприемлемо. Открытый с диска индекс
-    консистентен с состоянием на момент остановки (index_document держит его актуальным
-    в рантайме)."""
+    Раньше на КАЖДОМ старте шёл полный синхронный rebuild_index прямо в lifespan —
+    блокировал готовность сервера и /api/health; при росте базы рисковал упереться в
+    healthcheck-таймаут Docker. В v1.9.0-1 фоновое обновление на старте отключалось,
+    т.к. старый rebuild_index через create_in опустошал живой индекс (blackout-окно).
+    Теперь rebuild_index недеструктивен — фоновое обновление безопасно и вернулось:
+    подхватывает внешние правки knowledge (bulk-edit на NAS, git pull) без blackout."""
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     if whoosh_index.exists_in(str(INDEX_DIR)):
         try:
-            ix = get_index()  # open_dir существующего индекса, без rebuild
+            ix = get_index()  # open_dir существующего индекса
             with ix.searcher() as s:
-                return s.doc_count()
+                count = s.doc_count()
+            start_background_index_refresh()  # недеструктивно — без blackout
+            return count
         except Exception:
             pass  # индекс битый/неоткрываемый — пересобираем синхронно ниже
     return rebuild_index()
