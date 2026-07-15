@@ -616,6 +616,54 @@ def test_rebuild_index_removes_stale(knowledge_dir):
     assert sm.get_index().doc_count() == n_with - 1
 
 
+def test_semantic_search_vectorized_matches_reference(knowledge_dir, monkeypatch):
+    """Векторизованный semantic_search даёт ТОТ ЖЕ результат (родители, порядок, скоры),
+    что и эталонный Python-цикл np.dot по словарю. Эмбеддинги нормализованы → dot=cosine."""
+    import numpy as np
+    import memory_compiler.search as sm
+
+    rng = np.random.RandomState(42)
+    def unit(n):
+        v = rng.randn(n).astype(np.float32)
+        return v / np.linalg.norm(v)
+
+    emb = {}
+    for i in range(25):
+        emb[f"proj/a{i}.md"] = unit(16)
+        if i % 3 == 0:  # часть статей с чанками — проверяем дедуп по родителю
+            emb[f"proj/a{i}.md#c1"] = unit(16)
+            emb[f"proj/a{i}.md#c2"] = unit(16)
+    monkeypatch.setattr(sm, "_embeddings", emb)
+
+    q = unit(16)
+    monkeypatch.setattr(sm, "encode_query", lambda text: q)
+
+    # эталон — прежняя реализация
+    def reference():
+        raw = [(p, float(np.dot(q, vec))) for p, vec in emb.items()]
+        seen = {}
+        for p, s in raw:
+            par = p.split("#")[0]
+            if par not in seen or s > seen[par]:
+                seen[par] = s
+        return sorted(seen.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    ref = reference()
+    got = sm.semantic_search("q", limit=10)
+
+    assert [p for p, _ in got] == [p for p, _ in ref], "порядок/родители разошлись"
+    for (p1, s1), (p2, s2) in zip(got, ref):
+        assert p1 == p2
+        assert abs(s1 - s2) < 1e-5, f"скор разошёлся для {p1}: {s1} vs {s2}"
+
+
+def test_semantic_search_empty(monkeypatch):
+    """Пустые эмбеддинги → пустой результат, без падения."""
+    import memory_compiler.search as sm
+    monkeypatch.setattr(sm, "_embeddings", {})
+    assert sm.semantic_search("q") == []
+
+
 def test_rebuild_index_nondestructive_count_stable(knowledge_dir):
     """Изменение существующего файла + повторный rebuild: doc_count тот же (обновление
     на месте, индекс не пересобирается с нуля и не проходит через пустое состояние)."""

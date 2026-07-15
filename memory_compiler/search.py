@@ -527,20 +527,25 @@ def embed_document(text: str, filename: str, project: str):
 
 
 def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
-    """Search by semantic similarity. Returns [(path, score), ...]. Deduplicates chunks to parent articles."""
-    snapshot = snapshot_embeddings()  # копия под локом — безопасна от конкурентной мутации
-    if not snapshot:
-        return []
-    q_vec = encode_query(query)
-    raw_scores = []
-    for path, vec in snapshot.items():
-        sim = float(np.dot(q_vec, vec))
-        raw_scores.append((path, sim))
-    raw_scores.sort(key=lambda x: x[1], reverse=True)
+    """Search by semantic similarity. Returns [(path, score), ...]. Deduplicates chunks to parent articles.
+
+    Векторизовано: вместо Python-цикла np.dot по каждому вектору (+ отдельная копия
+    словаря) — один проход под локом собирает матрицу (N×d), затем одно BLAS-умножение
+    M @ q. На больших базах (тысячи чанков) это 10-50× быстрее Python-цикла. Эмбеддинги
+    нормализованы (encode(normalize_embeddings=True)), поэтому dot = косинус — результат
+    идентичен прежней реализации (дедуп берёт max по родителю независимо от порядка)."""
+    with _index_lock:  # консистентный снимок за один проход (дешевле dict-копии + цикла)
+        if not _embeddings:
+            return []
+        keys = list(_embeddings.keys())
+        matrix = np.stack([_embeddings[k] for k in keys])  # (N, d)
+    q_vec = encode_query(query)  # вне лока: инференс модели медленный, матрица уже снята
+    sims = matrix @ q_vec  # (N,) — одно матрично-векторное умножение вместо N np.dot
     # Deduplicate: keep best score per parent article (strip #chunkN)
-    seen = {}
-    for path, sim in raw_scores:
-        parent = path.split("#")[0]
+    seen: dict[str, float] = {}
+    for key, sim in zip(keys, sims):
+        parent = key.split("#")[0]
+        sim = float(sim)
         if parent not in seen or sim > seen[parent]:
             seen[parent] = sim
     results = sorted(seen.items(), key=lambda x: x[1], reverse=True)
