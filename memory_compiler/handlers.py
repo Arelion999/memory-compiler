@@ -824,7 +824,7 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     _search.remove_embedding(key)
     article_meta.pop(key, None)
     save_article_meta()
-    rebuild_index()
+    _search.delete_document(key)  # точечно, вместо полного rebuild_index (вешал event loop)
     regenerate_index()
     git_commit(f"delete: {filename} [{project}]")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
@@ -1832,7 +1832,7 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     shutil.rmtree(str(proj_path))
     save_article_meta()
     _cfg.PROJECTS[:] = _discover_projects()
-    rebuild_index()
+    _search.delete_project_documents(name)  # точечно, вместо полного rebuild_index
     regenerate_index()
     git_commit(f"remove project: {name} ({len(articles)} articles)")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Проект '{name}' удалён ({len(articles)} статей). Осталось проектов: {len(_cfg.PROJECTS)}")]

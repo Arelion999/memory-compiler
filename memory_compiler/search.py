@@ -728,6 +728,31 @@ def index_document(text: str, filename: str, project: str):
             _shared_paths.discard(fields["path"])
 
 
+def delete_document(path_key: str) -> None:
+    """Точечно удалить ОДИН документ из Whoosh по path (unique ID). Недеструктивно:
+    не пересобирает индекс через create_in — нет blackout-окна и не блокирует event
+    loop на минуты, как полный rebuild_index (была причина зависания delete_article)."""
+    ix = get_index()
+    with _index_lock:  # сериализуем writer с фоновым rebuild_index (иначе Whoosh LockError)
+        writer = ix.writer()
+        writer.delete_by_term("path", path_key)
+        writer.commit()
+        _shared_paths.discard(path_key)  # под локом — как index_document (своп rebuild)
+
+
+def delete_project_documents(project: str) -> int:
+    """Удалить ВСЕ документы проекта из Whoosh по полю project. Недеструктивно —
+    для remove_project вместо полного rebuild_index. Возвращает число удалённых."""
+    ix = get_index()
+    prefix = f"{project}/"
+    with _index_lock:
+        writer = ix.writer()
+        n = writer.delete_by_term("project", project)
+        writer.commit()
+        _shared_paths.difference_update({p for p in list(_shared_paths) if p.startswith(prefix)})
+    return n
+
+
 def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list[dict]:
     """Hybrid search: BM25F keyword + semantic similarity."""
     ix = get_index()

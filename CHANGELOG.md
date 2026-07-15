@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.9.2 — 2026-07-15
+
+### Fixed
+
+- **`delete_article` / `remove_project` больше не вешают сервер.** Оба звали полный синхронный `rebuild_index()` (create_in по всей базе) прямо на event loop — удаление одной статьи блокировало сервер и `/api/health` на всё время реиндекса (на ~1500 док. — секунды-минуты) и на это время опустошало индекс. Заменено на точечное недеструктивное удаление: `delete_document` (`writer.delete_by_term("path", key)`) и `delete_project_documents` (`delete_by_term("project", name)`) в `search.py`. Индекс теряет ровно нужные документы, не пересобирается, event loop не блокируется, blackout-окна нет. `path=ID(unique=True)` в схеме гарантирует точное совпадение.
+
 ## v1.9.1 — 2026-07-15
 
 Хотфикс к v1.9.0.

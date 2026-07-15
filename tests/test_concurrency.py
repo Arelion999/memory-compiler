@@ -138,6 +138,44 @@ def test_delete_article_persists_pkl(knowledge_dir):
     assert "testproj/todel2.md" not in data["embeddings"], "фантом в pkl после удаления"
 
 
+def test_delete_article_nondestructive_index(knowledge_dir):
+    """delete_article удаляет ТОЛЬКО свою статью из Whoosh (точечно delete_by_term),
+    не пересобирая весь индекс. Раньше полный rebuild_index через create_in вешал
+    event loop на минуты и на время пересборки опустошал индекс (blackout)."""
+    import memory_compiler.search as sm
+    from memory_compiler.handlers import delete_article
+    proj = knowledge_dir / "testproj"
+    (proj / "keep.md").write_text("# Keep\n\nтело keep", encoding="utf-8")
+    (proj / "drop.md").write_text("# Drop\n\nтело drop", encoding="utf-8")
+    sm.rebuild_index()
+    before = sm.get_index().doc_count()
+    assert before >= 2
+    asyncio.run(delete_article("testproj", "drop.md"))
+    after = sm.get_index().doc_count()
+    assert after == before - 1, "ожидалось -1 документ (точечно), индекс не опустошён"
+
+
+def test_remove_project_nondestructive_index(knowledge_dir):
+    """remove_project удаляет документы своего проекта из Whoosh, остальные на месте."""
+    import memory_compiler.search as sm
+    import memory_compiler.config as cfg
+    from memory_compiler.handlers import remove_project
+    p = knowledge_dir / "delproj2"
+    p.mkdir()
+    (p / "x.md").write_text("# X\n\nтело x", encoding="utf-8")
+    (p / "y.md").write_text("# Y\n\nтело y", encoding="utf-8")
+    cfg.PROJECTS = cfg._discover_projects()
+    sm.rebuild_index()
+    # индексируем документы проекта явно (rebuild_index в тесте не видит новый проект
+    # из-за отдельной привязки PROJECTS; в проде он обнаруживается на старте)
+    sm.index_document("# X\n\nтело x", "x.md", "delproj2")
+    sm.index_document("# Y\n\nтело y", "y.md", "delproj2")
+    before = sm.get_index().doc_count()
+    asyncio.run(remove_project("delproj2", confirm=True))
+    after = sm.get_index().doc_count()
+    assert after == before - 2, "должны уйти оба документа проекта, остальные остаться"
+
+
 # ─── #3 конкурентность embed/search ──────────────────────────────────────────
 
 def test_concurrent_embed_and_search_no_crash(knowledge_dir, monkeypatch):
