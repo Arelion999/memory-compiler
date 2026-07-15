@@ -239,6 +239,11 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
 # По истечении бюджета отдаём результат БЕЗ rerank (мягкая деградация: hybrid-порядок
 # хуже reranked, но это лучше пустой ошибки). Настраивается env SEARCH_RERANK_BUDGET_S.
 SEARCH_RERANK_BUDGET_S = float(os.environ.get("SEARCH_RERANK_BUDGET_S", "20"))
+# Размер пула кандидатов под reranker. Было 20, но bge-reranker-v2-m3 на слабом CPU
+# (NAS J4125) реранкает ВСЕ кандидаты одним predict — 20 пар часто не укладывались в
+# бюджет SEARCH_RERANK_BUDGET_S и rerank отваливался (мягкая деградация без reranker).
+# 10 даёт ~2x меньше forward-pass'ей при небольшой потере recall. Тюнится env.
+SEARCH_CANDIDATE_POOL = int(os.environ.get("SEARCH_CANDIDATE_POOL", "10"))
 
 
 async def _whoosh_async(query: str, project: str = "all", limit: int = 10) -> list[dict]:
@@ -265,14 +270,14 @@ async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dic
 async def search(query: str, project: str = "all") -> list[TextContent]:
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
     # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
-    results = await _whoosh_async(query, project=project, limit=20)
+    results = await _whoosh_async(query, project=project, limit=SEARCH_CANDIDATE_POOL)
 
     # Авто-фолбэк на project=all: узкий скоуп часто промахивается по общей сущности,
     # физически лежащей в другом проекте (напр. канал уведомлений / общий креденшл).
     # Вместо «Ничего не найдено» переспрашиваем по всем проектам и помечаем выдачу.
     fallback_all = False
     if not results and project != "all":
-        results = await _whoosh_async(query, project="all", limit=20)
+        results = await _whoosh_async(query, project="all", limit=SEARCH_CANDIDATE_POOL)
         fallback_all = bool(results)
 
     if not results:

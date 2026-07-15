@@ -219,8 +219,10 @@ def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
     if not candidates or len(candidates) <= 1:
         return candidates[:top_k]
 
+    from memory_compiler import obs
     model = get_reranker_model()
     if model is None:
+        obs.set_semantic_degraded(True)  # reranker недоступен → деградация до hybrid-порядка
         return candidates[:top_k]  # graceful: no reranker, keep original order
 
     pairs = []
@@ -233,9 +235,11 @@ def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
         scores = model.predict(pairs, show_progress_bar=False)
         for c, s in zip(candidates, scores):
             c["rerank_score"] = float(s)
+        obs.set_semantic_degraded(False)  # reranker жив
         return sorted(candidates, key=lambda c: c.get("rerank_score", 0), reverse=True)[:top_k]
     except Exception as e:
         print(f"Rerank failed: {e}")
+        obs.set_semantic_degraded(True)
         return candidates[:top_k]
 
 
@@ -679,6 +683,48 @@ def rebuild_index():
         writer.commit()
         _shared_paths = new_shared  # атомарный своп под локом
     return count
+
+
+def start_background_index_refresh() -> bool:
+    """Фоновое обновление ТОЛЬКО Whoosh-индекса (без эмбеддингов). Для старта:
+    открытый с диска индекс может быть устаревшим, если knowledge правили в обход
+    index_document (bulk-edit на NAS, git pull). Не блокирует старт. Возвращает
+    False, если полный reindex уже идёт."""
+    if not _reindex_lock.acquire(blocking=False):
+        return False
+    _reindex_running["v"] = True
+
+    def _run():
+        try:
+            rebuild_index()
+        finally:
+            _reindex_running["v"] = False
+            _reindex_lock.release()
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def startup_prepare_index() -> int:
+    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро) и
+    догнать возможные внешние правки в фоне; иначе собрать синхронно (холодный первый
+    старт). Возвращает число документов.
+
+    Раньше на КАЖДОМ старте шёл полный синхронный rebuild_index (create_in по всей
+    базе) прямо в lifespan — блокировал готовность сервера и /api/health до конца
+    реиндекса; при росте базы (уже ~1500 док.) рисковал упереться в healthcheck-таймаут
+    Docker и уйти в цикл рестартов."""
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    if whoosh_index.exists_in(str(INDEX_DIR)):
+        try:
+            ix = get_index()  # open_dir существующего индекса
+            with ix.searcher() as s:
+                count = s.doc_count()
+            start_background_index_refresh()  # догнать внешние правки, не блокируя старт
+            return count
+        except Exception:
+            pass  # индекс битый/неоткрываемый — пересобираем синхронно ниже
+    return rebuild_index()
 
 
 def index_document(text: str, filename: str, project: str):

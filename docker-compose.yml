@@ -5,6 +5,13 @@ services:
     build: .
     container_name: memory-compiler-mcp
     restart: unless-stopped
+    # Ротация stdout-логов контейнера: драйвер json-file по умолчанию БЕЗ лимита
+    # → лог рос неограниченно на диске NAS (print-и сервера + логи SDK).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "8765:8765"
     volumes:

@@ -1196,8 +1196,9 @@ def _audit_path():
     return KNOWLEDGE_DIR / "_audit.log"
 
 
-def audit_log(tool_name: str, args: dict, result_size: int):
-    """Log tool call to audit file."""
+def audit_log(tool_name: str, args: dict, result_size: int, error: str | None = None):
+    """Log tool call to audit file. error != None фиксирует упавший вызов
+    (раньше в аудит попадали только успешные — статистика ошибок была слепой)."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     safe_args = {}
     for k, v in args.items():
@@ -1207,7 +1208,10 @@ def audit_log(tool_name: str, args: dict, result_size: int):
             safe_args[k] = "***"
         else:
             safe_args[k] = v
-    line = json.dumps({"ts": ts, "tool": tool_name, "args": safe_args, "size": result_size}, ensure_ascii=False)
+    entry = {"ts": ts, "tool": tool_name, "args": safe_args, "size": result_size}
+    if error:
+        entry["error"] = error
+    line = json.dumps(entry, ensure_ascii=False)
     try:
         with open(_audit_path(), "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -1436,17 +1440,19 @@ def log_event(project: str, action: str, details: str = "") -> None:
 
 
 def read_audit_log(limit: int = 100) -> list[dict]:
-    """Read last N audit entries."""
+    """Read last N audit entries. Хвост через deque(maxlen) — O(limit) памяти, а не
+    read_text() всего растущего файла на каждый вызов (/api/audit, gap_report)."""
+    from collections import deque
     path = _audit_path()
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
     entries = []
-    for line in lines[-limit:]:
-        try:
-            entries.append(json.loads(line))
-        except Exception:
-            pass
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in deque(f, maxlen=limit):
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                pass
     return entries
 
 
@@ -2175,7 +2181,10 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         body = _render_tracking_body(data)
 
     text = _write_frontmatter(data) + f"\n# {title}\n\n{body}\n"
-    fpath.write_text(text, encoding="utf-8")
+    # Атомарная запись: tracking — единственное authoritative-хранилище current/history.
+    # Сырой write_text при docker restart (=деплой) обрывал файл до закрывающего '---',
+    # парсер отдавал пустой current → следующее сохранение молча теряло всю историю версий.
+    atomic_write_text(fpath, text)
 
     return {
         "path": str(fpath.relative_to(KNOWLEDGE_DIR)),

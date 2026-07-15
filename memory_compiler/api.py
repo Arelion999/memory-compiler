@@ -30,6 +30,7 @@ from memory_compiler.storage import (
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
+from memory_compiler import obs
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -211,6 +212,11 @@ async def web_health(request: Request):
             total_articles += len(articles)
         daily_dir = KNOWLEDGE_DIR / "daily"
         daily_count = len(list(daily_dir.glob("*.md"))) if daily_dir.exists() else 0
+        try:
+            _audit = KNOWLEDGE_DIR / "_audit.log"
+            audit_kb = round(_audit.stat().st_size / 1024, 1) if _audit.exists() else 0
+        except Exception:
+            audit_kb = None
         payload.update({
             "embeddings": len(_search_mod._embeddings),
             "total_articles": total_articles,
@@ -218,6 +224,11 @@ async def web_health(request: Request):
             "daily_logs": daily_count,
             "projects": project_stats,
             "usage": stats,
+            "observability": {
+                **obs.stats(),
+                "reindex_running": _search_mod.reindex_running(),
+                "audit_log_size_kb": audit_kb,
+            },
         })
     return JSONResponse(payload)
 
@@ -561,7 +572,8 @@ async def web_login(request: Request):
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-    if data.get("key") == MC_API_KEY:
+    # constant-time сравнение (как в middleware) — не давать тайминг-сайдканал на подбор
+    if MC_API_KEY and hmac.compare_digest((data.get("key") or "").encode(), MC_API_KEY.encode()):
         response = JSONResponse({"ok": True})
         response.set_cookie("mc_token", MC_API_KEY, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
         return response
@@ -571,6 +583,30 @@ async def web_login(request: Request):
 async def web_audit(request: Request):
     entries = read_audit_log(100)
     return JSONResponse({"entries": entries})
+
+
+async def web_logs(request: Request):
+    """Анализ логов: хвост app.jsonl + сводка ошибок. Только под auth (не публичный)."""
+    if not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    level = request.query_params.get("level")
+    try:
+        limit = min(int(request.query_params.get("limit", "200")), 2000)
+    except ValueError:
+        limit = 200
+    entries = obs.read_log_tail(limit=limit, level=level)
+    codes: dict[str, int] = {}
+    for e in entries:
+        if e.get("err_code"):
+            codes[e["err_code"]] = codes.get(e["err_code"], 0) + 1
+    return JSONResponse({
+        "summary": {
+            "stats": obs.stats(),
+            "err_codes_in_window": codes,
+            "returned": len(entries),
+        },
+        "entries": entries,
+    })
 
 
 # ─── Starlette app factory ─────────────────────────────────────────────────
@@ -631,6 +667,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app):
+        obs.setup_logging()  # структурное логирование (JSON-lines + ротация) до всего
         git_init()
         for _w in _check_key_hygiene():  # операционная гигиена ключей (аудит #1/#2)
             print(_w)
@@ -645,8 +682,10 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             import memory_compiler.config as _cfg
             _cfg.PROJECTS = _cfg._discover_projects()
         load_article_meta()
-        count = rebuild_index()
-        print(f"Whoosh index built: {count} documents")
+        # Открываем существующий индекс с диска (быстро) + фоновое обновление; полный
+        # синхронный rebuild — только на холодном первом старте (см. startup_prepare_index).
+        count = _search_mod.startup_prepare_index()
+        print(f"Whoosh index ready: {count} documents")
         # Embeddings: load from cache if compatible; otherwise rebuild in
         # background so we don't block server startup (rebuild with BGE-M3 or
         # other long-context model can take 5-15 minutes and would prevent
@@ -711,6 +750,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/login", endpoint=web_login, methods=["GET", "POST"]),
             Route("/api/auth/login", endpoint=web_login, methods=["POST"]),
             Route("/api/audit", endpoint=web_audit),
+            Route("/api/logs", endpoint=web_logs),
             Route("/", endpoint=web_index),
             Route("/api/health", endpoint=web_health),
             Route("/api/version", endpoint=web_version),

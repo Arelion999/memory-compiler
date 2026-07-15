@@ -1,4 +1,6 @@
 """MCP tool definitions and dispatch."""
+import time
+
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
@@ -6,6 +8,7 @@ from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
 from memory_compiler.storage import regenerate_index, audit_log
 from memory_compiler import handlers
+from memory_compiler import obs
 
 app = Server("memory-compiler")
 
@@ -565,6 +568,10 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    obs.new_request_id()          # корреляция всех логов этого вызова
+    obs.record_call(name)
+    _log = obs.get_logger("tool")
+    t0 = time.perf_counter()
     # Count every tool call (not only predefined keys)
     stats[name] = stats.get(name, 0) + 1
 
@@ -583,10 +590,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # safe_project_dir / safe_article_path raised — handler got an unsafe
         # project/filename parameter. Return graceful error instead of crashing.
         result = [TextContent(type="text", text=f"❌ Небезопасный параметр: {e}")]
+    except Exception as e:
+        # Раньше упавшие вызовы никак не фиксировались — статистика ошибок была слепой.
+        code = type(e).__name__
+        obs.record_error(name, code)
+        _log.error(f"tool {name} failed: {e}", extra={"tool": name, "err_code": code}, exc_info=True)
+        try:
+            audit_log(name, arguments, 0, error=code)
+        except Exception:
+            pass
+        raise
     # Track response size
     total = sum(len(t.text) for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
     audit_log(name, arguments, total)
+    _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000), "size": total})
     return result
 
 
