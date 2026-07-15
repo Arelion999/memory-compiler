@@ -685,43 +685,27 @@ def rebuild_index():
     return count
 
 
-def start_background_index_refresh() -> bool:
-    """Фоновое обновление ТОЛЬКО Whoosh-индекса (без эмбеддингов). Для старта:
-    открытый с диска индекс может быть устаревшим, если knowledge правили в обход
-    index_document (bulk-edit на NAS, git pull). Не блокирует старт. Возвращает
-    False, если полный reindex уже идёт."""
-    if not _reindex_lock.acquire(blocking=False):
-        return False
-    _reindex_running["v"] = True
-
-    def _run():
-        try:
-            rebuild_index()
-        finally:
-            _reindex_running["v"] = False
-            _reindex_lock.release()
-
-    _threading.Thread(target=_run, daemon=True).start()
-    return True
-
-
 def startup_prepare_index() -> int:
-    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро) и
-    догнать возможные внешние правки в фоне; иначе собрать синхронно (холодный первый
-    старт). Возвращает число документов.
+    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро, БЕЗ
+    пересборки); иначе собрать синхронно (холодный первый старт). Возвращает число
+    документов.
 
     Раньше на КАЖДОМ старте шёл полный синхронный rebuild_index (create_in по всей
     базе) прямо в lifespan — блокировал готовность сервера и /api/health до конца
-    реиндекса; при росте базы (уже ~1500 док.) рисковал упереться в healthcheck-таймаут
-    Docker и уйти в цикл рестартов."""
+    реиндекса; при росте базы рисковал упереться в healthcheck-таймаут Docker.
+
+    Внешние правки knowledge в обход index_document (bulk-edit на NAS, git pull)
+    подхватываются ЯВНЫМ reindex, а НЕ автоматической фоновой пересборкой на старте:
+    rebuild_index через create_in на короткое время опустошает живой индекс (окно, когда
+    поиск возвращает пусто) — на каждом рестарте это неприемлемо. Открытый с диска индекс
+    консистентен с состоянием на момент остановки (index_document держит его актуальным
+    в рантайме)."""
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     if whoosh_index.exists_in(str(INDEX_DIR)):
         try:
-            ix = get_index()  # open_dir существующего индекса
+            ix = get_index()  # open_dir существующего индекса, без rebuild
             with ix.searcher() as s:
-                count = s.doc_count()
-            start_background_index_refresh()  # догнать внешние правки, не блокируя старт
-            return count
+                return s.doc_count()
         except Exception:
             pass  # индекс битый/неоткрываемый — пересобираем синхронно ниже
     return rebuild_index()
