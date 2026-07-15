@@ -664,6 +664,34 @@ def test_semantic_search_empty(monkeypatch):
     assert sm.semantic_search("q") == []
 
 
+def test_whoosh_search_survives_semantic_failure(knowledge_dir, monkeypatch):
+    """Падение semantic_search НЕ роняет hybrid-поиск — деградация к BM25 + флаг degraded."""
+    import memory_compiler.search as sm
+    import memory_compiler.obs as obs
+    obs.reset()
+    sm.rebuild_index()  # BM25-индекс: test_article.md содержит 'docker'
+
+    def boom(*a, **k):
+        raise ValueError("dim mismatch (миграция модели)")
+    monkeypatch.setattr(sm, "semantic_search", boom)
+
+    results = sm.whoosh_search("docker", project="testproj")
+    assert any(r.get("file") == "test_article.md" for r in results), "BM25 должен был найти статью"
+    assert obs.stats()["semantic_degraded"] is True, "деградация semantic→BM25 не помечена"
+
+
+def test_rerank_absent_model_not_semantic_degraded(monkeypatch):
+    """Отсутствие reranker'а — НЕ деградация semantic→BM25 (bi-encoder работает).
+    Флаг semantic_degraded НЕ должен ставиться (иначе вечная ложная тревога на offline-NAS)."""
+    import memory_compiler.search as sm
+    import memory_compiler.obs as obs
+    obs.reset()
+    monkeypatch.setattr(sm, "get_reranker_model", lambda: None)
+    out = sm.rerank("q", [{"title": "a", "preview": "x"}, {"title": "b", "preview": "y"}], top_k=1)
+    assert len(out) == 1
+    assert obs.stats()["semantic_degraded"] is False
+
+
 def test_rebuild_index_nondestructive_count_stable(knowledge_dir):
     """Изменение существующего файла + повторный rebuild: doc_count тот же (обновление
     на месте, индекс не пересобирается с нуля и не проходит через пустое состояние)."""

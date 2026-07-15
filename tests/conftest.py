@@ -54,3 +54,9 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)
+    # Изоляция эмбеддингов между тестами: часть тестов присваивает _embeddings напрямую
+    # (2-мерные векторы), утечка ломала последующие тесты при прогоне подмножества.
+    # monkeypatch авто-восстанавливает после каждого теста.
+    monkeypatch.setattr(search_mod, "_embeddings", {})
+    monkeypatch.setattr(search_mod, "_embed_texts", {})
+    monkeypatch.setattr(search_mod, "_chunk_hashes", {})

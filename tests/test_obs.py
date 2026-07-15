@@ -145,18 +145,37 @@ def test_startup_prepare_index_cold_build(knowledge_dir):
 
 
 def test_startup_prepare_index_warm_open(knowledge_dir, monkeypatch):
-    """Индекс на диске → открывает его, отдаёт doc_count и планирует НЕДЕСТРУКТИВНОЕ
-    фоновое обновление (rebuild_index теперь без blackout), без синхронной пересборки
-    на event-пути старта."""
+    """Индекс на диске с совместимой схемой → открывает, отдаёт doc_count БЕЗ пересборки
+    (синхронной нет; авто-фоновое обновление убрано в v1.9.6)."""
     import memory_compiler.search as sm
     n1 = sm.rebuild_index()
     monkeypatch.setattr(sm, "_ix", None)  # заставить открыть с диска, а не из памяти
-    called = {"bg": False}
-    monkeypatch.setattr(sm, "start_background_index_refresh",
-                        lambda: called.__setitem__("bg", True) or True)
+    called = {"rebuild": False}
+    monkeypatch.setattr(sm, "rebuild_index",
+                        lambda: called.__setitem__("rebuild", True) or 999)
     n2 = sm.startup_prepare_index()
-    assert n2 == n1                 # реальный doc_count из открытого индекса
-    assert called["bg"] is True     # запланировано фоновое (недеструктивное) обновление
+    assert n2 == n1                    # реальный doc_count из открытого индекса
+    assert called["rebuild"] is False  # схема совпала → НЕ пересобирал
+
+
+def test_startup_prepare_index_schema_change_rebuilds(knowledge_dir, monkeypatch):
+    """Расхождение схемы индекса на диске и текущей SCHEMA → деструктивный пересбор
+    под новую схему (иначе update_document кидал бы UnknownFieldError, а фоновый reindex
+    умирал бы молча → тихая устареваемость индекса)."""
+    from whoosh.fields import Schema, ID, TEXT, STORED
+    import memory_compiler.search as sm
+    sm.rebuild_index()  # индекс с реальной схемой на диске
+    monkeypatch.setattr(sm, "_ix", None)
+    # "новая" схема с дополнительным полем — не совпадёт с индексом на диске
+    new_schema = Schema(
+        path=ID(stored=True, unique=True), project=ID(stored=True),
+        title=TEXT(stored=True), tags=TEXT(stored=True), body=TEXT(),
+        preview=STORED, extra_new_field=TEXT(),
+    )
+    monkeypatch.setattr(sm, "SCHEMA", new_schema)
+    n = sm.startup_prepare_index()
+    assert n >= 1  # пересобрал под новую схему, не упал
+    assert "extra_new_field" in sm.get_index().schema.names()
 
 
 def test_search_candidate_pool_default():

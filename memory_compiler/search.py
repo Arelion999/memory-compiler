@@ -219,10 +219,12 @@ def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
     if not candidates or len(candidates) <= 1:
         return candidates[:top_k]
 
-    from memory_compiler import obs
+    # Примечание: отсутствие/сбой reranker'а — НЕ деградация semantic→BM25 (bi-encoder
+    # семантика работает). Флаг semantic_degraded ставится в whoosh_search при реальном
+    # падении semantic_search, а не здесь (иначе на offline-NAS без reranker'а —
+    # постоянная ложная тревога в /api/health).
     model = get_reranker_model()
     if model is None:
-        obs.set_semantic_degraded(True)  # reranker недоступен → деградация до hybrid-порядка
         return candidates[:top_k]  # graceful: no reranker, keep original order
 
     pairs = []
@@ -235,11 +237,9 @@ def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
         scores = model.predict(pairs, show_progress_bar=False)
         for c, s in zip(candidates, scores):
             c["rerank_score"] = float(s)
-        obs.set_semantic_degraded(False)  # reranker жив
         return sorted(candidates, key=lambda c: c.get("rerank_score", 0), reverse=True)[:top_k]
     except Exception as e:
         print(f"Rerank failed: {e}")
-        obs.set_semantic_degraded(True)
         return candidates[:top_k]
 
 
@@ -719,47 +719,44 @@ def rebuild_index():
     return count
 
 
-def start_background_index_refresh() -> bool:
-    """Фоновое НЕДЕСТРУКТИВНОЕ обновление Whoosh-индекса (rebuild_index через
-    update_document — без blackout). Для старта: открытый с диска индекс мог устареть,
-    если knowledge правили в обход index_document (bulk-edit на NAS, git pull). Не
-    блокирует старт. Возвращает False, если полный reindex уже идёт."""
-    if not _reindex_lock.acquire(blocking=False):
-        return False
-    _reindex_running["v"] = True
-
-    def _run():
-        try:
-            rebuild_index()
-        finally:
-            _reindex_running["v"] = False
-            _reindex_lock.release()
-
-    _threading.Thread(target=_run, daemon=True).start()
-    return True
-
-
 def startup_prepare_index() -> int:
-    """Старт-подготовка индекса. Если индекс уже на диске — открыть его (быстро) и
-    догнать внешние правки НЕДЕСТРУКТИВНЫМ фоновым rebuild_index (без blackout); иначе
-    собрать синхронно (холодный первый старт). Возвращает число документов.
+    """Старт-подготовка индекса. Если индекс уже на диске и совместим по схеме —
+    открыть его (быстро, БЕЗ пересборки); если схема изменилась — снести и собрать
+    заново под текущую SCHEMA; если индекса нет — собрать (холодный первый старт).
+    Возвращает число документов.
 
-    Раньше на КАЖДОМ старте шёл полный синхронный rebuild_index прямо в lifespan —
-    блокировал готовность сервера и /api/health; при росте базы рисковал упереться в
-    healthcheck-таймаут Docker. В v1.9.0-1 фоновое обновление на старте отключалось,
-    т.к. старый rebuild_index через create_in опустошал живой индекс (blackout-окно).
-    Теперь rebuild_index недеструктивен — фоновое обновление безопасно и вернулось:
-    подхватывает внешние правки knowledge (bulk-edit на NAS, git pull) без blackout."""
+    Полный синхронный rebuild_index на каждом старте блокировал готовность сервера.
+    Автоматическое фоновое обновление на старте (v1.9.3) убрано (v1.9.6): rebuild_index
+    держит _index_lock весь дисковый скан, а вынести чтение из-под лока нельзя без
+    lost-update-гонки с конкурентным save. Внешние правки knowledge в обход
+    index_document (bulk-edit на NAS, git pull) подхватываются ЯВНЫМ reindex.
+
+    Проверка схемы (v1.9.6): недеструктивный rebuild_index открывает индекс со СТАРОЙ
+    схемой; при изменении config.SCHEMA (новое поле) update_document кинул бы
+    UnknownFieldError, а фоновый reindex умер бы молча → индекс тихо устаревает. Поэтому
+    при расхождении набора полей — деструктивный пересбор."""
+    global _ix
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     if whoosh_index.exists_in(str(INDEX_DIR)):
+        schema_ok = None
         try:
             ix = get_index()  # open_dir существующего индекса
-            with ix.searcher() as s:
-                count = s.doc_count()
-            start_background_index_refresh()  # недеструктивно — без blackout
-            return count
+            schema_ok = set(ix.schema.names()) == set(SCHEMA.names())
         except Exception:
-            pass  # индекс битый/неоткрываемый — пересобираем синхронно ниже
+            schema_ok = None  # индекс не открылся — пересобрать ниже
+        if schema_ok:
+            try:
+                with ix.searcher() as s:
+                    return s.doc_count()
+            except Exception:
+                pass
+        elif schema_ok is False:
+            # Схема поменялась → снести индекс, get_index соберёт под текущую SCHEMA.
+            import shutil as _shutil
+            with _index_lock:
+                _ix = None
+            _shutil.rmtree(str(INDEX_DIR), ignore_errors=True)
+            INDEX_DIR.mkdir(parents=True, exist_ok=True)
     return rebuild_index()
 
 
@@ -835,9 +832,18 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
                     "bm25": hit.score / max_bm25,  # normalize to 0-1
                 }
 
-    # 2. Semantic search
+    # 2. Semantic search — обёрнуто: падение семантики (напр. несовместимые размерности
+    # при миграции embed-модели, битый вектор) НЕ должно ронять весь hybrid-поиск.
+    # Деградируем к BM25 (симметрично каналу SPLADE ниже) и помечаем деградацию.
     sem_scores: dict[str, float] = {}
-    sem_results = semantic_search(query_str, limit=limit * 2)
+    from memory_compiler import obs
+    try:
+        sem_results = semantic_search(query_str, limit=limit * 2)
+        obs.set_semantic_degraded(False)
+    except Exception as e:
+        print(f"Semantic search failed, fallback to BM25: {e}")
+        obs.set_semantic_degraded(True)
+        sem_results = []
     for path, sim in sem_results:
         # Скоуп на проект, НО shared/global-статьи пропускаем в любой проект.
         if project != "all" and not path.startswith(project + "/") and path not in _shared_paths:

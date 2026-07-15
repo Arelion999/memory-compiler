@@ -75,26 +75,34 @@ def setup_logging(level: int = logging.INFO) -> None:
     global _configured
     if _configured:
         return
-    app_log = _app_log()
-    app_log.parent.mkdir(parents=True, exist_ok=True)
     fmt = JsonLinesFormatter()
-
-    file_h = logging.handlers.RotatingFileHandler(
-        app_log, maxBytes=_MAX_BYTES, backupCount=_BACKUPS, encoding="utf-8"
-    )
-    file_h.setFormatter(fmt)
+    handlers = []
+    # Файловый лог с ротацией — best-effort: если knowledge/logs не пишется (ro-mount,
+    # том ещё не примонтирован), логирование НЕ должно ронять старт сервера. Тогда
+    # остаётся только stdout.
+    try:
+        app_log = _app_log()
+        app_log.parent.mkdir(parents=True, exist_ok=True)
+        file_h = logging.handlers.RotatingFileHandler(
+            app_log, maxBytes=_MAX_BYTES, backupCount=_BACKUPS, encoding="utf-8"
+        )
+        file_h.setFormatter(fmt)
+        handlers.append(file_h)
+    except Exception as e:
+        print(f"[obs] file logging unavailable ({e}); stdout only")
     stream_h = logging.StreamHandler()
     stream_h.setFormatter(fmt)
+    handlers.append(stream_h)
 
     root = logging.getLogger("mc")
     root.setLevel(level)
-    root.handlers[:] = [file_h, stream_h]
+    root.handlers[:] = handlers
     root.propagate = False
 
     # Транспортные ошибки MCP SDK (-32602/-32001) рождаются в logging.getLogger("mcp").
     mcp_log = logging.getLogger("mcp")
     mcp_log.setLevel(logging.WARNING)
-    mcp_log.handlers[:] = [file_h, stream_h]
+    mcp_log.handlers[:] = handlers
     mcp_log.propagate = False
 
     _configured = True
