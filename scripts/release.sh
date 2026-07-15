@@ -1,55 +1,92 @@
 #!/bin/bash
-# Release script for memory-compiler
+# Release script for memory-compiler — исполняемая версия внутренний регламент релиза
+# Проверяет инвариант, гоняет тесты и скан утечек, коммитит весь диф, тегает, пушит.
+#
 # Usage:
-#   bash scripts/release.sh patch   # 1.0.0 → 1.0.1
-#   bash scripts/release.sh minor   # 1.0.1 → 1.1.0
-#   bash scripts/release.sh major   # 1.1.0 → 2.0.0
-#   bash scripts/release.sh 1.2.3   # explicit version
+#   bash scripts/release.sh patch  "суть релиза" [fix|feat|security|docs|refactor|chore]
+#   bash scripts/release.sh minor  "суть релиза"
+#   bash scripts/release.sh 1.2.3  "суть релиза"
+#
+# Перед запуском: код готов, тесты написаны, доки обновлены, секция CHANGELOG добавлена.
 
 set -e
-
 cd "$(dirname "$0")/.."
 
-[ ! -f VERSION ] && { echo "VERSION file missing"; exit 1; }
-CURRENT=$(cat VERSION)
+BUMP="$1"
+SUMMARY="$2"
+TYPE="${3:-release}"
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 {patch|minor|major|X.Y.Z}"
+[ ! -f VERSION ] && { echo "VERSION file missing"; exit 1; }
+CURRENT=$(cat VERSION | tr -d '[:space:]')
+
+if [ -z "$BUMP" ]; then
+    echo "Usage: $0 {patch|minor|major|X.Y.Z} \"суть\" [type]"
     echo "Current: $CURRENT"
     exit 1
 fi
 
-case "$1" in
+case "$BUMP" in
     patch|minor|major)
         IFS='.' read -ra P <<< "$CURRENT"
         MAJOR=${P[0]}; MINOR=${P[1]}; PATCH=${P[2]}
-        case "$1" in
+        case "$BUMP" in
             patch) PATCH=$((PATCH+1)) ;;
             minor) MINOR=$((MINOR+1)); PATCH=0 ;;
             major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
         esac
         NEW="$MAJOR.$MINOR.$PATCH"
         ;;
-    [0-9]*.[0-9]*.[0-9]*)
-        NEW="$1"
-        ;;
-    *)
-        echo "Invalid: $1 (expected patch|minor|major|X.Y.Z)"
-        exit 1
-        ;;
+    [0-9]*.[0-9]*.[0-9]*) NEW="$BUMP" ;;
+    *) echo "Invalid: $BUMP (expected patch|minor|major|X.Y.Z)"; exit 1 ;;
 esac
 
-echo "Bump: $CURRENT → $NEW"
-read -p "Confirm? [y/N] " yn
-[ "$yn" != "y" ] && { echo "Aborted"; exit 0; }
+echo "== Релиз $CURRENT → $NEW =="
 
+# --- Шаг 3: инвариант — секция CHANGELOG под новую версию должна существовать ---
+TOP_CL=$(grep -m1 -oE '^## v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | sed 's/^## v//')
+if [ "$TOP_CL" != "$NEW" ]; then
+    echo "ОШИБКА: верхняя секция CHANGELOG.md = v$TOP_CL, ожидалось v$NEW."
+    echo "Сначала добавь секцию '## v$NEW — $(date +%F)' в CHANGELOG.md."
+    exit 1
+fi
+
+# --- Шаг 1: тесты ---
+echo "== pytest =="
+python -m pytest tests/ -q || { echo "ОШИБКА: тесты упали — релиз отменён."; exit 1; }
+
+# --- Шаг 4: bump VERSION ---
 echo "$NEW" > VERSION
-git add VERSION CHANGELOG.md 2>/dev/null || true
-git commit -m "release: v$NEW" || { echo "Nothing to commit"; exit 1; }
-git tag -a "v$NEW" -m "Release v$NEW"
-git push origin master
-git push origin "v$NEW"
+
+# --- Шаг 5: проверка на утечки (staged) ---
+echo "== git add -A =="
+git add -A
+git status --short
+
+echo "== gitleaks (staged) =="
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --no-banner --redact || { echo "ОШИБКА: gitleaks нашёл секреты — релиз отменён."; exit 1; }
+else
+    echo "ОШИБКА: gitleaks не установлен — шаг проверки утечек пропустить нельзя."; exit 1
+fi
+if git config --get alias.audit-secrets >/dev/null 2>&1; then
+    echo "== git audit-secrets =="
+    git audit-secrets || { echo "ОШИБКА: audit-secrets нашёл секреты — релиз отменён."; exit 1; }
+fi
+
+# --- Шаги 6-8: коммит, тег, push ---
+MSG="$TYPE: v$NEW"
+[ -n "$SUMMARY" ] && MSG="$MSG — $SUMMARY"
+echo ""
+echo "Коммит:  $MSG"
+echo "Тег:     v$NEW (аннотированный)"
+echo "Push:    origin master --follow-tags"
+read -p "Подтвердить релиз? [y/N] " yn
+[ "$yn" != "y" ] && { echo "Отменено. VERSION уже поднят и файлы staged — откати вручную при желании."; exit 0; }
+
+git commit -m "$MSG"
+git tag -a "v$NEW" -m "$MSG"
+git push --follow-tags
 
 echo ""
-echo "Released v$NEW"
-echo "Autodeploy will pick up changes on NAS within ~1 min"
+echo "Готово: v$NEW запушен вместе с тегом."
+echo "Автодеплой подхватит изменения на NAS в течение ~1 мин (при изменениях зависимостей — python deploy_image.py)."

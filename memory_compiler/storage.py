@@ -833,7 +833,7 @@ _AUTO_TAG_RULES = [
     # 1C
     (r'\b(?:1[cсС]|1С|bsl|epf|erf|обработк[аи]|конфигурац|расширен)\b', '1c'),
     # Databases
-    (r'\b(?:postgres|postgresql|pgdump|pg_dump|миграци[яи]|alembic|psql|pgadmin)\b', 'postgres'),
+    (r'\b(?:postgres|postgresql|pgdump|pg_dump|alembic|psql|pgadmin)\b', 'postgres'),
     (r'\b(?:mysql|mariadb|mysqldump)\b', 'mysql'),
     (r'\b(?:mssql|sqlserver|sql.server|t-sql)\b', 'mssql'),
     (r'\b(?:mongodb|mongo|nosql)\b', 'mongodb'),

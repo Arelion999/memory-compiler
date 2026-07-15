@@ -25,6 +25,16 @@ def test_auto_tags_1c():
     assert "bugfix" in tags
 
 
+def test_auto_tags_migration_not_postgres():
+    """«миграция» (перенос данных, напр. 1С:БП→УХ) НЕ должна давать тег postgres —
+    это слово не про СУБД. Реальный Postgres ловится по postgres/alembic/psql."""
+    tags = auto_tags("Миграция данных из 1С:БП 3.0 в 1С:УХ через правила КД2", "Миграция БП УХ")
+    assert "postgres" not in tags
+    assert "1c" in tags
+    # но настоящий postgres по-прежнему тегируется
+    assert "postgres" in auto_tags("pg_dump и alembic на postgres", "backup")
+
+
 def test_find_existing_matches_underscore_slug_variant(knowledge_dir):
     """find_existing_article матчит старый '__'-слаг с новым '_'-слагом (иначе дубль).
 
