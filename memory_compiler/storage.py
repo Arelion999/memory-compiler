@@ -1173,14 +1173,18 @@ def encrypt_content(text: str) -> str:
 
 
 def decrypt_content(text: str) -> str:
-    """Decrypt 'ENC:...' content. Returns original text if not encrypted."""
-    if not text.startswith("ENC:"):
+    """Decrypt 'ENC:...' content. Returns original text if not encrypted.
+    Согласовано с is_encrypted (тоже .strip()): ENC-строка с ведущими пробелами
+    (отступ списка/цитаты) раньше детектилась как шифр, но НЕ расшифровывалась —
+    пользователю показывался сырой шифртекст."""
+    stripped = text.strip()
+    if not stripped.startswith("ENC:"):
         return text
     cipher = _get_cipher()
     if not cipher:
         return "[MC_ENCRYPT_KEY не задан — расшифровка невозможна]"
     try:
-        return cipher.decrypt(text[4:].encode()).decode()
+        return cipher.decrypt(stripped[4:].encode()).decode()
     except Exception:
         return "[Ошибка расшифровки]"
 

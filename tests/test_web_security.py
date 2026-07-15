@@ -235,14 +235,23 @@ def test_messages_rides_on_session_id(monkeypatch):
 
 # ─── #1/#2 операционная гигиена ключей ───────────────────────────────────────
 
-def test_key_hygiene_warns_when_api_equals_encrypt(monkeypatch):
+def test_key_hygiene_fatal_when_api_equals_encrypt(monkeypatch):
     """API-ключ == ключу шифрования: утечка API-ключа (он в каждом запросе)
-    раскрывает все секреты. Должно быть предупреждение."""
+    раскрывает все секреты. FAIL-FAST — фатальная ошибка старта, не предупреждение."""
+    import pytest
     import memory_compiler.api as api_mod
     monkeypatch.setattr(api_mod, "MC_API_KEY", "same-key")
     monkeypatch.setattr(api_mod, "MC_ENCRYPT_KEY", "same-key")
-    warns = api_mod._check_key_hygiene()
-    assert any("шифров" in w.lower() for w in warns), f"нет предупреждения о совпадении ключей: {warns}"
+    with pytest.raises(RuntimeError):
+        api_mod._check_key_hygiene()
+
+
+def test_key_hygiene_ok_when_keys_differ(monkeypatch):
+    """Разные ключи → без ошибок и предупреждений."""
+    import memory_compiler.api as api_mod
+    monkeypatch.setattr(api_mod, "MC_API_KEY", "access-key-aaa")
+    monkeypatch.setattr(api_mod, "MC_ENCRYPT_KEY", "encrypt-key-bbb")
+    assert api_mod._check_key_hygiene() == []
 
 
 def test_key_hygiene_warns_encrypt_without_api(monkeypatch):

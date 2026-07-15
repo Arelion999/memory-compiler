@@ -430,6 +430,13 @@ def rebuild_embeddings():
         # Накат конкурентных изменений времён encode: сохранённое во время пересборки
         # свежее прочитанного с диска, удалённое — не должно вернуться со свопом.
         for parent in _dirty_parents:
+            # Сперва выкинуть ВСЕ ключи родителя из свежесобранных: если статья за время
+            # encode стала односекционной (меньше чанков), старые parent#chunkN остались бы
+            # зомби (матчились бы по удалённому содержимому). Симметрично embed_document.
+            for k in [k for k in new_embeddings if k == parent or k.startswith(parent + "#")]:
+                new_embeddings.pop(k, None)
+                new_hashes.pop(k, None)
+            # Затем накатить актуальные вектора из живого _embeddings.
             for k, v in _embeddings.items():
                 if k == parent or k.startswith(parent + "#"):
                     new_embeddings[k] = v

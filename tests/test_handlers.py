@@ -210,6 +210,17 @@ async def test_save_lesson(knowledge_dir):
 
 
 @pytest.mark.asyncio
+async def test_save_lesson_force_new_no_overwrite(knowledge_dir):
+    """3-е сохранение force_new с тем же topic за день НЕ перезаписывает 2-е:
+    раньше проверялся только один запасной путь (slug_YYYYMMDD.md)."""
+    for body in ("тело один", "тело два", "тело три"):
+        await save_lesson("Коллизия имени", body, "testproj", force_new=True)
+    files = sorted(p.name for p in (knowledge_dir / "testproj").glob("*.md")
+                   if p.name.startswith("коллизия"))
+    assert len(files) == 3, f"ожидалось 3 файла без перезаписи, получено: {files}"
+
+
+@pytest.mark.asyncio
 async def test_search(knowledge_dir):
     result = await search("docker", "testproj")
     assert len(result) == 1

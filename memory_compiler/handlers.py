@@ -93,9 +93,17 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     else:
         # Create new article
         article_path = safe_project_dir(project) / f"{slug}.md"
-        # Handle name collision
+        # Handle name collision: подобрать ПЕРВОЕ свободное имя (дата, затем счётчик).
+        # Раньше проверялся только один запасной путь → 3-е сохранение за день с тем же
+        # slug перезаписывало 2-е (потеря урока).
         if article_path.exists():
-            article_path = safe_project_dir(project) / f"{slug}_{now.strftime('%Y%m%d')}.md"
+            base = safe_project_dir(project)
+            day = now.strftime('%Y%m%d')
+            article_path = base / f"{slug}_{day}.md"
+            n = 2
+            while article_path.exists():
+                article_path = base / f"{slug}_{day}_{n}.md"
+                n += 1
         article_text = f"""# {topic}\n\n**Дата:** {ts}\n**Проект:** {project}\n**Теги:** {', '.join(tags) if tags else '—'}\n\n## Записи\n\n### {ts}\n{content}\n"""
         article_path.write_text(article_text, encoding="utf-8")
         regenerate_index()
@@ -2166,8 +2174,16 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 {encrypted_body}
 """
     article_path = safe_project_dir(project) / f"secret_{slug}.md"
+    # Коллизия имени: первое свободное имя (дата, затем счётчик) — иначе 3-е сохранение
+    # секрета за день с тем же topic перезаписывало 2-е (потеря секрета).
     if article_path.exists():
-        article_path = safe_project_dir(project) / f"secret_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
+        base = safe_project_dir(project)
+        day = datetime.now().strftime('%Y%m%d')
+        article_path = base / f"secret_{slug}_{day}.md"
+        n = 2
+        while article_path.exists():
+            article_path = base / f"secret_{slug}_{day}_{n}.md"
+            n += 1
     article_path.write_text(article_text, encoding="utf-8")
 
     # Index with title+tags only (not encrypted content) for searchability

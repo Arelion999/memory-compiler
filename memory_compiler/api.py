@@ -64,17 +64,21 @@ def _maybe_decrypt_secret_lines(text: str) -> str:
 
 
 def _check_key_hygiene() -> list:
-    """Предупреждения о конфигурации ключей (находки аудита #1/#2). Список строк."""
+    """Гигиена ключей (аудит #1/#2). FAIL-FAST: MC_API_KEY == MC_ENCRYPT_KEY —
+    фатальная ошибка старта (RuntimeError), а не предупреждение: ключ доступа идёт в
+    КАЖДОМ запросе, и его совпадение с ключом шифрования означает, что утечка ключа
+    доступа раскроет ВСЕ секреты (вкл. git-историю/бэкапы). Прочее — предупреждения."""
+    if MC_API_KEY and MC_API_KEY == MC_ENCRYPT_KEY:
+        raise RuntimeError(
+            "FATAL: MC_API_KEY == MC_ENCRYPT_KEY — ключ доступа совпадает с ключом "
+            "шифрования секретов. Утечка ключа доступа (он в каждом запросе) раскроет ВСЕ "
+            "секреты. Задайте РАЗНЫЕ случайные ключи (см. .env.example: secrets.token_urlsafe(32)) "
+            "и перезапустите.")
     warns = []
     if MC_ENCRYPT_KEY and not MC_API_KEY:
         warns.append(
             "⚠️  MC_ENCRYPT_KEY задан, а MC_API_KEY пуст: REST-доступ без аутентификации, "
             "секреты по HTTP не дешифруются (fail-closed). Задайте MC_API_KEY для Web UI.")
-    if MC_API_KEY and MC_API_KEY == MC_ENCRYPT_KEY:
-        warns.append(
-            "⚠️  MC_API_KEY == MC_ENCRYPT_KEY: ключ доступа совпадает с ключом шифрования. "
-            "Он идёт в каждом запросе — его утечка раскроет ВСЕ секреты (вкл. git-историю). "
-            "Задайте РАЗНЫЕ случайные ключи.")
     return warns
 
 

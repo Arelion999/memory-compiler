@@ -541,6 +541,19 @@ def test_is_encrypted():
     assert is_encrypted("") is False
 
 
+def test_decrypt_content_indented_enc(monkeypatch):
+    """ENC-строка с ведущими пробелами (отступ списка/цитаты): is_encrypted её
+    детектит (.strip()), а decrypt_content раньше возвращал сырой шифртекст (без
+    .strip()). Теперь согласовано — расшифровывается."""
+    import memory_compiler.config as cfg
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-passphrase-123")
+    text = "секретное значение"
+    enc = encrypt_content(text)
+    assert decrypt_content(enc) == text              # без отступа
+    assert decrypt_content("    " + enc) == text     # с отступом — теперь расшифровывается
+    assert decrypt_content("    обычный текст") == "    обычный текст"  # не-ENC не трогаем
+
+
 def test_encrypt_without_key(monkeypatch):
     import memory_compiler.config as cfg
     monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "")

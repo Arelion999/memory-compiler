@@ -123,6 +123,41 @@ def test_delete_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
     assert not zombie, f"удалённая статья воскресла при свопе: {zombie}"
 
 
+def test_reduce_chunks_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
+    """Статья, ставшая односекционной ВО ВРЕМЯ encode пересборки (была многосекционной
+    на диске), не должна оставить старые parent#chunkN зомби в новом индексе."""
+    import memory_compiler.search as search_mod
+    proj = knowledge_dir / "testproj"
+    # 2 секции → rebuild соберёт testproj/multi.md#chunk0, #chunk1
+    (proj / "multi.md").write_text(
+        "# Multi\n\n**Теги:** t\n\n### A\nтекст секции A\n\n### B\nтекст секции B\n",
+        encoding="utf-8")
+    state = {"done": False}
+
+    def fake_encode(texts):
+        if not state["done"]:
+            state["done"] = True
+            # конкурентно: статья стала односекционной — один вектор parent, без #chunk
+            with search_mod._index_lock:
+                for k in [k for k in search_mod._embeddings
+                          if k == "testproj/multi.md" or k.startswith("testproj/multi.md#")]:
+                    search_mod._embeddings.pop(k, None)
+                search_mod._embeddings["testproj/multi.md"] = np.array([1.0, 0.0])
+                search_mod._dirty_parents.add("testproj/multi.md")
+        return [np.array([1.0, 0.0]) for _ in texts]
+
+    monkeypatch.setattr(search_mod, "encode_passages", fake_encode)
+    search_mod._embeddings.clear()
+    search_mod._embed_texts.clear()
+    search_mod._chunk_hashes.clear()
+    search_mod._dirty_parents.clear()
+    search_mod._deleted_parents.clear()
+    search_mod.rebuild_embeddings()
+    zombie = [k for k in search_mod._embeddings if k.startswith("testproj/multi.md#")]
+    assert not zombie, f"зомби-чанки остались после свопа: {zombie}"
+    assert "testproj/multi.md" in search_mod._embeddings, "актуальный вектор потерян"
+
+
 def test_delete_article_persists_pkl(knowledge_dir):
     """После delete_article статьи нет и в .embeddings.pkl — иначе после рестарта
     сервер поднимет её из кэша фантомом (файл удалён, а semantic её находит)."""
