@@ -2,6 +2,16 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.16.0 — 2026-07-16
+
+### Added
+
+- **Resource links во ВСЕХ поисковых инструментах.** Расширение v1.15.0 (`search`) на `search_by_tag`, `search_decisions`, `search_error`, `search_snippets` — каждый теперь помимо текста возвращает `ResourceLink`-блоки на найденные статьи (`memory://<проект>/<файл>`), кликабельные в Claude Desktop. Общий хелпер `handlers._resource_links(items)`: строит ссылки из `project`/`file`, пропускает секреты (`secret_`), схлопывает дубли по `project/file` (актуально для `search_snippets`, где из одной статьи несколько сниппетов). Первый блок каждого ответа — прежний текст (обратная совместимость). Так как Claude Desktop не выводит primitive-resources для сетевого коннектора в UI, но рендерит `resource_link` в выводе инструмента — это единственный способ сделать статьи кликабельными в Desktop, поэтому покрыты все поиски. Тесты: `tests/test_search_resource_links.py` (3).
+
+### Changed
+
+- **Тесты гоняются офлайн от HF Hub по умолчанию.** `tests/conftest.py` выставляет `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` (через `os.environ.setdefault`, до импорта ML-либ) — модели берутся из локального кэша, прогон не зависит от доступности huggingface.co. Устраняет flaky `test_embed_during_rebuild_survives_swap` при HF Hub 504/timeout. Согласовано с контейнером (те же флаги в `docker-compose.yml`). Больше не нужно вручную писать `HF_HUB_OFFLINE=1 pytest`.
+
 ## v1.15.1 — 2026-07-16
 
 ### Fixed

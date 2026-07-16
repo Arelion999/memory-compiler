@@ -287,6 +287,32 @@ async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dic
         return results[:top_k]
 
 
+def _resource_links(items) -> list[ResourceLink]:
+    """Построить ResourceLink на memory://<проект>/<файл> для результатов поиска.
+    items: iterable dict'ов с ключами project/file (+ optional title/desc). Секреты
+    (secret_) пропускаются — как ресурс недоступны; дубли по project/file схлопываются.
+    Клиент (Claude Desktop) рендерит их как кликабельные ссылки в выводе инструмента."""
+    links: list[ResourceLink] = []
+    seen: set[str] = set()
+    for r in items:
+        project, filename = r.get("project"), r.get("file")
+        if not project or not filename or filename.startswith("secret_"):
+            continue
+        key = f"{project}/{filename}"
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append(ResourceLink(
+            type="resource_link",
+            uri=f"memory://{project}/{filename}",
+            name=key,
+            title=r.get("title", "") or "",
+            description=r.get("desc", "") or "",
+            mimeType="text/markdown",
+        ))
+    return links
+
+
 async def search(query: str, project: str = "all") -> list[TextContent]:
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
     # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
@@ -987,7 +1013,7 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
     out = [f"# Тег: {tag} ({len(results)} статей)\n"]
     for r in results:
         out.append(f"---\n### [{r['project']}] {r['title']}\n{r['file']}\n")
-    return [TextContent(type="text", text="\n".join(out))]
+    return [TextContent(type="text", text="\n".join(out)), *_resource_links(results)]
 
 
 async def article_history(project: str, filename: str) -> list[TextContent]:
@@ -1923,9 +1949,13 @@ async def search_snippets(query: str, lang: str = None, project: str = "all") ->
         return [TextContent(type="text", text=f"Сниппетов с '{query}' не найдено.")]
 
     out = [f"# Сниппеты: '{query}' ({len(found)} найдено)\n"]
+    link_items = []
     for s in found[:10]:
         out.append(f"---\n**[{s['article']}]** ({s['lang']}) — {s['context']}\n```{s['lang']}\n{s['code']}\n```\n")
-    return [TextContent(type="text", text="\n".join(out))]
+        if "/" in s["article"]:
+            p, f = s["article"].split("/", 1)
+            link_items.append({"project": p, "file": f, "title": s.get("context", "")})
+    return [TextContent(type="text", text="\n".join(out)), *_resource_links(link_items)]
 
 
 # ─── Runbook ───────────────────────────────────────────────────────────────
@@ -2033,7 +2063,7 @@ async def search_error(error_text: str, project: str = "all") -> list[TextConten
     for r in ranked[:5]:
         preview = "\n".join(r["preview"].splitlines()[:8])
         out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
-    return [TextContent(type="text", text="\n".join(out))]
+    return [TextContent(type="text", text="\n".join(out)), *_resource_links(ranked[:5])]
 
 
 # ─── Project dependencies ─────────────────────────────────────────────────
@@ -2126,7 +2156,7 @@ async def search_decisions(query: str, project: str = "all") -> list[TextContent
     for r in decisions:
         preview = "\n".join(r["preview"].splitlines()[:8])
         out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
-    return [TextContent(type="text", text="\n".join(out))]
+    return [TextContent(type="text", text="\n".join(out)), *_resource_links(decisions)]
 
 
 # ─── Templates ─────────────────────────────────────────────────────────────

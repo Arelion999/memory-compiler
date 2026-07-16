@@ -1,4 +1,14 @@
 """Shared test fixtures."""
+import os
+
+# Тесты гоняются офлайн: модели эмбеддингов/reranker берутся из локального кэша HF,
+# без сетевых обращений к huggingface.co. Иначе при недоступности HF Hub (504/timeout)
+# падал test_embed_during_rebuild_survives_swap и др. — сеть не должна влиять на прогон.
+# Контейнер уже работает с этими флагами (docker-compose.yml). setdefault — чтобы явный
+# внешний HF_HUB_OFFLINE=0 (если кто-то намеренно тестирует онлайн) не перетирался.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import pytest
 from pathlib import Path
 
