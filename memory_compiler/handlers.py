@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, date
 from typing import Optional
 
 import numpy as np
-from mcp.types import TextContent
+from mcp.types import TextContent, ResourceLink
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, track_access, article_meta, save_article_meta,
@@ -312,16 +312,29 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
         header += (f"\n*В проекте «{project}» ничего не найдено — показаны результаты "
                    f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
     out = [header]
+    links: list[ResourceLink] = []
     for r in results:
-        if is_secret_article(r.get("preview", ""), r.get("file", "")):
+        secret = is_secret_article(r.get("preview", ""), r.get("file", ""))
+        if secret:
             r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
         preview_lines = r["preview"].splitlines()[:10]
         scores = f"score: {r['score']}"
         if "rerank_score" in r:
             scores += f", rerank: {r['rerank_score']:.2f}"
         out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n" + "\n".join(preview_lines) + "\n")
+        # Resource link на статью — клиент открывает/прикрепляет как memory://-ресурс.
+        # Секреты не линкуем (как ресурс они недоступны).
+        if not secret:
+            links.append(ResourceLink(
+                type="resource_link",
+                uri=f"memory://{r['project']}/{r['file']}",
+                name=f"{r['project']}/{r['file']}",
+                title=r.get("title", ""),
+                description=scores,
+                mimeType="text/markdown",
+            ))
 
-    return [TextContent(type="text", text="\n".join(out))]
+    return [TextContent(type="text", text="\n".join(out)), *links]
 
 
 # ─── _parse_daily_entries (private helper for compile) ───────────────────────

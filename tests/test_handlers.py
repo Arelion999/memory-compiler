@@ -223,7 +223,12 @@ async def test_save_lesson_force_new_no_overwrite(knowledge_dir):
 @pytest.mark.asyncio
 async def test_search(knowledge_dir):
     result = await search("docker", "testproj")
-    assert len(result) == 1
+    # Первый блок — текстовый summary (обратная совместимость)
+    assert result[0].type == "text"
+    assert "Test Article" in result[0].text
+    # За ним — resource links на найденные статьи (memory://<проект>/<файл>)
+    links = [b for b in result if getattr(b, "type", None) == "resource_link"]
+    assert any(str(l.uri).startswith("memory://testproj/test_article.md") for l in links)
 
 
 @pytest.mark.asyncio

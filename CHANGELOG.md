@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.15.0 — 2026-07-16
+
+### Added
+
+- **Resource links в результатах `search` (P2 плана MCP-примитивов).** `search` теперь помимо текстового summary возвращает `ResourceLink`-блоки на каждую найденную статью (`uri=memory://<проект>/<файл>`, `title`, `description` со score). В Claude Desktop результаты поиска становятся кликабельными: одним нажатием статью можно открыть/прикрепить как ресурс (замыкает петлю с примитивом resources из v1.12.0). Первый блок ответа — прежний текстовый summary (обратная совместимость сохранена: `result[0].text` не изменился). Секретные статьи не линкуются (как ресурс недоступны). Метрика размера ответа в `call_tool` теперь устойчива к блокам без `.text`. Тест `tests/test_handlers.py::test_search` обновлён под новый контракт. Требует только `docker restart`.
+
 ## v1.14.0 — 2026-07-16
 
 ### Added

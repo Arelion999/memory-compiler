@@ -891,8 +891,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception:
             pass
         raise
-    # Track response size
-    total = sum(len(t.text) for t in result)
+    # Track response size (result может содержать ResourceLink без .text)
+    total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
     audit_log(name, arguments, total)
     _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000), "size": total})
