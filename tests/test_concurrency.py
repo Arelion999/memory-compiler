@@ -123,6 +123,40 @@ def test_delete_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
     assert not zombie, f"удалённая статья воскресла при свопе: {zombie}"
 
 
+def test_write_path_does_not_block_event_loop(knowledge_dir, monkeypatch):
+    """B2: index_document/embed_document уведены в asyncio.to_thread — долгий embed
+    (encode модели на слабом CPU) больше НЕ морозит event loop. Проверяем, что
+    фоновая корутина тикает, пока save_lesson выполняет 'медленный' embed."""
+    import time
+    import memory_compiler.handlers as h
+    # index — no-op; embed — 'тяжёлый' (0.5с). Оба вызываются внутри _index_embed → to_thread.
+    monkeypatch.setattr(h, "index_document", lambda *a, **k: None)
+    monkeypatch.setattr(h, "embed_document", lambda *a, **k: time.sleep(0.5))
+
+    async def body():
+        ticks = []
+
+        async def beat():
+            try:
+                while True:
+                    ticks.append(1)
+                    await asyncio.sleep(0.02)
+            except asyncio.CancelledError:
+                pass
+
+        bt = asyncio.create_task(beat())
+        await asyncio.sleep(0)  # дать beat стартовать
+        await h.save_lesson("B2 тест", "тело", "testproj", force_new=True)
+        n = len(ticks)
+        bt.cancel()
+        return n
+
+    ticks_during_save = asyncio.run(body())
+    # Если embed(0.5с) блокировал бы event loop, beat не тикнул бы (~0-1). С to_thread —
+    # loop свободен, beat успевает много тиков. Порог 3 — с большим запасом от блокировки.
+    assert ticks_during_save >= 3, f"event loop блокировался во время save (ticks={ticks_during_save})"
+
+
 def test_reduce_chunks_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
     """Статья, ставшая односекционной ВО ВРЕМЯ encode пересборки (была многосекционной
     на диске), не должна оставить старые parent#chunkN зомби в новом индексе."""

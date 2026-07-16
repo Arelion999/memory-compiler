@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.9.7 — 2026-07-15
+
+### Changed (performance / responsiveness)
+
+- **Пишущий индекс-путь уведён в `asyncio.to_thread` (B2 из ревью).** Пишущие хендлеры (`save_lesson`, `edit_article`, `delete_article`, `remove_project`, `save_decision`, `save_secret`, `save_runbook`, `save_tracking`, `compile`, `lint`) звали `index_document`/`embed_document`/`remove_embedding`/`delete_document`/`delete_project_documents`/`persist_embeddings`/`regenerate_index` СИНХРОННО на event loop. `embed_document` делает encode модели (секунды на NAS-CPU) и берёт `_index_lock` — это морозило весь сервер (`/api/health` не отвечал, параллельные MCP-вызовы и SSE стояли) → таймауты и реконнекты, особенно после рестарта под фоновой пересборкой. Теперь эти вызовы обёрнуты в `await asyncio.to_thread(...)` (helper `_index_embed` для пары index+embed) — ожидание лока и инференс ушли с event loop в worker-поток. `save_article_meta`/`git_commit` НАМЕРЕННО оставлены на loop: перенос `save_article_meta` в поток дал бы гонку с `track_access` (loop мутирует `article_meta` ↔ поток итерирует его в `json.dumps` → «dict changed size»). Тест `test_write_path_does_not_block_event_loop` подтверждает: фоновая корутина тикает, пока идёт «медленный» embed.
+
 ## v1.9.6 — 2026-07-15
 
 Харденинг по итогам adversarial-ревью изменений v1.8.1–v1.9.5 (3 независимых агента). Исправлены собственные регрессии, найденные ревью.

@@ -45,6 +45,20 @@ from memory_compiler.storage import (
 # ─── save_lesson ─────────────────────────────────────────────────────────────
 
 
+async def _index_embed(text: str, filename: str, project: str) -> None:
+    """B2: index_document + embed_document в worker-потоке. embed_document делает encode
+    модели (секунды на слабом CPU) и берёт _index_lock — синхронно на event loop это
+    морозило весь сервер (/api/health, параллельные MCP-вызовы, SSE) → таймауты/реконнекты
+    после рестарта. asyncio.to_thread уводит ожидание лока и инференс с event loop.
+    save_article_meta/git_commit НАМЕРЕННО остаются на loop: перенос save_article_meta в
+    поток дал бы гонку с track_access (loop мутирует article_meta ↔ поток итерирует его в
+    json.dumps → 'dict changed size during iteration')."""
+    def _work():
+        index_document(text, filename, project)
+        embed_document(text, filename, project)
+    await asyncio.to_thread(_work)
+
+
 async def save_lesson(topic: str, content: str, project: str, tags: list = None, force_new: bool = False) -> list[TextContent]:
     try:
         safe_project_dir(project)
@@ -106,7 +120,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
                 n += 1
         article_text = f"""# {topic}\n\n**Дата:** {ts}\n**Проект:** {project}\n**Теги:** {', '.join(tags) if tags else '—'}\n\n## Записи\n\n### {ts}\n{content}\n"""
         article_path.write_text(article_text, encoding="utf-8")
-        regenerate_index()
+        await asyncio.to_thread(regenerate_index)
         action = f"\u2705 Создано: {project}/{article_path.name}"
 
     # 3. Git-линковка — извлечь и добавить git-ссылки
@@ -124,8 +138,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
 
     # 4. Update search indexes
     article_text = article_path.read_text(encoding="utf-8")
-    index_document(article_text, article_path.name, project)
-    embed_document(article_text, article_path.name, project)
+    await _index_embed(article_text, article_path.name, project)
 
     # 6. Обнаружение противоречий
     saved_key = f"{project}/{article_path.name}"
@@ -170,8 +183,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         fpath = KNOWLEDGE_DIR / upd["path"]
         if fpath.exists():
             updated_text = fpath.read_text(encoding="utf-8")
-            index_document(updated_text, fpath.name, project)
-            embed_document(updated_text, fpath.name, project)
+            await _index_embed(updated_text, fpath.name, project)
 
     # 11. Project journal (Karpathy LLM Wiki pattern)
     log_event(project, "save_lesson", f"{topic} → {article_path.name}")
@@ -417,8 +429,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
                         skipped += 1  # уже в статье (issue #2) — не дописываем и не переиндексируем
                         continue
                     article_text = existing.read_text(encoding="utf-8")
-                    index_document(article_text, existing.name, entry["project"])
-                    embed_document(article_text, existing.name, entry["project"])
+                    await _index_embed(article_text, existing.name, entry["project"])
                     updated += 1
                 else:
                     slug = make_slug(entry['topic'])
@@ -427,8 +438,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
                         article_path = project_dir(entry["project"]) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
                     article_text = f"# {entry['topic']}\n\n**Дата:** {ts}\n**Проект:** {entry['project']}\n**Теги:** {', '.join(entry['tags']) if entry['tags'] else '\u2014'}\n\n## Записи\n\n### {ts}\n{entry['content']}\n"
                     article_path.write_text(article_text, encoding="utf-8")
-                    index_document(article_text, article_path.name, entry["project"])
-                    embed_document(article_text, article_path.name, entry["project"])
+                    await _index_embed(article_text, article_path.name, entry["project"])
                     created += 1
 
         processed_logs.append(log)
@@ -445,7 +455,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
         for log in processed_logs:
             log.rename(archive_dir / log.name)
 
-        regenerate_index()
+        await asyncio.to_thread(regenerate_index)
         git_commit(f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
         summary = f"\u2705 Скомпилировано: {total_entries} записей \u2014 {updated} обновлено, {created} создано, {len(processed_logs)} логов архивировано" + (f" (пропущено дублей: {skipped})" if skipped else "")
         return [TextContent(type="text", text=summary)]
@@ -642,7 +652,7 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                     fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 \u0443\u0434\u0430\u043b\u0435\u043d\u043e {replaced} \u0431\u0438\u0442\u044b\u0445 \u0441\u0441\u044b\u043b\u043e\u043a")
 
     if fix:
-        regenerate_index()
+        await asyncio.to_thread(regenerate_index)
         fixed.append("\U0001f527 index.md перегенерирован")
 
     out = [f"# Lint \u2014 проверка базы знаний\n"]
@@ -829,11 +839,11 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     # Remove from indexes: под локом + журнал _deleted_parents (фоновый rebuild
     # не воскресит) + персист pkl (иначе после рестарта статья вернётся из кэша).
     key = f"{project}/{filename}"
-    _search.remove_embedding(key)
-    article_meta.pop(key, None)
-    save_article_meta()
-    _search.delete_document(key)  # точечно, вместо полного rebuild_index (вешал event loop)
-    regenerate_index()
+    await asyncio.to_thread(_search.remove_embedding, key)
+    article_meta.pop(key, None)          # loop: dict-op, чтобы не гонка с track_access
+    save_article_meta()                   # loop: json.dumps итерирует article_meta
+    await asyncio.to_thread(_search.delete_document, key)  # точечно, вне event loop
+    await asyncio.to_thread(regenerate_index)
     git_commit(f"delete: {filename} [{project}]")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
 
@@ -900,8 +910,7 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
         index_src = f"# {title}\n\n{tags_line}\n\n[зашифрованная статья]"
     else:
         index_src = fpath.read_text(encoding="utf-8")
-    index_document(index_src, filename, project)
-    embed_document(index_src, filename, project)
+    await _index_embed(index_src, filename, project)
 
     # Cascade-mark: refresh marker on lines that link to this file
     cascaded = mark_dependents(project, filename, ts)
@@ -1830,18 +1839,21 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     if articles and not confirm:
         return [TextContent(type="text", text=f"⚠️ Проект '{name}' содержит {len(articles)} статей. Для удаления передайте confirm=True. Это действие необратимо.")]
     if articles:
-        # Удалить все статьи из индексов (persist=False в цикле, один персист в конце)
-        for md in articles:
-            key = f"{name}/{md.name}"
-            _search.remove_embedding(key, persist=False)
-            article_meta.pop(key, None)
-        _search.persist_embeddings()
-    # Удалить папку
-    shutil.rmtree(str(proj_path))
+        keys = [f"{name}/{md.name}" for md in articles]
+        for key in keys:
+            article_meta.pop(key, None)  # loop: dict-op (гонка с track_access при выносе)
+
+        def _rm_embeds():  # индекс-путь в worker-потоке (persist=False в цикле, один персист)
+            for key in keys:
+                _search.remove_embedding(key, persist=False)
+            _search.persist_embeddings()
+        await asyncio.to_thread(_rm_embeds)
+    # Удалить папку (блокирующий I/O — вне event loop)
+    await asyncio.to_thread(shutil.rmtree, str(proj_path))
     save_article_meta()
     _cfg.PROJECTS[:] = _discover_projects()
-    _search.delete_project_documents(name)  # точечно, вместо полного rebuild_index
-    regenerate_index()
+    await asyncio.to_thread(_search.delete_project_documents, name)  # точечно, вне event loop
+    await asyncio.to_thread(regenerate_index)
     git_commit(f"remove project: {name} ({len(articles)} articles)")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Проект '{name}' удалён ({len(articles)} статей). Осталось проектов: {len(_cfg.PROJECTS)}")]
 
@@ -1935,9 +1947,8 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
         article_path = safe_project_dir(project) / f"{slug}_{datetime.now().strftime('%Y%m%d')}.md"
     article_path.write_text(article_text, encoding="utf-8")
 
-    index_document(article_text, article_path.name, project)
-    embed_document(article_text, article_path.name, project)
-    regenerate_index()
+    await _index_embed(article_text, article_path.name, project)
+    await asyncio.to_thread(regenerate_index)
     git_commit(f"runbook: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cb Runbook создан: {project}/{article_path.name} ({len(steps)} шагов)")]
@@ -2072,10 +2083,9 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
         article_path = safe_project_dir(project) / f"decision_{slug}_{datetime.now().strftime('%Y%m%d')}.md"
     article_path.write_text(article_text, encoding="utf-8")
 
-    index_document(article_text, article_path.name, project)
-    embed_document(article_text, article_path.name, project)
+    await _index_embed(article_text, article_path.name, project)
     update_active_context(project, f"Decision: {title}", decision)
-    regenerate_index()
+    await asyncio.to_thread(regenerate_index)
     git_commit(f"decision: {title} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cc Решение записано: {project}/{article_path.name}")]
@@ -2188,9 +2198,8 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 
     # Index with title+tags only (not encrypted content) for searchability
     index_text = f"# {topic}\n\n**Теги:** {', '.join(tags)}\n\n[зашифрованная статья]"
-    index_document(index_text, article_path.name, project)
-    embed_document(index_text, article_path.name, project)
-    regenerate_index()
+    await _index_embed(index_text, article_path.name, project)
+    await asyncio.to_thread(regenerate_index)
     update_active_context(project, f"Secret: {topic}", "[зашифровано]")
     track_access([f"{project}/{article_path.name}"])
     git_commit(f"secret: {topic} [{project}]")
@@ -2219,8 +2228,7 @@ async def save_tracking(project: str, entity: str, facts: dict, narrative: str =
     fpath = KNOWLEDGE_DIR / result["path"]
     if fpath.exists():
         text = fpath.read_text(encoding="utf-8")
-        index_document(text, fpath.name, project)
-        embed_document(text, fpath.name, project)
+        await _index_embed(text, fpath.name, project)
 
     git_commit(f"tracking: {project}/{entity} {result['action']}")
     return [TextContent(type="text", text=msg)]
