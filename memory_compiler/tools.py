@@ -4,7 +4,7 @@ import time
 from mcp.server import Server
 from mcp.types import (
     Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate,
-    Prompt, PromptArgument, PromptMessage, GetPromptResult,
+    Prompt, PromptArgument, PromptMessage, GetPromptResult, Completion,
 )
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
@@ -806,6 +806,55 @@ async def get_prompt(name: str, arguments: dict | None = None) -> GetPromptResul
         return GetPromptResult(description=f"Еженедельный обзор ({scope})", messages=[_user_msg(msg)])
 
     raise ValueError(f"Неизвестный промпт: {name}")
+
+
+# --- Completion (P2): автодополнение аргументов промптов/ресурсов ------------
+# Клиент подсказывает валидные имена проектов (в слэш-командах и в шаблоне
+# memory://{project}/{filename}) и имена статей по мере ввода. Секреты/служебные
+# файлы в подсказки не попадают.
+def _project_names() -> list[str]:
+    kd = config.KNOWLEDGE_DIR
+    if not kd or not kd.exists():
+        return []
+    return sorted(
+        p.name for p in kd.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name != "daily"
+    )
+
+
+def _article_names(project: str) -> list[str]:
+    kd = config.KNOWLEDGE_DIR
+    if not kd or not project:
+        return []
+    pdir = kd / project
+    if not pdir.is_dir():
+        return []
+    return sorted(a.name for a in pdir.glob("*.md") if not _is_meta_file(a.name))
+
+
+def _filter_candidates(cands: list[str], value: str) -> list[str]:
+    v = (value or "").strip().lower()
+    if not v:
+        return cands
+    prefix = [c for c in cands if c.lower().startswith(v)]
+    return prefix if prefix else [c for c in cands if v in c.lower()]
+
+
+@app.completion()
+async def complete(ref, argument, context=None) -> Completion:
+    name = getattr(argument, "name", None)
+    value = getattr(argument, "value", "") or ""
+    if name == "project":
+        vals = _filter_candidates(_project_names(), value)
+        return Completion(values=vals[:100], total=len(vals), hasMore=len(vals) > 100)
+    if name == "filename":
+        proj = ""
+        ctx_args = getattr(context, "arguments", None) if context else None
+        if ctx_args:
+            proj = (ctx_args or {}).get("project", "") or ""
+        vals = _filter_candidates(_article_names(proj), value)
+        return Completion(values=vals[:100], total=len(vals), hasMore=len(vals) > 100)
+    return Completion(values=[], total=0, hasMore=False)
 
 
 @app.call_tool()

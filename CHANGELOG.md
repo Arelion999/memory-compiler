@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.14.0 — 2026-07-16
+
+### Added
+
+- **Completion: автодополнение аргументов промптов и ресурсов (P2 плана MCP-примитивов).** Добавлен хендлер `@app.completion()` в `tools.py` — клиент (Claude Desktop) подсказывает валидные значения по мере ввода. Аргумент `project` (в слэш-командах `load-context`/`save-session`/`save-lesson`/`weekly-review` и в шаблоне ресурса `memory://{project}/{filename}`) автодополняется именами существующих проектов; аргумент `filename` в шаблоне ресурса — именами статей выбранного проекта (проект берётся из `CompletionContext.arguments`). Фильтрация: префикс-матч, при отсутствии — подстрока (регистронезависимо). **Секреты и служебные файлы** (`secret_*`, `_*`, `.*`, `index.md`, папка `daily`) в подсказки не попадают. `Completion` возвращает `values`/`total`/`hasMore` (кап 100). Имена проектов/статей резолвятся динамически из `config.KNOWLEDGE_DIR`. Capability `completions` теперь рекламируется в `initialize` — все четыре примитива MCP (`tools`+`resources`+`prompts`+`completions`) активны. Тесты: `tests/test_completion.py` (6). Обратная совместимость полная. Требует только `docker restart`.
+
 ## v1.13.0 — 2026-07-16
 
 ### Added
