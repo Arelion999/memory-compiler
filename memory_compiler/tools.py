@@ -94,6 +94,30 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["query"]
+            },
+            # Машиночитаемая выдача (structuredContent) для программных клиентов —
+            # список найденных статей с URI-ресурсами. Человекочитаемый текст + resource
+            # links остаются в content. Схема нестрогая (additionalProperties по умолчанию).
+            outputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "count": {"type": "integer"},
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "uri": {"type": "string", "description": "memory://<проект>/<файл>"},
+                                "name": {"type": "string"},
+                                "title": {"type": "string"},
+                                "score": {"type": "string"}
+                            },
+                            "required": ["uri", "name"]
+                        }
+                    }
+                },
+                "required": ["query", "count", "results"]
             }
         ),
         Tool(
@@ -899,7 +923,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
     audit_log(name, arguments, total)
     _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000), "size": total})
+    # У search объявлен outputSchema — обязаны вернуть structuredContent (SDK валидирует).
+    # Строим из уже готовых resource_link-блоков content: программный клиент получает
+    # машиночитаемый список, человекочитаемый текст + ссылки остаются в content.
+    if name == "search":
+        return (result, _build_search_structured(arguments.get("query", ""), result))
     return result
+
+
+def _build_search_structured(query: str, blocks: list) -> dict:
+    results = []
+    for b in blocks:
+        if getattr(b, "type", None) == "resource_link":
+            results.append({
+                "uri": str(b.uri),
+                "name": b.name or "",
+                "title": b.title or "",
+                "score": b.description or "",
+            })
+    return {"query": query, "count": len(results), "results": results}
 
 
 async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:

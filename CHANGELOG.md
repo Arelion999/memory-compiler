@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.17.0 — 2026-07-16
+
+### Added
+
+- **structuredContent + outputSchema для `search` (хвост P2 плана MCP-примитивов).** `search` теперь объявляет `outputSchema` и возвращает машиночитаемый `structuredContent` (`{query, count, results:[{uri, name, title, score}]}`) рядом с человекочитаемым текстом и resource links — программный MCP-клиент получает готовый список статей без парсинга текста. Реализация неинвазивная: `handlers.search` не тронут (и его тесты тоже), `structuredContent` строится в `call_tool` из уже готовых `resource_link`-блоков (`_build_search_structured`), для `name=="search"` возвращается `CombinationContent` `(content, structured)`; остальные tools отдают прежний список. SDK валидирует `structuredContent` против `outputSchema` на уровне протокола — проверено живым сетевым вызовом `call_tool("search")` (не только юнит-тестами). Схема нестрогая, `structured` всегда присутствует (в т.ч. пустой результат → `count:0`). Тесты: `tests/test_structured_output.py` (4). Замыкает P2: completion + resource links + structured output. Требует только `docker restart`.
+
 ## v1.16.0 — 2026-07-16
 
 ### Added
