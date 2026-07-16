@@ -300,6 +300,34 @@ def _split_body(body: str, max_len: int = CHUNK_BODY_MAX) -> list[str]:
     return windows or [""]
 
 
+def _article_contexts(text: str) -> dict:
+    """Карта ИИ-контекстов из frontmatter (contexts: секция→строка). Пусто, если нет
+    frontmatter/ключа/не-словарь — тогда fallback на метаданные (фаза 1)."""
+    try:
+        from memory_compiler.storage import _parse_frontmatter
+        fm, _ = _parse_frontmatter(text)
+        ctx = fm.get("contexts") if isinstance(fm, dict) else None
+        return ctx if isinstance(ctx, dict) else {}
+    except Exception:
+        return {}
+
+
+def _section_context(project: str, title: str, tags: str, header: str,
+                     article_contexts: dict) -> str:
+    """Контекст-заголовок к тексту чанка перед эмбеддингом. Фаза 2: если для секции есть
+    ИИ-контекст во frontmatter — берём его. Иначе фаза 1: [project · title · section · теги]."""
+    ai = article_contexts.get(header) if (article_contexts and header) else None
+    if ai:
+        return str(ai).strip()
+    parts = [p for p in (project, title) if p]
+    if header:
+        parts.append(header)
+    ctx = " · ".join(parts)
+    if tags:
+        ctx += f" · теги: {tags}"
+    return f"[{ctx}]"
+
+
 def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     """Split article into chunks by ### sections. Returns [(chunk_key, chunk_text), ...]."""
     lines = text.splitlines()
