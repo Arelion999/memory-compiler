@@ -365,8 +365,14 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     if len(sections) <= 1:
         ctx = _section_context(project, title, tags, "", article_contexts)
         body = " ".join(article_body_lines(text, limit=40))
+        windows = _split_body(body)
+        # Один под-чанк → «голый» родительский ключ (обратная совместимость с логикой
+        # конкурентного свопа rebuild/embed_document и dedup, ожидающей parent-key
+        # для односекционных статей). Несколько окон (длинное тело) → #chunkN.
+        if len(windows) == 1:
+            return [(path_key, f"{ctx} {windows[0]}")]
         return [(f"{path_key}#chunk{i}", f"{ctx} {window}")
-                for i, window in enumerate(_split_body(body))]
+                for i, window in enumerate(windows)]
 
     chunks = []
     idx = 0
