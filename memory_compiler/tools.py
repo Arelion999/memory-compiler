@@ -693,6 +693,9 @@ async def read_resource(uri) -> list[ReadResourceContents]:
     if "/" not in rest:
         return notice(f"❌ Ожидается memory://<проект>/<файл>, получено: {uri_s}")
     project, filename = rest.split("/", 1)
+    # AnyUrl percent-энкодит не-ASCII (кириллица) — раскодируем обратно в имя файла.
+    from urllib.parse import unquote
+    project, filename = unquote(project), unquote(filename)
     try:
         fpath = safe_article_path(project, filename)
     except ValueError as e:

@@ -59,6 +59,17 @@ def test_read_resource_unknown_returns_notice(knowledge_dir):
     assert out and ("не найден" in out[0].content.lower() or "not found" in out[0].content.lower())
 
 
+def test_read_resource_percent_encoded_cyrillic(knowledge_dir):
+    """URI кириллических статей приходит percent-энкодированным (AnyUrl) — read_resource
+    должен раскодировать путь, иначе файл «не найден». Регресс за живым багом v1.12.0."""
+    from urllib.parse import quote
+    (knowledge_dir / "testproj" / "тест_статья.md").write_text(
+        "# Тест\n\nсодержимое статьи\n", encoding="utf-8")
+    enc = "memory://testproj/" + quote("тест_статья.md")
+    out = list(asyncio.run(read_resource(enc)))
+    assert "содержимое статьи" in out[0].content, "percent-encoded кириллица должна раскодироваться"
+
+
 def test_list_resource_templates(knowledge_dir):
     tpls = asyncio.run(list_resource_templates())
     assert all(isinstance(t, ResourceTemplate) for t in tpls)

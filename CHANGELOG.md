@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.15.1 — 2026-07-16
+
+### Fixed
+
+- **`read_resource` не находил статьи с кириллическими именами (percent-encoding).** Пойман живой сетевой MCP-проверкой (`/mcp` handshake → `read_resource`): `AnyUrl` percent-энкодит не-ASCII, поэтому клиент присылает URI вида `memory://1c/1%D1%81_...md`, а хендлер парсил путь как есть и искал файл с буквальным `%D1%81` в имени → «Статья не найдена» практически для ВСЕХ реальных статей (имена на русском). Фикс: `read_resource` раскодирует `project` и `filename` через `urllib.parse.unquote`. Регресс-тест `test_read_resource_percent_encoded_cyrillic`. Баг был в resources с v1.12.0; листинг и completion работали, ломалось только чтение. Локальные тесты не ловили (ASCII-имена). Требует только `docker restart`.
+
 ## v1.15.0 — 2026-07-16
 
 ### Added
