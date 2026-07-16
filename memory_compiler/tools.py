@@ -2,7 +2,7 @@
 import time
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ToolAnnotations
 
 from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
@@ -13,9 +13,45 @@ from memory_compiler import obs
 app = Server("memory-compiler")
 
 
+# --- Tool annotations (MCP hints для клиента, напр. Claude Desktop) ---------
+# Классификация статична (per tool). Принцип: «может мутировать» => readOnlyHint=False,
+# даже если дефолтные аргументы читают (lint fix=False, compile dry_run=True) — иначе
+# клиент авто-подтвердит потенциально пишущий вызов.
+_READONLY_LOCAL = frozenset({
+    "get_context", "search", "load_session", "get_summary", "ask",
+    "get_active_context", "read_article", "search_by_tag", "article_history",
+    "list_projects", "search_snippets", "get_runbook", "search_error",
+    "get_project_deps", "search_decisions", "list_templates", "get_current",
+    "consolidate", "stale_facts", "gap_report", "route_project",
+})
+# read-only, но читает внешний источник (git-репо/лог) — openWorld
+_READONLY_OPENWORLD = frozenset({"knowledge_gap"})
+# необратимое удаление данных
+_DESTRUCTIVE = frozenset({"delete_article", "remove_project"})
+# повторный вызов с теми же аргументами не даёт доп. эффекта
+_IDEMPOTENT_WRITE = frozenset({"reindex", "init_schema"})
+# пишет в базу И тянет внешний источник (URL/vault/git)
+_OPENWORLD_WRITE = frozenset({"ingest", "import_obsidian", "git_capture"})
+
+
+def _annotations_for(name: str) -> ToolAnnotations:
+    """Вернуть ToolAnnotations по имени tool. По умолчанию — локальная не-деструктивная запись."""
+    if name in _READONLY_LOCAL:
+        return ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+    if name in _READONLY_OPENWORLD:
+        return ToolAnnotations(readOnlyHint=True, openWorldHint=True)
+    if name in _DESTRUCTIVE:
+        return ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+    if name in _IDEMPOTENT_WRITE:
+        return ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    if name in _OPENWORLD_WRITE:
+        return ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+    return ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    tools = [
         Tool(
             name="save_lesson",
             description="Сохранить или обновить статью в базе знаний. Автоматически находит существующую статью по теме и мержит новые факты.",
@@ -564,6 +600,9 @@ async def list_tools() -> list[Tool]:
             }
         ),
     ]
+    for t in tools:
+        t.annotations = _annotations_for(t.name)
+    return tools
 
 
 @app.call_tool()

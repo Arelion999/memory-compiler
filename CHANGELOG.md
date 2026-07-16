@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.11.0 — 2026-07-16
+
+### Added
+
+- **Tool annotations (MCP-хинты для клиента, P0 плана MCP-примитивов).** Каждый из 45 tools теперь отдаёт `ToolAnnotations`, чтобы Claude Desktop понимал природу вызова и снижал трение: 22 read-инструмента (`search`, `read_article`, `get_context`, `ask`, `list_projects`, `search_*`, `get_*`, `consolidate`, `stale_facts`, `gap_report`, `route_project` и др.) → `readOnlyHint=true` (клиент может авто-подтверждать — каждый поиск/чтение больше не требует ручного «Allow»); `delete_article`/`remove_project` → `destructiveHint=true` (явное подтверждение необратимого удаления); `reindex`/`init_schema` → `idempotentHint=true`; `ingest`/`import_obsidian`/`git_capture` → `openWorldHint=true` (сигнал о внешнем источнике — URL/vault/git); `knowledge_gap` → `readOnlyHint=true`+`openWorldHint=true` (читает внешний репо, не пишет в базу). Классификация статична (per tool в `tools.py`: множества `_READONLY_LOCAL`/`_DESTRUCTIVE`/…); принцип «может мутировать ⇒ `readOnlyHint=false`» даже при дефолтных read-аргументах (`lint fix=False`, `compile dry_run=True`) — чтобы клиент не авто-подтвердил потенциально пишущий вызов. Чистая метаданная поверх существующих tools — контракт вызовов не меняется, обратная совместимость полная. Тесты: `tests/test_tool_annotations.py` (7). Требует только `docker restart` (код, не зависимости).
+
 ## v1.10.2 — 2026-07-16
 
 ### Changed
