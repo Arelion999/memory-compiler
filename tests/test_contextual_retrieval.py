@@ -1,6 +1,8 @@
 from memory_compiler.search import _split_body, CHUNK_BODY_MAX
 from memory_compiler.search import _section_context, _article_contexts
 from memory_compiler.search import _chunk_article
+import pickle
+import memory_compiler.search as smod
 
 
 def test_split_body_short_returns_single():
@@ -90,3 +92,25 @@ def test_chunk_article_keys_start_with_path_key():
     chunks = _chunk_article(_multi_section_article(), "niksdesk/max.md")
     assert chunks and all(k == "niksdesk/max.md" or k.startswith("niksdesk/max.md#")
                           for k, _ in chunks)
+
+
+def test_context_format_version_mismatch_triggers_rebuild(knowledge_dir, monkeypatch):
+    monkeypatch.setattr(smod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
+    smod.EMBEDDINGS_PATH.write_bytes(pickle.dumps({
+        "model": smod.EMBED_MODEL_NAME,
+        "late_chunking": smod.LATE_CHUNKING,
+        "context_format_version": 0,
+        "embeddings": {}, "texts": {}, "chunk_hashes": {},
+    }))
+    assert smod.load_embeddings() is False
+
+
+def test_context_format_version_match_loads(knowledge_dir, monkeypatch):
+    monkeypatch.setattr(smod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
+    smod.EMBEDDINGS_PATH.write_bytes(pickle.dumps({
+        "model": smod.EMBED_MODEL_NAME,
+        "late_chunking": smod.LATE_CHUNKING,
+        "context_format_version": smod.CONTEXT_FORMAT_VERSION,
+        "embeddings": {}, "texts": {}, "chunk_hashes": {},
+    }))
+    assert smod.load_embeddings() is True

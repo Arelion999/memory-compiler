@@ -388,6 +388,7 @@ def _persist_embeddings_locked():
     atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
         "model": EMBED_MODEL_NAME,
         "late_chunking": LATE_CHUNKING,
+        "context_format_version": CONTEXT_FORMAT_VERSION,
         "embeddings": _embeddings,
         "texts": _embed_texts,
         "chunk_hashes": _chunk_hashes,
@@ -562,6 +563,11 @@ def load_embeddings():
     if cached_late != LATE_CHUNKING:
         print(f"load_embeddings: LATE_CHUNKING mismatch (pkl={cached_late} vs "
               f"current={LATE_CHUNKING}) — will rebuild")
+        return False
+    cached_ctx_ver = data.get("context_format_version", 0)
+    if cached_ctx_ver != CONTEXT_FORMAT_VERSION:
+        print(f"load_embeddings: context_format_version mismatch (pkl={cached_ctx_ver} "
+              f"vs current={CONTEXT_FORMAT_VERSION}) — will rebuild")
         return False
     try:
         _embeddings = data["embeddings"]
