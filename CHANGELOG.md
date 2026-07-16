@@ -2,6 +2,14 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.10.0 — 2026-07-15
+
+### Added
+
+- **Транспорт Streamable HTTP на `/mcp` — закрывает корень транзиентного `-32602`.** Добавлен рядом с `/sse` (ADDITIVE — существующие клиенты не затронуты). Причина `-32602`: у SSE есть длинный GET-стрим и окно между новой сессией (после реконнекта) и завершением `initialize`; tool-call, попавший в это окно, падал в `RuntimeError` внутри MCP SDK → `-32602` с пустым `data` (повтор проходил). У Streamable HTTP такого окна нет — сессия ведётся хедером `Mcp-Session-Id`, нет постоянного GET-стрима. Интеграция: `StreamableHTTPSessionManager` (жизненный цикл в `lifespan` через `async with .run()`), `Mount("/mcp", ...)`, авторизация Bearer в `AuthMiddleware` (без `?key=` — streamable-клиенты шлют хедеры, ключ не течёт в логи). Проверено: сервер стартует, `/sse` работает, `/mcp` без Bearer → 401, initialize-handshake с Bearer → 200 + `Mcp-Session-Id`.
+
+  **Переключение клиентов (по готовности):** в конфиге MCP-клиента заменить URL `…/sse` на `…/mcp` (для `mcp-remote` — `mcp-remote https://host/mcp --header "Authorization: Bearer <MC_API_KEY>"`). `/sse` остаётся рабочим для обратной совместимости.
+
 ## v1.9.9 — 2026-07-15
 
 ### Added

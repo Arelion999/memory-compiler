@@ -101,3 +101,13 @@ def test_search_respects_project_filter(knowledge_dir):
     projects = {r["project"] for r in data["results"]}
     assert projects <= {"testproj"}
     assert any(r["file"] == "nginx_here.md" for r in data["results"])
+
+
+def test_streamable_http_mount_additive():
+    """v1.10.0: Streamable HTTP смонтирован на /mcp, /sse НЕ удалён (additive)."""
+    from mcp.server import Server
+    from memory_compiler.api import create_starlette_app
+    app = create_starlette_app(Server("test"))
+    paths = [getattr(r, "path", None) for r in app.routes]
+    assert "/mcp" in paths, f"/mcp не смонтирован: {paths}"
+    assert "/sse" in paths, "/sse удалён — транспорт должен быть additive"

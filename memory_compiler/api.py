@@ -7,6 +7,7 @@ from urllib.parse import parse_qs
 import numpy as np
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route, Mount
@@ -530,6 +531,19 @@ class AuthMiddleware:
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await response(scope, receive, send)
 
+        # /mcp — Streamable HTTP транспорт (v1.10.0). Требует Bearer. В отличие от /sse,
+        # ?key= НЕ принимается: streamable-клиенты умеют кастомные хедеры, и ключ не течёт
+        # в access-логи/URL. Сессия ведётся хедером Mcp-Session-Id (нет длинного GET-стрима
+        # → нет pre-init окна reconnect, из-за которого /sse ловил -32602).
+        if path == "/mcp" or path.startswith("/mcp/"):
+            hdrs = dict((k.decode(), v.decode()) for k, v in scope.get("headers", []))
+            auth = hdrs.get("authorization", "")
+            token = auth[7:] if auth.startswith("Bearer ") else None
+            if token and hmac.compare_digest(token, MC_API_KEY):
+                return await self.app(scope, receive, send)
+            response = JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return await response(scope, receive, send)
+
         # /messages/?session_id=<uuid4> — session_id и есть токен: клиент получает
         # его ТОЛЬКО из уже аутентифицированного SSE-стрима (endpoint-событие),
         # угадать uuid4 нереально, чужой/несуществующий session_id транспорт
@@ -623,6 +637,11 @@ async def web_logs(request: Request):
 
 def create_starlette_app(mcp_server: Server) -> Starlette:
     sse = SseServerTransport("/messages/")
+    # Streamable HTTP транспорт (v1.10.0) — ADDITIVE, рядом с /sse (существующие клиенты
+    # не затронуты). У него нет длинного GET-стрима и pre-init окна reconnect, из-за
+    # которого /sse ловил транзиентный -32602 (гонка: tool-call на новой сессии до
+    # завершения initialize). Клиенты переключаются на /mcp по готовности.
+    session_manager = StreamableHTTPSessionManager(app=mcp_server)
 
     async def handle_sse(request: Request):
         async with sse.connect_sse(
@@ -767,7 +786,11 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
 
         anomaly_task = asyncio.create_task(anomaly_loop())
         print("Auto-compile daily 02:00, auto-lint Sun 03:00, anomaly-check каждые 15м")
-        yield
+        # session_manager.run() — жизненный цикл Streamable HTTP (task group). Оборачивает
+        # yield: без него handle_request на /mcp упадёт. Если бы .run() падал — не стартовал
+        # бы весь сервер (вкл. /sse), поэтому старт проверяем health-check'ом при деплое.
+        async with session_manager.run():
+            yield
         task.cancel()
         lint_task.cancel()
         anomaly_task.cancel()
@@ -799,6 +822,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/by-tag", endpoint=web_by_tag),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=sse.handle_post_message),
+            Mount("/mcp", app=session_manager.handle_request),  # Streamable HTTP (v1.10.0)
         ],
         middleware=middleware,
         lifespan=lifespan,
