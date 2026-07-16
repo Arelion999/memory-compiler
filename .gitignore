@@ -14,6 +14,7 @@ deploy.bat
 # Docs (не для публикации)
 docs/description.md
 docs/superpowers/
+docs/_internal/
 
 # Node (docx builder)
 docs/node_modules/
@@ -40,4 +41,3 @@ Thumbs.db
 
 # Test
 test_all.py
-внутренний регламент релиза

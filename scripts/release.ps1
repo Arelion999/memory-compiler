@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Release script for memory-compiler — исполняемая версия внутренний регламент релиза.
+  Release script for memory-compiler — исполняемая версия регламента релиза.
   Проверяет инвариант, гоняет тесты и скан утечек, коммитит весь диф, тегает, пушит.
 
 .EXAMPLE
@@ -85,7 +85,7 @@ Write-Host "Push:    origin --follow-tags"
 Write-Host ""
 Write-Host ">>> ШАГ 6: СЕЙЧАС задеплой рабочее дерево на NAS (VERSION уже поднят) и проверь" -ForegroundColor Yellow
 Write-Host "    вживую: /api/health отдаёт v$new; при смене транспорта — /mcp handshake + /sse 401."
-Write-Host "    Тег ставим ТОЛЬКО после успешной живой верификации (см. внутренний регламент релиза)."
+Write-Host "    Тег ставим ТОЛЬКО после успешной живой верификации (см. регламент релиза)."
 $yn = Read-Host "Задеплоено и верифицировано вживую? Продолжить коммит+тег+push? [y/N]"
 if ($yn -ne "y") { Write-Host "Отменено. VERSION поднят и файлы staged — откати вручную при желании."; exit 0 }
 
