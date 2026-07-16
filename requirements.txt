@@ -1,4 +1,8 @@
-mcp[cli]>=1.0.0
+# Запинено на 1.28.1 (последняя стабильная 1.x, июнь 2026; SDK в maintenance-режиме).
+# Раньше был не пиннутый >=1.0.0 → невоспроизводимые сборки. Совместимость с нашим
+# кодом (SseServerTransport.connect_sse, StreamableHTTPSessionManager, декораторы
+# Server incl. resources/prompts/completion, ToolAnnotations) проверена + полный сьют.
+mcp[cli]==1.28.1
 uvicorn>=0.30.0
 # Запинено на 1.0.0 (проверенная на NAS версия). Starlette 1.0 требует, чтобы
 # endpoint возвращал Response — handle_sse это делает (см. фикс -32602 v1.7.34).

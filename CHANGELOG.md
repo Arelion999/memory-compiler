@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.10.1 — 2026-07-16
+
+### Changed
+
+- **Апгрейд + пин MCP SDK: `mcp[cli]==1.28.1`** (была не пиннутая `>=1.0.0` → невоспроизводимые сборки; на NAS стояла 1.27.0). 1.28.1 — последняя стабильная в ветке 1.x (SDK в maintenance-режиме, только багфиксы/секьюрити). Свежая база перед добавлением новых MCP-примитивов (resources/prompts/annotations). Совместимость проверена: `SseServerTransport.connect_sse`, `StreamableHTTPSessionManager`, декораторы `Server` (вкл. `list_resources`/`list_prompts`/`completion`), `ToolAnnotations`, `Tool.outputSchema` — все на месте; полный тест-сьют зелёный против 1.28.1. `starlette==1.0.0` НЕ трогаем (фикс -32602 v1.7.34 завязан на ветку Starlette 1.0; 1.28.1 требует лишь `starlette>=0.27`). Требует пересборки образа (`docker-compose build` на NAS), не только restart.
+
 ## v1.10.0 — 2026-07-15
 
 ### Added
