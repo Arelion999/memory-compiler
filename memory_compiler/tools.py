@@ -2,7 +2,10 @@
 import time
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate
+from mcp.types import (
+    Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate,
+    Prompt, PromptArgument, PromptMessage, GetPromptResult,
+)
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from memory_compiler import config
@@ -719,6 +722,90 @@ async def list_resource_templates() -> list[ResourceTemplate]:
                     "Секретные статьи недоступны как ресурсы.",
         mimeType=_RESOURCE_MIME,
     )]
+
+
+# --- Prompts (P1): нативные слэш-команды для клиента ------------------------
+# В Claude Desktop появляются /mcp__memory-compiler__load-context, save-session,
+# save-lesson, weekly-review — часть workflow memory-autopilot как нативные команды.
+# Промпты отдают шаблонные сообщения-инструкции (не исполняют tools сами).
+_PROMPTS: list[Prompt] = [
+    Prompt(
+        name="load-context",
+        title="Загрузить контекст проекта",
+        description="Поднять рабочий контекст проекта из базы знаний (активный контекст, решения, открытые вопросы).",
+        arguments=[PromptArgument(name="project", description="Имя проекта", required=True)],
+    ),
+    Prompt(
+        name="save-session",
+        title="Сохранить сессию",
+        description="Сохранить итог текущей сессии по проекту (что сделано, решения, что осталось).",
+        arguments=[PromptArgument(name="project", description="Имя проекта", required=True)],
+    ),
+    Prompt(
+        name="save-lesson",
+        title="Сохранить урок",
+        description="Сформулировать и сохранить урок (проблема → причина → решение → факты) в проект.",
+        arguments=[
+            PromptArgument(name="project", description="Имя проекта", required=True),
+            PromptArgument(name="topic", description="Тема урока (опционально)", required=False),
+        ],
+    ),
+    Prompt(
+        name="weekly-review",
+        title="Еженедельный обзор",
+        description="Свести из базы знаний последние решения, изменения статусов, открытые вопросы и knowledge gaps.",
+        arguments=[PromptArgument(name="project", description="Имя проекта (опционально; иначе все)", required=False)],
+    ),
+]
+
+
+def _user_msg(text: str) -> PromptMessage:
+    return PromptMessage(role="user", content=TextContent(type="text", text=text))
+
+
+@app.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    return _PROMPTS
+
+
+@app.get_prompt()
+async def get_prompt(name: str, arguments: dict | None = None) -> GetPromptResult:
+    args = arguments or {}
+    project = (args.get("project") or "").strip()
+    topic = (args.get("topic") or "").strip()
+
+    if name == "load-context":
+        p = project or "нужный проект"
+        msg = (f"Подними рабочий контекст проекта «{p}» из базы знаний memory-compiler: "
+               f"вызови start_task с темой «продолжение работы» (project={p}), затем покажи активный "
+               f"контекст, последние решения и открытые вопросы. Кратко резюмируй, на чём остановились.")
+        return GetPromptResult(description=f"Загрузка контекста проекта {p}", messages=[_user_msg(msg)])
+
+    if name == "save-session":
+        p = project or "текущий проект"
+        msg = (f"Сохрани итог текущей сессии по проекту «{p}»: вызови save_session (project={p}) с кратким "
+               f"summary сделанного, принятыми решениями и открытыми вопросами. Если решалась нетривиальная "
+               f"задача — дополнительно finish_task с проблемой, причиной, решением и ключевыми фактами.")
+        return GetPromptResult(description=f"Сохранение сессии проекта {p}", messages=[_user_msg(msg)])
+
+    if name == "save-lesson":
+        p = project or "нужный проект"
+        about = f" про «{topic}»" if topic else ""
+        msg = (f"Сохрани урок{about} в проект «{p}»: сформулируй проблему, причину, решение и ключевые факты, "
+               f"затем вызови save_lesson (project={p}). Если это был выбор между альтернативами — save_decision; "
+               f"если пошаговая инструкция — save_runbook.")
+        return GetPromptResult(description=f"Сохранение урока в проект {p}", messages=[_user_msg(msg)])
+
+    if name == "weekly-review":
+        scope = f"проекту «{project}»" if project else "всем проектам"
+        proj_arg = f"project={project}" if project else "project=all"
+        msg = (f"Сделай еженедельный обзор по {scope}: собери из базы знаний memory-compiler последние решения "
+               f"(search_decisions), изменения статусов (get_current для release/deployment/config), открытые "
+               f"вопросы из последних сессий и knowledge gaps (gap_report, {proj_arg}). Сведи в краткий отчёт: "
+               f"что сделано, что в работе, что требует внимания.")
+        return GetPromptResult(description=f"Еженедельный обзор ({scope})", messages=[_user_msg(msg)])
+
+    raise ValueError(f"Неизвестный промпт: {name}")
 
 
 @app.call_tool()

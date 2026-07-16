@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.13.0 — 2026-07-16
+
+### Added
+
+- **Prompts: нативные слэш-команды для Claude Desktop (P1 плана MCP-примитивов).** Добавлен третий примитив MCP — prompts, замыкающий трио `tools`+`resources`+`prompts`. В клиенте появляются команды `/mcp__memory-compiler__load-context`, `save-session`, `save-lesson`, `weekly-review` — часть workflow memory-autopilot как нативные слэш-команды. Реализованы два low-level хендлера в `tools.py`: `list_prompts` (отдаёт 4 `Prompt` с `title`/`description`/`arguments`) и `get_prompt` (по имени+аргументам собирает `GetPromptResult` с шаблонным сообщением-инструкцией). `load-context {project}` — поднять контекст проекта (start_task → активный контекст/решения/открытые вопросы); `save-session {project}` — сохранить итог сессии (save_session/finish_task); `save-lesson {project, topic?}` — сформулировать и сохранить урок; `weekly-review {project?}` — свести решения, статусы, открытые вопросы и knowledge gaps в отчёт. Промпты отдают инструкции, не исполняют tools сами (идиоматично для MCP). Capability `prompts` теперь рекламируется в `initialize` (наряду с `resources` из v1.12.0 и `tools`). Тесты: `tests/test_prompts.py` (6). Обратная совместимость полная. Требует только `docker restart`.
+
 ## v1.12.0 — 2026-07-16
 
 ### Added
