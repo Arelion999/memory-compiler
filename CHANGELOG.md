@@ -2,6 +2,16 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.9.9 — 2026-07-15
+
+### Added
+
+- **Лёгкие алерты аномалий (P2 observability — `anomaly_loop`).** Фоновый цикл раз в 15 мин проверяет всплеск ошибок (прирост `total_errors >= MC_ANOMALY_ERROR_THRESHOLD`, дефолт 10) и стойкую деградацию `semantic→BM25`, пишет `ALERT` в лог уровня ERROR (виден через `GET /api/logs?level=error`). Без внешних сервисов. Детектор `obs.anomaly_alerts()` — чистая функция, покрыта тестами.
+
+### Security
+
+- **cookie `mc_token` получает флаг `Secure` при HTTPS.** `web_login` ставит `secure=True`, только если `request.url.scheme == "https"` — на HTTP-развёртывании в LAN (см. security.md) флаг не ставится (иначе сломал бы установку cookie), при HTTPS cookie не уйдёт по нешифрованному каналу.
+
 ## v1.9.8 — 2026-07-15
 
 ### Fixed (concurrency / OOM)

@@ -166,6 +166,22 @@ def stats() -> dict:
         }
 
 
+def anomaly_alerts(prev_total_errors: int, spike_threshold: int) -> tuple[list[str], int]:
+    """P2 observability: сформировать ALERT-строки по текущему состоянию + вернуть
+    новый prev_total_errors. Детектит: (1) всплеск ошибок (прирост >= spike_threshold
+    за интервал), (2) стойкую деградацию semantic→BM25. Чистая функция — тестируемо;
+    доставку (лог/файл) делает вызывающий anomaly_loop."""
+    s = stats()
+    total = s["total_errors"]
+    alerts: list[str] = []
+    delta = total - prev_total_errors
+    if delta >= spike_threshold:
+        alerts.append(f"всплеск ошибок +{delta} за интервал (коды: {s['errors_by_code']})")
+    if s["semantic_degraded"]:
+        alerts.append(f"semantic деградировал к BM25 с {s['semantic_degraded_since']}")
+    return alerts, total
+
+
 def read_log_tail(limit: int = 200, level: str | None = None) -> list[dict]:
     """Прочитать хвост app.jsonl (O(limit) памяти через deque, не read_text целиком).
     Опциональный фильтр по уровню (ERROR/WARNING/...)."""

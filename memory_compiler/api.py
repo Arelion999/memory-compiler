@@ -579,7 +579,12 @@ async def web_login(request: Request):
     # constant-time сравнение (как в middleware) — не давать тайминг-сайдканал на подбор
     if MC_API_KEY and hmac.compare_digest((data.get("key") or "").encode(), MC_API_KEY.encode()):
         response = JSONResponse({"ok": True})
-        response.set_cookie("mc_token", MC_API_KEY, max_age=30 * 24 * 3600, httponly=True, samesite="lax")
+        # secure=True только при HTTPS: на HTTP-развёртывании в LAN (см. security.md)
+        # флаг сломал бы установку cookie. За обратным прокси с TLS scheme может быть
+        # http — тогда включить через X-Forwarded-Proto/env при необходимости.
+        secure = request.url.scheme == "https"
+        response.set_cookie("mc_token", MC_API_KEY, max_age=30 * 24 * 3600,
+                            httponly=True, samesite="lax", secure=secure)
         return response
     return JSONResponse({"error": "Неверный ключ"}, status_code=401)
 
@@ -740,10 +745,32 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         warm_task = asyncio.create_task(_warm_models())  # strong ref: avoid GC
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
-        print("Auto-compile scheduled daily at 02:00, auto-lint weekly Sun 03:00")
+
+        async def anomaly_loop():
+            """P2 observability: раз в 15 мин проверяет аномалии (всплеск ошибок,
+            стойкая деградация semantic→BM25) и пишет ALERT в лог (app.jsonl уровня
+            ERROR) — видно через /api/logs?level=error, без внешних сервисов."""
+            import os as _os
+            threshold = int(_os.environ.get("MC_ANOMALY_ERROR_THRESHOLD", "10"))
+            log = obs.get_logger("anomaly")
+            prev = 0
+            while True:
+                try:
+                    await asyncio.sleep(900)  # 15 мин
+                    alerts, prev = obs.anomaly_alerts(prev, threshold)
+                    for a in alerts:
+                        log.error(f"ALERT: {a}")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    log.error(f"anomaly_loop error: {e}")
+
+        anomaly_task = asyncio.create_task(anomaly_loop())
+        print("Auto-compile daily 02:00, auto-lint Sun 03:00, anomaly-check каждые 15м")
         yield
         task.cancel()
         lint_task.cancel()
+        anomaly_task.cancel()
 
     middleware = []
     if MC_API_KEY:

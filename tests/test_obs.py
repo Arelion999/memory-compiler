@@ -182,3 +182,26 @@ def test_search_candidate_pool_default():
     import memory_compiler.handlers as h
     assert isinstance(h.SEARCH_CANDIDATE_POOL, int)
     assert h.SEARCH_CANDIDATE_POOL == 10
+
+
+# ─── anomaly_alerts (P2 observability) ────────────────────────────────────────
+def test_anomaly_alerts_error_spike():
+    for _ in range(12):
+        obs.record_error("t", "X")
+    alerts, new_prev = obs.anomaly_alerts(prev_total_errors=0, spike_threshold=10)
+    assert new_prev == 12
+    assert any("всплеск" in a for a in alerts)
+
+
+def test_anomaly_alerts_below_threshold_no_alert():
+    for _ in range(3):
+        obs.record_error("t", "X")
+    alerts, new_prev = obs.anomaly_alerts(0, 10)
+    assert new_prev == 3
+    assert alerts == []
+
+
+def test_anomaly_alerts_semantic_degraded():
+    obs.set_semantic_degraded(True)
+    alerts, _ = obs.anomaly_alerts(0, 10)
+    assert any("semantic" in a for a in alerts)
