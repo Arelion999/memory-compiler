@@ -329,7 +329,10 @@ def _section_context(project: str, title: str, tags: str, header: str,
 
 
 def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
-    """Split article into chunks by ### sections. Returns [(chunk_key, chunk_text), ...]."""
+    """Split article into chunks by ### sections, prepending contextual header
+    (project·title·section·tags или ИИ-контекст из frontmatter) к тексту каждого чанка.
+    Длинные секции режутся на под-чанки без потери хвоста. Returns [(chunk_key, chunk_text), ...].
+    Меняется только ТЕКСТ для эмбеддинга; тело статьи/preview/ключи-родители не затрагиваются."""
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else ""
     tags = ""
@@ -337,14 +340,13 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
         if line.lower().startswith("**теги:**"):
             tags = line.split(":", 1)[1].strip()
             break
+    project = path_key.split("/", 1)[0]
+    article_contexts = _article_contexts(text)
 
-    # Late chunking mode: return whole document as one embedding key.
-    # Preserves cross-section context (anaphoric refs, headers without bodies).
     if LATE_CHUNKING:
-        whole = f"{title} {tags} {text}"
-        return [(path_key, whole)]
+        ctx = _section_context(project, title, tags, "", article_contexts)
+        return [(path_key, f"{ctx} {text}")]
 
-    # Find ### sections
     sections = []
     current_lines = []
     current_header = ""
@@ -360,17 +362,19 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     if current_lines:
         sections.append((current_header, "\n".join(current_lines)))
 
-    # If no ### sections or only 1, return single chunk
     if len(sections) <= 1:
-        return [(path_key, f"{title} {tags} {' '.join(article_body_lines(text, limit=40))[:500]}")]
+        ctx = _section_context(project, title, tags, "", article_contexts)
+        body = " ".join(article_body_lines(text, limit=40))
+        return [(f"{path_key}#chunk{i}", f"{ctx} {window}")
+                for i, window in enumerate(_split_body(body))]
 
-    # Multiple sections — create chunk per section, prepend title+tags for context
     chunks = []
-    prefix = f"{title} {tags}"
-    for i, (header, body) in enumerate(sections):
-        chunk_key = f"{path_key}#chunk{i}"
-        chunk_text = f"{prefix} {header} {body[:400]}"
-        chunks.append((chunk_key, chunk_text))
+    idx = 0
+    for header, body in sections:
+        ctx = _section_context(project, title, tags, header, article_contexts)
+        for window in _split_body(body):
+            chunks.append((f"{path_key}#chunk{idx}", f"{ctx} {window}"))
+            idx += 1
     return chunks
 
 
