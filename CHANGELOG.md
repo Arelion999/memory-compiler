@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.18.0 — 2026-07-16
+
+### Changed
+
+- **Contextual Retrieval, релиз 1 (полировка ретривала).** `_chunk_article` (`search.py`) теперь добавляет **имя проекта** в контекст-префикс каждого чанка (`[project · title · section · теги]`) — раньше в текст эмбеддинга шли только title/tags/section, проекта не было; помогает кросс-проектному семантическому поиску. Длинные секции больше **не обрезаются** `body[:400]` — тело режется на под-чанки (`_split_body`, окно `CHUNK_BODY_MAX=600`), хвост длинной секции теперь тоже находится семантикой. Заложен **задел фазы 2**: `_chunk_article` читает `contexts:` из YAML-frontmatter (карта секция→строка) и, если контекст для секции есть, использует его вместо метаданных (сейчас ни у кого нет → чистый fallback). Инвалидация: новая `context_format_version` в `.embeddings.pkl` (несовпадение → полный rebuild, как при смене модели) — при деплое существующие ~1500 статей разово переэмбеддятся с новым контекстом. BM25 (Whoosh BM25F с полями title/tags) не трогали. Тело статьи и preview не изменились. Тесты: `tests/test_contextual_retrieval.py` (14). Требует `docker restart` + один `reindex`.
+
 ## v1.17.1 — 2026-07-16
 
 ### Fixed
