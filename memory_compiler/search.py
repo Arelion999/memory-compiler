@@ -113,8 +113,11 @@ LATE_CHUNKING = _os_embed.environ.get("LATE_CHUNKING", "false").lower() in ("1",
 # Контекстуализация чанков: project+title+section(+ИИ-контекст) в текст эмбеддинга,
 # нарезка длинных секций. Смена версии инвалидирует .embeddings.pkl → полный rebuild
 # (как смена model/late_chunking). v2 = + project, un-truncate, frontmatter contexts.
-CONTEXT_FORMAT_VERSION = 2
-CHUNK_BODY_MAX = 600  # макс. длина тела в одном под-чанке; длиннее — режем на окна
+CONTEXT_FORMAT_VERSION = 3
+CHUNK_BODY_MAX = 600         # макс. длина тела в одном под-чанке; длиннее — режем на окна
+CHUNK_MAX_SUBCHUNKS = 4      # кап под-чанков на секцию: не даём огромным секциям (ingested
+                            # PDF/URL) взрывать число чанков → индекс и rebuild управляемы.
+                            # 4×600=2400 симв./секция vs старые body[:400] — 6× покрытия, но ограниченно.
 
 # Memory-safe encoding controls for big models (BGE-M3, Qwen3-Embedding etc):
 # without these, model.encode(docs=540, seq=8192, hidden=1024) tries a peak
@@ -365,7 +368,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     if len(sections) <= 1:
         ctx = _section_context(project, title, tags, "", article_contexts)
         body = " ".join(article_body_lines(text, limit=40))
-        windows = _split_body(body)
+        windows = _split_body(body)[:CHUNK_MAX_SUBCHUNKS]
         # Один под-чанк → «голый» родительский ключ (обратная совместимость с логикой
         # конкурентного свопа rebuild/embed_document и dedup, ожидающей parent-key
         # для односекционных статей). Несколько окон (длинное тело) → #chunkN.
@@ -378,7 +381,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     idx = 0
     for header, body in sections:
         ctx = _section_context(project, title, tags, header, article_contexts)
-        for window in _split_body(body):
+        for window in _split_body(body)[:CHUNK_MAX_SUBCHUNKS]:
             chunks.append((f"{path_key}#chunk{idx}", f"{ctx} {window}"))
             idx += 1
     return chunks

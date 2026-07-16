@@ -114,3 +114,12 @@ def test_context_format_version_match_loads(knowledge_dir, monkeypatch):
         "embeddings": {}, "texts": {}, "chunk_hashes": {},
     }))
     assert smod.load_embeddings() is True
+
+
+def test_chunk_article_caps_subchunks_per_section():
+    """Огромная секция (ingested PDF/URL) не должна взрывать число чанков — кап
+    CHUNK_MAX_SUBCHUNKS на секцию. Без капа тело ~21000 символов дало бы ~35 окон."""
+    from memory_compiler.search import _chunk_article, CHUNK_MAX_SUBCHUNKS
+    huge = "# T\n**Теги:** x\n\n## Записи\n\n### Big\n" + ("данные " * 3000)
+    chunks = _chunk_article(huge, "proj/big.md")
+    assert len(chunks) <= 2 * CHUNK_MAX_SUBCHUNKS, f"кап не сработал: {len(chunks)} чанков"
