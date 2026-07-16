@@ -110,6 +110,12 @@ EMBED_MODEL_NAME = _os_embed.environ.get("EMBED_MODEL", "paraphrase-multilingual
 # truncate long articles — only enable when paired with EMBED_MODEL upgrade.
 LATE_CHUNKING = _os_embed.environ.get("LATE_CHUNKING", "false").lower() in ("1", "true", "yes")
 
+# Контекстуализация чанков: project+title+section(+ИИ-контекст) в текст эмбеддинга,
+# нарезка длинных секций. Смена версии инвалидирует .embeddings.pkl → полный rebuild
+# (как смена model/late_chunking). v2 = + project, un-truncate, frontmatter contexts.
+CONTEXT_FORMAT_VERSION = 2
+CHUNK_BODY_MAX = 600  # макс. длина тела в одном под-чанке; длиннее — режем на окна
+
 # Memory-safe encoding controls for big models (BGE-M3, Qwen3-Embedding etc):
 # without these, model.encode(docs=540, seq=8192, hidden=1024) tries a peak
 # allocation ~18GB and OOMs on NAS-class machines even with 32GB RAM.
@@ -266,6 +272,32 @@ def _doc_text_for_embedding(text: str) -> str:
             break
     body_preview = " ".join(article_body_lines(text, limit=40))[:500]
     return f"{title} {tags} {body_preview}"
+
+
+def _split_body(body: str, max_len: int = CHUNK_BODY_MAX) -> list[str]:
+    """Нарезать тело секции на окна ≤ max_len по границам строк — чтобы хвост длинной
+    секции тоже попал в эмбеддинг (раньше body[:400] его терял). Короткое тело → один
+    элемент; пустое → [''] (секция без тела всё равно даёт чанк с контекстом)."""
+    body = body.strip()
+    if len(body) <= max_len:
+        return [body] if body else [""]
+    windows: list[str] = []
+    cur = ""
+    for line in body.splitlines():
+        candidate = f"{cur}\n{line}" if cur else line
+        if len(candidate) <= max_len:
+            cur = candidate
+            continue
+        if cur:
+            windows.append(cur)
+            cur = ""
+        while len(line) > max_len:      # одиночная строка длиннее окна — режем жёстко
+            windows.append(line[:max_len])
+            line = line[max_len:]
+        cur = line
+    if cur:
+        windows.append(cur)
+    return windows or [""]
 
 
 def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
