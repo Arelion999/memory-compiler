@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.9.8 — 2026-07-15
+
+### Fixed (concurrency / OOM)
+
+- **Двойная загрузка ML-моделей при конкурентном старте (B3 из ревью).** `get_embed_model`/`get_reranker_model` делали `if _model is None: _model = load()` без лока. На старте `_bg_rebuild` (грузит embed через `rebuild_embeddings`) и `_warm_models` (грузит embed + reranker) идут в разных потоках executor'а — оба видели `None` и конструировали модель ДВАЖДЫ → двойной пик RAM (риск OOM на NAS, где память под контролем). Добавлен общий `_model_load_lock` с double-checked locking; модель конструируется ровно раз. Заодно устранена гонка частичной инициализации: embed-модель публикуется в глобал только ПОСЛЕ применения `max_seq_length`-cap (раньше между присваиванием и cap другой поток мог получить модель без ограничения длины). Проверка на deadlock: `get_*_model` нигде не вызываются под `_index_lock` (encode всегда вне лока), вложенности локов нет. Тесты: конкурентные 8 потоков конструируют модель ровно раз.
+
 ## v1.9.7 — 2026-07-15
 
 ### Changed (performance / responsiveness)

@@ -157,6 +157,56 @@ def test_write_path_does_not_block_event_loop(knowledge_dir, monkeypatch):
     assert ticks_during_save >= 3, f"event loop блокировался во время save (ticks={ticks_during_save})"
 
 
+def test_get_embed_model_loads_once_under_concurrency(monkeypatch):
+    """B3: double-checked lock — конкурентные вызовы get_embed_model конструируют
+    embed-модель РОВНО ОДИН раз (без лока 8 потоков видели None → несколько конструкций
+    → двойной пик RAM/OOM на NAS)."""
+    import threading
+    import time
+    import memory_compiler.search as sm
+    monkeypatch.setattr(sm, "_embed_model", None)
+    constructions = []  # list.append потокобезопасен (GIL)
+
+    class FakeST:
+        def __init__(self, name):
+            constructions.append(name)
+            time.sleep(0.05)  # окно для гонки между потоками
+            self.max_seq_length = 128
+    monkeypatch.setattr(sm, "SentenceTransformer", FakeST)
+
+    threads = [threading.Thread(target=sm.get_embed_model) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(constructions) == 1, f"модель сконструирована {len(constructions)} раз (ожидалось 1)"
+    assert sm._embed_model is not None
+
+
+def test_get_reranker_model_loads_once_under_concurrency(monkeypatch):
+    """B3: double-checked lock и для reranker'а."""
+    import threading
+    import time
+    import memory_compiler.search as sm
+    monkeypatch.setattr(sm, "_reranker_model", None)
+    constructions = []
+
+    class FakeCE:
+        def __init__(self, name, max_length=512):
+            constructions.append(name)
+            time.sleep(0.05)
+    monkeypatch.setattr(sm, "CrossEncoder", FakeCE)
+
+    threads = [threading.Thread(target=sm.get_reranker_model) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(constructions) == 1, f"reranker сконструирован {len(constructions)} раз (ожидалось 1)"
+
+
 def test_reduce_chunks_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
     """Статья, ставшая односекционной ВО ВРЕМЯ encode пересборки (была многосекционной
     на диске), не должна оставить старые parent#chunkN зомби в новом индексе."""

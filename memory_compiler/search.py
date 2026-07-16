@@ -134,6 +134,11 @@ def _splade_search(query: str, project: str = "all", limit: int = 20) -> dict[st
     """
     return {}
 _embed_model: Optional[SentenceTransformer] = None
+# Общий лок на ленивую загрузку моделей (double-checked). Конкурентный старт грузил
+# модель ДВАЖДЫ: _bg_rebuild (embed) и _warm_models (embed+reranker) идут в разных
+# потоках executor'а, оба видели _model is None → две конструкции → двойной пик RAM
+# (риск OOM на NAS). Общий лок ещё и не даёт грузить embed и reranker одновременно.
+_model_load_lock = _threading.Lock()
 _embeddings: dict[str, np.ndarray] = {}  # path -> embedding
 _embed_texts: dict[str, str] = {}  # path -> title+tags for display
 # chunk_key -> sha1(chunk_text): позволяет rebuild_embeddings пере-кодировать ТОЛЬКО
@@ -150,15 +155,18 @@ _deleted_parents: set[str] = set()
 def get_embed_model() -> SentenceTransformer:
     global _embed_model
     if _embed_model is None:
-        _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
-        # Cap context length — long-context defaults (8192) make peak memory
-        # allocation explode during batch encoding. 2048 covers >99% of our
-        # articles; longer ones are truncated rather than OOM the host.
-        try:
-            if _embed_model.max_seq_length > EMBED_MAX_SEQ_LENGTH:
-                _embed_model.max_seq_length = EMBED_MAX_SEQ_LENGTH
-        except Exception:
-            pass
+        with _model_load_lock:
+            if _embed_model is None:  # double-check под локом
+                m = SentenceTransformer(EMBED_MODEL_NAME)
+                # Cap context length — long-context defaults (8192) make peak memory
+                # allocation explode during batch encoding. 2048 covers >99% of our
+                # articles; longer ones are truncated rather than OOM the host.
+                try:
+                    if m.max_seq_length > EMBED_MAX_SEQ_LENGTH:
+                        m.max_seq_length = EMBED_MAX_SEQ_LENGTH
+                except Exception:
+                    pass
+                _embed_model = m  # публикуем только полностью готовую (с seq-cap) модель
     return _embed_model
 
 
@@ -204,11 +212,13 @@ def get_reranker_model() -> Optional[CrossEncoder]:
     """Lazy-load cross-encoder. Returns None on failure (graceful degradation)."""
     global _reranker_model
     if _reranker_model is None:
-        try:
-            _reranker_model = CrossEncoder(RERANKER_MODEL_NAME, max_length=512)
-        except Exception as e:
-            print(f"Reranker load failed: {e}, falling back to bi-encoder only")
-            _reranker_model = False  # marker: tried and failed
+        with _model_load_lock:
+            if _reranker_model is None:  # double-check под локом
+                try:
+                    _reranker_model = CrossEncoder(RERANKER_MODEL_NAME, max_length=512)
+                except Exception as e:
+                    print(f"Reranker load failed: {e}, falling back to bi-encoder only")
+                    _reranker_model = False  # marker: tried and failed
     return _reranker_model if _reranker_model else None
 
 
