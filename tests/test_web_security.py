@@ -172,6 +172,38 @@ def test_auth_middleware_accepts_cookie(monkeypatch):
     assert state["passed"], "cookie mc_token должна аутентифицировать"
 
 
+# ─── /mcp: X-Api-Key (заголовок без пробела для Windows/Claude Desktop) ──────
+# Desktop запускает mcp-remote через cmd.exe; пробел в "Bearer <key>" рвёт команду
+# («"C:\Program" не является командой»). X-Api-Key: <key> — значение без пробела.
+
+def test_mcp_accepts_x_api_key(monkeypatch):
+    scope = {"type": "http", "path": "/mcp", "query_string": b"",
+             "headers": [(b"x-api-key", b"secret-key")]}
+    state = _run_mw(monkeypatch, scope)
+    assert state["passed"], "/mcp должен принимать X-Api-Key (без пробела)"
+
+
+def test_mcp_still_accepts_bearer(monkeypatch):
+    scope = {"type": "http", "path": "/mcp", "query_string": b"",
+             "headers": [(b"authorization", b"Bearer secret-key")]}
+    state = _run_mw(monkeypatch, scope)
+    assert state["passed"], "/mcp должен по-прежнему принимать Bearer"
+
+
+def test_mcp_rejects_wrong_x_api_key(monkeypatch):
+    scope = {"type": "http", "path": "/mcp", "query_string": b"",
+             "headers": [(b"x-api-key", b"wrong-key")]}
+    state = _run_mw(monkeypatch, scope)
+    assert not state["passed"], "/mcp принял неверный X-Api-Key"
+
+
+def test_mcp_rejects_key_in_query(monkeypatch):
+    """?key= для /mcp НЕ аутентифицирует (в отличие от /sse) — ключ только заголовком."""
+    scope = {"type": "http", "path": "/mcp", "query_string": b"key=secret-key", "headers": []}
+    state = _run_mw(monkeypatch, scope)
+    assert not state["passed"], "/mcp не должен принимать ?key= в URL"
+
+
 # ─── /sse под авторизацией (КРИТИЧНО из аудита 2026-07-03) ──────────────────
 # Раньше /sse и /messages шли МИМО auth: любой, кто дотянется до порта, открывал
 # MCP-сессию со всеми tools, включая read_article с расшифровкой секретов.

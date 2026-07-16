@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.17.1 — 2026-07-16
+
+### Fixed
+
+- **`/mcp` теперь принимает ключ заголовком `X-Api-Key` (без пробела) — чинит подключение из Claude Desktop на Windows.** Диагностика по логам Claude Desktop (`mcp-server-memory-compiler.log`): при попытке коннекта через Streamable HTTP `/mcp` процесс падал сразу после старта с ошибкой `"C:\Program" не является… командой`. Причина: Desktop запускает `mcp-remote` через `cmd.exe /c`, а аргумент `--header "Authorization:Bearer <key>"` содержит **пробел** в значении — `cmd.exe` рвёт по нему командную строку (путь `C:\Program Files` → `C:\Program`), процесс умирает. Заголовки без пробела в значении проходят нормально (так работает, напр., соседний коннектор с `X-Goog-Api-Key`). Фикс: `/mcp` auth-middleware помимо `Authorization: Bearer <key>` теперь принимает `X-Api-Key: <key>` (значение = сырой ключ, без префикса/пробела). Bearer по-прежнему работает (для не-cmd клиентов); `?key=` в URL для `/mcp` по-прежнему НЕ принимается. Конфиг Desktop → `--header X-Api-Key:<key>`. Тесты: `tests/test_web_security.py` (+4). Затрагивает только `api.py` (middleware) — `docker restart`.
+
 ## v1.17.0 — 2026-07-16
 
 ### Added

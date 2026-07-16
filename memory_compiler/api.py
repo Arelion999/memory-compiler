@@ -531,14 +531,21 @@ class AuthMiddleware:
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await response(scope, receive, send)
 
-        # /mcp — Streamable HTTP транспорт (v1.10.0). Требует Bearer. В отличие от /sse,
-        # ?key= НЕ принимается: streamable-клиенты умеют кастомные хедеры, и ключ не течёт
-        # в access-логи/URL. Сессия ведётся хедером Mcp-Session-Id (нет длинного GET-стрима
-        # → нет pre-init окна reconnect, из-за которого /sse ловил -32602).
+        # /mcp — Streamable HTTP транспорт (v1.10.0). Ключ — заголовком, ?key= НЕ
+        # принимается (не течёт в access-логи/URL). Два варианта заголовка:
+        #   • Authorization: Bearer <key>  — стандарт;
+        #   • X-Api-Key: <key>             — БЕЗ пробела в значении.
+        # X-Api-Key нужен для Windows/Claude Desktop: он запускает mcp-remote через
+        # cmd.exe, и пробел в "Bearer <key>" рвёт токенизацию команды (в логе видно
+        # «"C:\Program" не является… командой» — путь C:\Program Files бьётся по пробелу
+        # → процесс падает сразу после старта). Заголовок без пробела (как X-Goog-Api-Key
+        # у других коннекторов) проходит через cmd.exe без разрыва.
         if path == "/mcp" or path.startswith("/mcp/"):
             hdrs = dict((k.decode(), v.decode()) for k, v in scope.get("headers", []))
             auth = hdrs.get("authorization", "")
             token = auth[7:] if auth.startswith("Bearer ") else None
+            if not token:
+                token = hdrs.get("x-api-key")
             if token and hmac.compare_digest(token, MC_API_KEY):
                 return await self.app(scope, receive, send)
             response = JSONResponse({"error": "Unauthorized"}, status_code=401)
