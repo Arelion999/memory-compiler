@@ -2,8 +2,10 @@
 import time
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent, ToolAnnotations
+from mcp.types import Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from memory_compiler import config
 from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
 from memory_compiler.storage import regenerate_index, audit_log
@@ -603,6 +605,120 @@ async def list_tools() -> list[Tool]:
     for t in tools:
         t.annotations = _annotations_for(t.name)
     return tools
+
+
+# --- Resources (P1): статьи базы как memory://<проект>/<файл> ----------------
+# База становится first-class контекстом: клиент (Claude Desktop) листает и
+# @-упоминает статьи без tool-вызова. Секреты не отдаются: secret_*.md и статьи
+# с SECRET_FLAG исключаются из листинга; read_resource редактирует инлайн ENC:.
+_RESOURCE_MIME = "text/markdown"
+_RESOURCE_SCHEME = "memory://"
+
+
+def _is_meta_file(name: str) -> bool:
+    """Служебные/не-статейные файлы, которые не показываем как ресурсы."""
+    return (
+        name.startswith("secret_")
+        or name.startswith("_")
+        or name.startswith(".")
+        or name == "index.md"
+        or not name.endswith(".md")
+    )
+
+
+def _resource_title(text: str, filename: str) -> str:
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("# "):
+            return s[2:].strip()[:120]
+        if s and not s.startswith("---"):
+            break
+    return filename[:-3] if filename.endswith(".md") else filename
+
+
+def _resource_description(text: str) -> str:
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and not s.startswith("---") and not s.startswith("**"):
+            return s[:160]
+    return ""
+
+
+@app.list_resources()
+async def list_resources() -> list[Resource]:
+    from memory_compiler.storage import is_secret_article
+
+    kd = config.KNOWLEDGE_DIR
+    out: list[Resource] = []
+    if not kd or not kd.exists():
+        return out
+    for proj_dir in sorted(kd.iterdir()):
+        if not proj_dir.is_dir() or proj_dir.name.startswith(".") or proj_dir.name == "daily":
+            continue
+        project = proj_dir.name
+        for art in sorted(proj_dir.glob("*.md")):
+            if _is_meta_file(art.name):
+                continue
+            try:
+                text = art.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if is_secret_article(text, art.name):
+                continue  # секрет с SECRET_FLAG без префикса secret_
+            out.append(Resource(
+                uri=f"{_RESOURCE_SCHEME}{project}/{art.name}",
+                name=f"{project}/{art.name}",
+                title=_resource_title(text, art.name),
+                description=_resource_description(text),
+                mimeType=_RESOURCE_MIME,
+                size=art.stat().st_size,
+            ))
+    return out
+
+
+@app.read_resource()
+async def read_resource(uri) -> list[ReadResourceContents]:
+    from memory_compiler.storage import safe_article_path, is_secret_article, is_encrypted
+
+    def notice(msg: str) -> list[ReadResourceContents]:
+        return [ReadResourceContents(content=msg, mime_type=_RESOURCE_MIME)]
+
+    uri_s = str(uri)
+    if not uri_s.startswith(_RESOURCE_SCHEME):
+        return notice(f"❌ Неподдерживаемый URI: {uri_s}")
+    rest = uri_s[len(_RESOURCE_SCHEME):]
+    if "/" not in rest:
+        return notice(f"❌ Ожидается memory://<проект>/<файл>, получено: {uri_s}")
+    project, filename = rest.split("/", 1)
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return notice(f"❌ Небезопасный путь: {e}")
+    if not fpath.exists():
+        return notice(f"Статья не найдена: {project}/{filename}")
+    text = fpath.read_text(encoding="utf-8")
+    if is_secret_article(text, filename):
+        return notice("🔒 Это секретная статья — недоступна как ресурс. "
+                      "Читай её через tool read_article (с расшифровкой) при необходимости.")
+    # Редактируем инлайн-ENC: фрагменты — НЕ расшифровываем в пассивный контекст.
+    if "ENC:" in text:
+        text = "\n".join(
+            "[зашифрованный фрагмент опущен]" if is_encrypted(line) else line
+            for line in text.splitlines()
+        )
+    return [ReadResourceContents(content=text, mime_type=_RESOURCE_MIME)]
+
+
+@app.list_resource_templates()
+async def list_resource_templates() -> list[ResourceTemplate]:
+    return [ResourceTemplate(
+        uriTemplate=_RESOURCE_SCHEME + "{project}/{filename}",
+        name="knowledge-article",
+        title="Статья базы знаний",
+        description="Статья базы знаний по имени проекта и файла (например, memory://infra/nginx_setup.md). "
+                    "Секретные статьи недоступны как ресурсы.",
+        mimeType=_RESOURCE_MIME,
+    )]
 
 
 @app.call_tool()
