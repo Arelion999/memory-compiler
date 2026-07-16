@@ -82,7 +82,11 @@ Write-Host ""
 Write-Host "Коммит:  $msg"
 Write-Host "Тег:     v$new (аннотированный)"
 Write-Host "Push:    origin --follow-tags"
-$yn = Read-Host "Подтвердить релиз? [y/N]"
+Write-Host ""
+Write-Host ">>> ШАГ 6: СЕЙЧАС задеплой рабочее дерево на NAS (VERSION уже поднят) и проверь" -ForegroundColor Yellow
+Write-Host "    вживую: /api/health отдаёт v$new; при смене транспорта — /mcp handshake + /sse 401."
+Write-Host "    Тег ставим ТОЛЬКО после успешной живой верификации (см. внутренний регламент релиза)."
+$yn = Read-Host "Задеплоено и верифицировано вживую? Продолжить коммит+тег+push? [y/N]"
 if ($yn -ne "y") { Write-Host "Отменено. VERSION поднят и файлы staged — откати вручную при желании."; exit 0 }
 
 git commit -m $msg
