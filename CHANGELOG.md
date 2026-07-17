@@ -2,6 +2,13 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.19.0 — 2026-07-17
+
+### Added
+
+- **Contextual Retrieval, релиз 2: генерация ИИ-контекста секций (2 новых тула, 44→46).** Наполнение `contexts:` во frontmatter статей ИИ-строками контекста (метод Anthropic: короткая фраза, ситуирующая секцию в документе) через **client-tool-dance**, без платного API — силами сессионного Claude. `context_gaps(project, limit)` — выдаёт батч статей-«пробелов» (многосекционные, **не-секретные**, с секциями без контекста) с заголовками, телом и инструкциями; фильтрует append-log `### {timestamp}`-секции (иначе статьи-логи никогда не покидали бы список). `save_contexts(project, filename, contexts=[{heading, context}])` — валидирует ключи против реальных `### `-заголовков, схлопывает/обрезает значение (≤300 симв.), мёржит в frontmatter (список объектов — безопасный round-trip заголовков со спецсимволами), инкрементально ре-эмбеддит одну статью. Read-путь (`_article_contexts`/`_section_context`) из v1.18.0; формат строки эмбеддинга не менялся → **форс полного rebuild НЕ нужен**. Секрет-инвариант: тело секретной статьи не уходит агенту и не индексируется.
+- **Побочно (латентный дефект R1): извлечение title/tags/секций/preview стало frontmatter-aware.** До этого `search.py`/`api.py`/`handlers.py` брали заголовок как `lines[0]` без пропуска YAML-frontmatter — наполнение `contexts:` сломало бы заголовок («---») и preview (сырой YAML) в чанкинге, BM25-индексе, веб-UI, `search_by_tag`, семантическом поиске. Добавлен `_strip_frontmatter`; `make_preview` сам стрипует frontmatter (чинит все вызовы разом). Тесты: `tests/test_context_generation.py` (11). Бэкфилл ~1500 статей — постепенно, отдельными сессиями. Требует `docker restart`.
+
 ## v1.18.1 — 2026-07-17
 
 ### Changed
