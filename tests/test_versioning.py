@@ -18,3 +18,23 @@ def test_version_key_handles_four_part():
     from memory_compiler.versioning import version_key
     assert version_key("8.3.24.1234") > version_key("8.3.24.999")
     assert version_key("8.3.24.1234") > version_key("8.3.23.9999")
+
+
+def test_is_date_like():
+    from memory_compiler.versioning import is_date_like
+    assert is_date_like("2024.06.25") is True
+    assert is_date_like("2099.12.31") is True
+    assert is_date_like("1.7.16") is False
+    assert is_date_like("8.3.24") is False
+    assert is_date_like("1999.06.25") is False
+    assert is_date_like("2024.13.01") is False
+
+
+def test_is_version_like():
+    from memory_compiler.versioning import is_version_like
+    assert is_version_like("1.8.0") is True
+    assert is_version_like("1.2") is True
+    assert is_version_like("8.3.24.1234") is True
+    assert is_version_like("2024.06.25") is False
+    assert is_version_like("hello") is False
+    assert is_version_like("5") is False

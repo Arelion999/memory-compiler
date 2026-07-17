@@ -24,3 +24,26 @@ def version_key(v) -> tuple:
         suf_nums = tuple(int(x) for x in re.findall(r'\d+', suffix))
         return (nums, 0, suf_nums)
     return (nums, 1, ())
+
+
+def is_date_like(v) -> bool:
+    """X.Y.Z, похожее на календарную дату (2024.06.25): год 2000-2099, месяц 1-12,
+    день 1-31. Такие строки — даты, не версии (иначе год >> мажор и дата «максимальна»).
+    """
+    parts = str(v).split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False
+    return 2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31
+
+
+def is_version_like(v) -> bool:
+    """True, если строка выглядит версией: >= 2 числовых компонента И не дата.
+    Фильтр для resolve() — отсекает даты и мусор из агрегации на чтении."""
+    if is_date_like(v):
+        return False
+    base = str(v).partition("-")[0]
+    return len(re.findall(r'\d+', base)) >= 2
