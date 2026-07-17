@@ -1740,3 +1740,37 @@ def test_tracking_version_status_ignores_broken_history():
     st = tracking_version_status(data)
     assert st["max_known"] == "1.8.0"
     assert st["stale"] is False
+
+
+def test_tracking_version_status_tie_prefers_current():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"version": "1.8.0"}, "history": [{"version": "1.8.0"}]}
+    st = tracking_version_status(data)
+    assert st["max_source"] == "current"
+    assert st["stale"] is False
+
+
+def test_tracking_version_status_current_not_version_like():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"version": "latest"}, "history": [{"version": "1.5.0"}]}
+    st = tracking_version_status(data)
+    assert st["stale"] is False
+    assert st["max_known"] == "1.5.0"
+    assert st["max_source"] == "history"
+
+
+def test_tracking_version_status_does_not_mutate():
+    from memory_compiler.storage import tracking_version_status
+    import copy
+    data = {"current": {"version": "1.7.9"}, "history": [{"version": "1.8.0"}]}
+    snapshot = copy.deepcopy(data)
+    tracking_version_status(data)
+    assert data == snapshot
+
+
+def test_tracking_version_status_history_not_list():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"version": "1.8.0"}, "history": 123}
+    st = tracking_version_status(data)
+    assert st["max_known"] == "1.8.0"
+    assert st["stale"] is False

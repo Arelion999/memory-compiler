@@ -2124,6 +2124,8 @@ def tracking_version_status(data: dict) -> Optional[dict]:
     """
     current = data.get("current") or {}
     history = data.get("history") or []
+    if not isinstance(history, list):
+        history = []
     current_v = current.get("version") if isinstance(current, dict) else None
 
     hist_versions = [
