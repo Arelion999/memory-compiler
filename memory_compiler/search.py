@@ -288,14 +288,15 @@ def _doc_text_for_embedding(text: str) -> str:
     """Extract meaningful text for embedding (title + tags + first 500 chars of body).
     Тело — содержательные строки (article_body_lines): раньше lines[:30] включали
     шапку-метаданные и пустые строки, съедавшие бюджет 500 символов (issue #1)."""
-    lines = text.splitlines()
+    body = _strip_frontmatter(text)
+    lines = body.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else ""
     tags = ""
     for line in lines[:10]:
         if line.lower().startswith("**теги:**"):
             tags = line.split(":", 1)[1].strip()
             break
-    body_preview = " ".join(article_body_lines(text, limit=40))[:500]
+    body_preview = " ".join(article_body_lines(body, limit=40))[:500]
     return f"{title} {tags} {body_preview}"
 
 
@@ -525,8 +526,8 @@ def rebuild_embeddings():
                 continue  # skip unreadable/binary files
             text = _index_safe_text(text, md.name)
             key = f"{proj}/{md.name}"
-            lines = text.splitlines()
-            new_embed_texts[key] = lines[0].lstrip("# ").strip() if lines else md.stem
+            title_lines = _strip_frontmatter(text).splitlines()
+            new_embed_texts[key] = title_lines[0].lstrip("# ").strip() if title_lines else md.stem
             # Chunk article for finer-grained search
             for chunk_key, chunk_text in _chunk_article(text, key):
                 _collect(chunk_key, chunk_text)
@@ -644,7 +645,7 @@ def embed_document(text: str, filename: str, project: str):
     model = get_embed_model()
     text = _index_safe_text(text, filename)
     parent_key = f"{project}/{filename}"
-    lines = text.splitlines()
+    title_lines = _strip_frontmatter(text).splitlines()
     chunks = _chunk_article(text, parent_key)
     chunk_texts = [c[1] for c in chunks]
     vectors = encode_passages(chunk_texts)  # encode вне лока — может быть долгим
@@ -652,7 +653,7 @@ def embed_document(text: str, filename: str, project: str):
     # Мутация _embeddings + запись pickle — под локом и атомарно (tmp+os.replace),
     # чтобы не пересечься с фоновым rebuild_embeddings (торн-райт / lost-update).
     with _index_lock:
-        _embed_texts[parent_key] = lines[0].lstrip("# ").strip() if lines else filename
+        _embed_texts[parent_key] = title_lines[0].lstrip("# ").strip() if title_lines else filename
         # Remove any prior chunks for this article (chunking topology may have changed)
         for old_key in list(_embeddings.keys()):
             if old_key == parent_key or old_key.startswith(parent_key + "#"):
@@ -723,7 +724,7 @@ def _index_safe_text(raw_text: str, filename: str) -> str:
     статьи возвращаются без изменений."""
     if not is_secret_article(raw_text, filename):
         return raw_text
-    lines = raw_text.splitlines()
+    lines = _strip_frontmatter(raw_text).splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename
     tags_line = next((l for l in lines[:12] if l.lower().startswith("**теги:**")),
                      "**Теги:** secret")
@@ -732,6 +733,7 @@ def _index_safe_text(raw_text: str, filename: str) -> str:
 
 def _parse_article(text: str, filename: str, project: str) -> dict:
     """Parse markdown article into whoosh fields."""
+    text = _strip_frontmatter(text)
     lines = text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else filename
     tags = ""
