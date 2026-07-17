@@ -58,6 +58,32 @@ def test_merge_contexts_roundtrip_special_chars():
     assert ctx2 == {"A: спец": 'ctx с "кавычкой" и :', "B": "второй"}
 
 
+def test_context_gaps_scan(knowledge_dir):
+    base = knowledge_dir / "testproj"
+    (base / "multi.md").write_text(
+        "# Multi\n\n**Теги:** t\n\n### A\nтело A\n\n### B\nтело B\n", encoding="utf-8")
+    (base / "single.md").write_text(
+        "# Single\n\n**Теги:** t\n\nодна секция\n", encoding="utf-8")
+    (base / "done.md").write_text(
+        "---\ncontexts:\n  - heading: \"A\"\n    context: \"c\"\n  - heading: \"B\"\n    context: \"c\"\n---\n"
+        "# Done\n\n**Теги:** t\n\n### A\nт\n\n### B\nт\n", encoding="utf-8")
+    # NOTE: adjust the secret article's header to match is_secret_article's REAL detection
+    (base / "sekret.md").write_text(
+        "# Sek\n\n**Теги:** secret\n**Секрет:** да\n\n### A\nт\n\n### B\nт\n", encoding="utf-8")
+
+    import json
+    res = asyncio.run(h.context_gaps("testproj", 10))
+    payload = json.loads("".join(c.text for c in res))
+    names = {a["filename"] for a in payload["articles"]}
+    assert "multi.md" in names
+    assert "single.md" not in names
+    assert "done.md" not in names
+    assert "sekret.md" not in names
+    art = next(a for a in payload["articles"] if a["filename"] == "multi.md")
+    assert art["sections"] == ["A", "B"] and "тело A" in art["full_text"]
+    assert "instructions" in payload
+
+
 def test_save_contexts_validates_and_writes(knowledge_dir, monkeypatch):
     import numpy as np
     monkeypatch.setattr(s, "encode_passages",

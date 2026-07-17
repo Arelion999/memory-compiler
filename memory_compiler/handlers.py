@@ -41,6 +41,14 @@ from memory_compiler.storage import (
     safe_article_path, safe_project_dir, make_slug,
 )
 
+_CTX_INSTRUCTIONS = (
+    "Для каждой секции напиши ОДНО краткое предложение (≤25 слов, рус.), ситуирующее "
+    "секцию в документе: что покрывает и как связана с остальным. Не повторяй заголовок "
+    "дословно; добавь различающий контекст (проект, сущность, связь). Верни через "
+    "save_contexts как contexts=[{heading, context}, …]."
+)
+_CTX_FULLTEXT_CAP = 8000
+
 
 # ─── save_lesson ─────────────────────────────────────────────────────────────
 
@@ -961,6 +969,47 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     if cascaded:
         msg += f"\n\U0001f504 Маркер обновления проставлен в {cascaded} зависимых статьях"
     return [TextContent(type="text", text=msg)]
+
+
+async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent]:
+    """Выдать батч статей, требующих ИИ-контекст: многосекционные, не-секретные,
+    у которых есть '### '-секции без записи в contexts. Stateless."""
+    import json
+    from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS
+    from memory_compiler.search import section_headings, _article_contexts, _strip_frontmatter
+
+    projects = [project] if project and project != "all" else list(PROJECTS)
+    articles, remaining = [], 0
+    for proj in projects:
+        pdir = KNOWLEDGE_DIR / proj
+        if not pdir.exists():
+            continue
+        for md in sorted(pdir.glob("*.md")):
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if is_secret_article(text, md.name):
+                continue
+            headings = section_headings(text)
+            if len(headings) < 2:
+                continue
+            have = set(_article_contexts(text).keys())
+            if all(hd in have for hd in headings):
+                continue
+            remaining += 1
+            if len(articles) < limit:
+                body = _strip_frontmatter(text)
+                bl = body.splitlines()
+                title = bl[0].lstrip("# ").strip() if bl else md.stem
+                ft = text if len(text) <= _CTX_FULLTEXT_CAP else text[:_CTX_FULLTEXT_CAP]
+                articles.append({
+                    "project": proj, "filename": md.name, "title": title,
+                    "sections": headings, "full_text": ft,
+                    "truncated": len(text) > _CTX_FULLTEXT_CAP,
+                })
+    payload = {"remaining": remaining, "instructions": _CTX_INSTRUCTIONS, "articles": articles}
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
 
 
 async def save_contexts(project: str, filename: str, contexts: list) -> list[TextContent]:
