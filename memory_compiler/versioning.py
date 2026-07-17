@@ -61,3 +61,25 @@ def max_version(values: Iterable[str]) -> Optional[str]:
         return max(values, key=version_key)
     except Exception:
         return values[0]
+
+
+def resolve(values: Iterable[str]) -> dict:
+    """Детерминированная агрегация набора версий для read-time авторитета.
+    Фильтрует не-версии (даты/мусор) через is_version_like, дедуплицирует по строке,
+    сортирует по убыванию version_key.
+    Возвращает {max, sorted_desc, count, has_multiple}."""
+    seen = set()
+    versions = []
+    for v in values:
+        s = str(v)
+        if s in seen or not is_version_like(s):
+            continue
+        seen.add(s)
+        versions.append(s)
+    versions.sort(key=version_key, reverse=True)
+    return {
+        "max": versions[0] if versions else None,
+        "sorted_desc": versions,
+        "count": len(versions),
+        "has_multiple": len(versions) > 1,
+    }

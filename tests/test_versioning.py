@@ -58,3 +58,37 @@ def test_max_version_empty_returns_none():
 def test_max_version_single():
     from memory_compiler.versioning import max_version
     assert max_version(["1.2.3"]) == "1.2.3"
+
+
+def test_resolve_basic():
+    from memory_compiler.versioning import resolve
+    r = resolve(["1.7.9", "1.8.0", "1.7.16"])
+    assert r["max"] == "1.8.0"
+    assert r["sorted_desc"] == ["1.8.0", "1.7.16", "1.7.9"]
+    assert r["count"] == 3
+    assert r["has_multiple"] is True
+
+
+def test_resolve_filters_non_versions():
+    from memory_compiler.versioning import resolve
+    r = resolve(["1.8.0", "2024.06.25", "мусор", "1.7.9"])
+    assert r["max"] == "1.8.0"
+    assert "2024.06.25" not in r["sorted_desc"]
+    assert "мусор" not in r["sorted_desc"]
+    assert r["count"] == 2
+
+
+def test_resolve_empty():
+    from memory_compiler.versioning import resolve
+    r = resolve([])
+    assert r["max"] is None
+    assert r["sorted_desc"] == []
+    assert r["count"] == 0
+    assert r["has_multiple"] is False
+
+
+def test_resolve_dedupes():
+    from memory_compiler.versioning import resolve
+    r = resolve(["1.8.0", "1.8.0", "1.7.9"])
+    assert r["sorted_desc"] == ["1.8.0", "1.7.9"]
+    assert r["count"] == 2
