@@ -237,6 +237,42 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="context_gaps",
+            description="Выдать статьи, которым нужен ИИ-контекст секций (для генерации). "
+                        "Многосекционные не-секретные без contexts. Затем — save_contexts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "default": "all", "description": "Проект или 'all'"},
+                    "limit": {"type": "integer", "default": 5, "description": "Сколько статей за раз"}
+                }
+            }
+        ),
+        Tool(
+            name="save_contexts",
+            description="Сохранить ИИ-контексты секций во frontmatter статьи и ре-эмбеддить.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Имя проекта"},
+                    "filename": {"type": "string", "description": "Имя файла статьи"},
+                    "contexts": {
+                        "type": "array",
+                        "description": "Список {heading, context} по секциям",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "heading": {"type": "string"},
+                                "context": {"type": "string"}
+                            },
+                            "required": ["heading", "context"]
+                        }
+                    }
+                },
+                "required": ["project", "filename", "contexts"]
+            }
+        ),
+        Tool(
             name="read_article",
             description="Получить полный текст статьи.",
             inputSchema={
@@ -975,6 +1011,10 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.delete_article(**arguments)
     elif name == "edit_article":
         result = await handlers.edit_article(**arguments)
+    elif name == "context_gaps":
+        result = await handlers.context_gaps(**arguments)
+    elif name == "save_contexts":
+        result = await handlers.save_contexts(**arguments)
     elif name == "read_article":
         result = await handlers.read_article(**arguments)
     elif name == "search_by_tag":

@@ -102,3 +102,11 @@ def test_save_contexts_validates_and_writes(knowledge_dir, monkeypatch):
     assert ctx == {"Раздел A": "контекст A"}
     assert disk.startswith("---")
     assert "### Раздел B" in disk and "тело B" in disk
+
+
+def test_tools_registered_and_dispatch(knowledge_dir):
+    import memory_compiler.tools as t
+    names = {tool.name for tool in asyncio.run(t.list_tools())}
+    assert {"context_gaps", "save_contexts"} <= names
+    res = asyncio.run(t.call_tool("context_gaps", {"project": "testproj", "limit": 5}))
+    assert res and res[0].type == "text"
