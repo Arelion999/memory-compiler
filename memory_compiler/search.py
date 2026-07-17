@@ -325,14 +325,34 @@ def _split_body(body: str, max_len: int = CHUNK_BODY_MAX) -> list[str]:
     return windows or [""]
 
 
+def _strip_frontmatter(text: str) -> str:
+    """Тело статьи без YAML-frontmatter — для извлечения заголовка/тегов/секций.
+    Нет frontmatter → текст как есть (граница как в storage._parse_frontmatter)."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end >= 0:
+            return text[end + 5:]
+    return text
+
+
 def _article_contexts(text: str) -> dict:
-    """Карта ИИ-контекстов из frontmatter (contexts: секция→строка). Пусто, если нет
-    frontmatter/ключа/не-словарь — тогда fallback на метаданные (фаза 1)."""
+    """Карта ИИ-контекстов из frontmatter (contexts: секция→строка). Формат —
+    список [{heading, context}, ...] (генератор контекста, Release 2) или, для
+    обратной совместимости, словарь {heading: context}. Пусто, если нет
+    frontmatter/ключа/нераспознанный формат — тогда fallback на метаданные (фаза 1)."""
     try:
         from memory_compiler.storage import _parse_frontmatter
         fm, _ = _parse_frontmatter(text)
         ctx = fm.get("contexts") if isinstance(fm, dict) else None
-        return ctx if isinstance(ctx, dict) else {}
+        if isinstance(ctx, dict):
+            return ctx
+        if isinstance(ctx, list):
+            return {
+                item.get("heading"): item.get("context")
+                for item in ctx
+                if isinstance(item, dict) and item.get("heading") and item.get("context")
+            }
+        return {}
     except Exception:
         return {}
 
@@ -358,7 +378,8 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     (project·title·section·tags или ИИ-контекст из frontmatter) к тексту каждого чанка.
     Длинные секции режутся на под-чанки без потери хвоста. Returns [(chunk_key, chunk_text), ...].
     Меняется только ТЕКСТ для эмбеддинга; тело статьи/preview/ключи-родители не затрагиваются."""
-    lines = text.splitlines()
+    body_text = _strip_frontmatter(text)
+    lines = body_text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else ""
     tags = ""
     for line in lines[:10]:
@@ -389,7 +410,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
 
     if len(sections) <= 1:
         ctx = _section_context(project, title, tags, "", article_contexts)
-        body = " ".join(article_body_lines(text, limit=40))
+        body = " ".join(article_body_lines(body_text, limit=40))
         windows = _split_body(body)[:CHUNK_MAX_SUBCHUNKS]
         # Один под-чанк → «голый» родительский ключ (обратная совместимость с логикой
         # конкурентного свопа rebuild/embed_document и dedup, ожидающей parent-key
