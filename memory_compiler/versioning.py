@@ -47,3 +47,17 @@ def is_version_like(v) -> bool:
         return False
     base = str(v).partition("-")[0]
     return len(re.findall(r'\d+', base)) >= 2
+
+
+def max_version(values: Iterable[str]) -> Optional[str]:
+    """Максимальная версия по version_key (1.7.16 > 1.7.11 > 1.7.9; финал > pre-release).
+    НЕ фильтрует даты — как исторический _max_semver (чистку дат делает экстрактор фактов
+    на записи, не здесь). Пустой вход → None (историческая версия падала, но вызывалась
+    только при len>1)."""
+    values = list(values)
+    if not values:
+        return None
+    try:
+        return max(values, key=version_key)
+    except Exception:
+        return values[0]

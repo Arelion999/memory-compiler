@@ -38,3 +38,23 @@ def test_is_version_like():
     assert is_version_like("2024.06.25") is False
     assert is_version_like("hello") is False
     assert is_version_like("5") is False
+
+
+def test_max_version_picks_highest():
+    from memory_compiler.versioning import max_version
+    assert max_version(["1.7.11", "1.7.16", "1.7.9"]) == "1.7.16"
+
+
+def test_max_version_prefers_release_over_prerelease():
+    from memory_compiler.versioning import max_version
+    assert max_version(["1.8.0-rc1", "1.8.0"]) == "1.8.0"
+
+
+def test_max_version_empty_returns_none():
+    from memory_compiler.versioning import max_version
+    assert max_version([]) is None
+
+
+def test_max_version_single():
+    from memory_compiler.versioning import max_version
+    assert max_version(["1.2.3"]) == "1.2.3"
