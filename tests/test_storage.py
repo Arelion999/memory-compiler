@@ -1691,3 +1691,52 @@ def test_dedupe_article_sections_keeps_distinct_content():
     fixed, removed = dedupe_article_sections(text)
     assert removed == 0
     assert fixed == text, "без дублей текст не меняется"
+
+
+def test_tracking_version_status_stale():
+    from memory_compiler.storage import tracking_version_status
+    data = {
+        "type": "tracking", "entity": "release",
+        "current": {"version": "1.7.9", "since": "2026-07-10"},
+        "history": [{"version": "1.8.0", "from": "2026-07-01", "to": "2026-07-10"}],
+    }
+    st = tracking_version_status(data)
+    assert st["current"] == "1.7.9"
+    assert st["max_known"] == "1.8.0"
+    assert st["stale"] is True
+    assert st["max_source"] == "history"
+
+
+def test_tracking_version_status_current_is_max():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"version": "1.8.0"}, "history": [{"version": "1.7.9"}]}
+    st = tracking_version_status(data)
+    assert st["max_known"] == "1.8.0"
+    assert st["stale"] is False
+    assert st["max_source"] == "current"
+
+
+def test_tracking_version_status_no_versions():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"ip": "192.168.1.1"}, "history": []}
+    assert tracking_version_status(data) is None
+
+
+def test_tracking_version_status_current_without_version():
+    from memory_compiler.storage import tracking_version_status
+    data = {"current": {"ip": "10.0.0.1"}, "history": [{"version": "1.5.0"}]}
+    st = tracking_version_status(data)
+    assert st["current"] is None
+    assert st["max_known"] == "1.5.0"
+    assert st["stale"] is False
+
+
+def test_tracking_version_status_ignores_broken_history():
+    from memory_compiler.storage import tracking_version_status
+    data = {
+        "current": {"version": "1.8.0"},
+        "history": [{"version": "мусор"}, {"note": "no version key"}],
+    }
+    st = tracking_version_status(data)
+    assert st["max_known"] == "1.8.0"
+    assert st["stale"] is False

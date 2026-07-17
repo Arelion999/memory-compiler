@@ -2113,6 +2113,43 @@ def load_tracking(project: str, entity: str) -> Optional[dict]:
     return data if data.get("type") == "tracking" else None
 
 
+def tracking_version_status(data: dict) -> Optional[dict]:
+    """Read-time авторитет версий для tracking-статьи. Детерминированно (не по датам)
+    вычисляет максимум по current + history и помечает stale, когда tracked current
+    ниже максимума истории (откат / устаревание трекера). НЕ мутирует данные.
+
+    data: распарсенный frontmatter tracking-статьи.
+    None, если версий нет ни в current, ни в history. Иначе:
+      {current, max_known, stale, max_source}  где max_source ∈ {"current","history"}.
+    """
+    current = data.get("current") or {}
+    history = data.get("history") or []
+    current_v = current.get("version") if isinstance(current, dict) else None
+
+    hist_versions = [
+        h.get("version") for h in history
+        if isinstance(h, dict) and h.get("version")
+    ]
+    all_versions = ([current_v] if current_v else []) + hist_versions
+    res = versioning.resolve(all_versions)
+    if res["max"] is None:
+        return None
+
+    max_known = res["max"]
+    max_source = "current" if (current_v and str(current_v) == max_known) else "history"
+    stale = bool(
+        current_v
+        and versioning.is_version_like(str(current_v))
+        and versioning.version_key(str(current_v)) < versioning.version_key(max_known)
+    )
+    return {
+        "current": current_v,
+        "max_known": max_known,
+        "stale": stale,
+        "max_source": max_source,
+    }
+
+
 def _semver_key(v):
     """Делегат → versioning.version_key. Имя сохранено ради обратной совместимости
     (тесты и guard в save_tracking_article импортируют/зовут из storage)."""
