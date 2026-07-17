@@ -2408,7 +2408,7 @@ async def save_tracking(project: str, entity: str, facts: dict, narrative: str =
 
 async def get_current(project: str, entity: str) -> list[TextContent]:
     """Get current state from tracking article."""
-    from memory_compiler.storage import load_tracking
+    from memory_compiler.storage import load_tracking, tracking_version_status
     data = load_tracking(project, entity)
     if not data:
         return [TextContent(type="text", text=f"tracking/{entity} не найден в {project}")]
@@ -2420,6 +2420,19 @@ async def get_current(project: str, entity: str) -> list[TextContent]:
         lines.append(f"- **{k}:** {v}")
     if history:
         lines.append(f"\n**История:** {len(history)} записей")
+
+    # Read-time авторитет версий (детерминированно, не по датам): максимум по
+    # current+history + пометка отката/устаревания. Показываем ТОЛЬКО когда есть что
+    # сообщить (max_known != current) — если трекер актуален, шума нет. НЕ мутирует tracking.
+    status = tracking_version_status(data)
+    if status and status["max_known"] != status["current"]:
+        src = "в истории" if status["max_source"] == "history" else "текущая"
+        lines.append(f"\n**Макс. известная версия:** {status['max_known']} ({src})")
+        if status["stale"]:
+            lines.append(
+                f"\u26a0\ufe0f Текущая ({status['current']}) ниже максимума истории "
+                f"— откат или устаревание трекера."
+            )
     return [TextContent(type="text", text="\n".join(lines))]
 
 

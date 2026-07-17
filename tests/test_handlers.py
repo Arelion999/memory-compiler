@@ -1127,3 +1127,36 @@ def test_compile_after_save_lesson_does_not_duplicate(knowledge_dir):
     text = arts[0].read_text(encoding="utf-8")
     assert text.count("уникальный текст дубля") == 1, "запись задвоена compile'ом"
     assert "**Обновлено:**" not in text, "ложное «Обновлено» при дубле"
+
+
+def test_get_current_shows_max_known_and_stale(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article
+    from memory_compiler.handlers import get_current
+    # 1.8.0, затем явный откат на 1.7.9 (guard=False → реальный rollback разрешён)
+    save_tracking_article("testproj", "release", {"version": "1.8.0"})
+    save_tracking_article("testproj", "release", {"version": "1.7.9"})
+    result = asyncio.run(get_current("testproj", "release"))
+    text = result[0].text
+    assert "1.7.9" in text                       # current
+    assert "Макс. известная версия" in text
+    assert "1.8.0" in text                        # max_known из history
+    assert "\u26a0" in text                       # stale-предупреждение
+
+
+def test_get_current_no_max_block_when_up_to_date(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article
+    from memory_compiler.handlers import get_current
+    save_tracking_article("testproj", "release", {"version": "1.7.9"})
+    save_tracking_article("testproj", "release", {"version": "1.8.0"})
+    result = asyncio.run(get_current("testproj", "release"))
+    text = result[0].text
+    assert "Макс. известная версия" not in text   # current == max → блока нет
+
+
+def test_get_current_no_version_entity_no_block(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article
+    from memory_compiler.handlers import get_current
+    save_tracking_article("testproj", "netconf", {"ip": "192.168.1.10"})
+    result = asyncio.run(get_current("testproj", "netconf"))
+    text = result[0].text
+    assert "Макс. известная версия" not in text
