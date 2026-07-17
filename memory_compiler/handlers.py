@@ -1020,6 +1020,13 @@ async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent
     return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
 
 
+def _norm_ws(s: str) -> str:
+    """Нормализовать пробелы для устойчивого матча заголовков: любые прогоны whitespace
+    (пробелы, табы, NBSP) → один пробел, обрезка краёв. str.split() трактует NBSP как
+    пробел, поэтому кривые импортированные заголовки матчатся с чистыми."""
+    return " ".join(s.split())
+
+
 async def save_contexts(project: str, filename: str, contexts: list) -> list[TextContent]:
     """Сохранить ИИ-контексты секций во frontmatter статьи (генератор контекста,
     Release 2). Принимает список {heading, context}; принимаются только заголовки,
@@ -1042,14 +1049,22 @@ async def save_contexts(project: str, filename: str, contexts: list) -> list[Tex
             "❌ Секретная статья — ИИ-контексты не сохраняются (тело секрета не должно "
             "участвовать в генерации контекста)."))]
 
-    valid = set(section_headings(text))
+    valid = section_headings(text)
+    # Матч заголовков устойчив к whitespace: в импортированных статьях (Obsidian и т.п.)
+    # заголовки бывают с табами/повторными пробелами/NBSP, которые не воспроизвести при
+    # передаче через JSON. Нормализуем пробелы для СРАВНЕНИЯ, но храним КАНОНИЧЕСКИЙ
+    # заголовок (как его извлекает _chunk_article) — иначе _section_context не найдёт контекст.
+    norm_map: dict = {}
+    for h in valid:
+        norm_map.setdefault(_norm_ws(h), h)
     accepted: dict = {}
     skipped: list = []
     for item in contexts or []:
         heading = item.get("heading") if isinstance(item, dict) else None
         context = item.get("context") if isinstance(item, dict) else None
-        if isinstance(heading, str) and heading in valid and isinstance(context, str) and context.strip():
-            accepted[heading] = " ".join(context.split())[:300]
+        canon = norm_map.get(_norm_ws(heading)) if isinstance(heading, str) else None
+        if canon is not None and isinstance(context, str) and context.strip():
+            accepted[canon] = " ".join(context.split())[:300]
         else:
             skipped.append(heading if isinstance(heading, str) else str(item))
 

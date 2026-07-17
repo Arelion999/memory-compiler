@@ -175,3 +175,30 @@ def test_context_gaps_ignores_timestamp_log_sections(knowledge_dir):
     assert "log.md" not in names  # только timestamp-секции → не пробел
     ref = next(a for a in payload["articles"] if a["filename"] == "ref.md")
     assert ref["sections"] == ["Установка", "Обновление"]  # timestamp-секция отфильтрована
+
+
+def test_save_contexts_whitespace_insensitive_heading(knowledge_dir, monkeypatch):
+    """Заголовки с нестандартным whitespace (таб/повторы/NBSP — артефакт импорта)
+    матчатся по нормализованным пробелам, но хранится КАНОНИЧЕСКИЙ заголовок статьи,
+    и чанкинг применяет ИИ-контекст к секции."""
+    import numpy as np
+    monkeypatch.setattr(s, "encode_passages",
+                        lambda texts, progress_label=None: [np.array([1.0, 0.0]) for _ in texts])
+    art = knowledge_dir / "testproj" / "ws.md"
+    art.write_text(
+        "# WS\n\n**Теги:** t\n\n### 1.\t  Что такое X\nтело1\n\n### 2.   Настройка\nтело2\n",
+        encoding="utf-8")
+    res = asyncio.run(h.save_contexts("testproj", "ws.md", [
+        {"heading": "1. Что такое X", "context": "про X"},       # нормализованные пробелы
+        {"heading": "2. Настройка", "context": "про настройку"},
+    ]))
+    txt = "".join(c.text for c in res)
+    assert "skipped" not in txt   # оба заголовка совпали, ничего не пропущено
+
+    disk = art.read_text(encoding="utf-8")
+    ctx = s._article_contexts(disk)
+    assert set(ctx.values()) == {"про X", "про настройку"}
+    # ключи — канонические (с исходным whitespace); чанкинг применяет контекст к секции
+    chunks = dict(s._chunk_article(disk, "testproj/ws.md"))
+    body1 = next(t for t in chunks.values() if "тело1" in t)
+    assert "про X" in body1
