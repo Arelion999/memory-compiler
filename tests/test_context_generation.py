@@ -132,3 +132,46 @@ def test_tools_registered_and_dispatch(knowledge_dir):
     assert {"context_gaps", "save_contexts"} <= names
     res = asyncio.run(t.call_tool("context_gaps", {"project": "testproj", "limit": 5}))
     assert res and res[0].type == "text"
+
+
+def test_search_by_tag_frontmatter_title_and_preview(knowledge_dir, monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(s, "encode_passages",
+                        lambda texts, progress_label=None: [np.array([1.0, 0.0]) for _ in texts])
+    art = knowledge_dir / "testproj" / "fm.md"
+    art.write_text(
+        "---\ncontexts:\n  - heading: \"A\"\n    context: \"c\"\n---\n"
+        "# Заголовок FM\n\n**Теги:** marker\n\n### A\nтело A\n\n### B\nтело B\n",
+        encoding="utf-8")
+    import memory_compiler.handlers as h
+    res = asyncio.run(h.search_by_tag("marker", "testproj"))
+    text_out = "".join(c.text for c in res if c.type == "text")
+    assert "Заголовок FM" in text_out
+    assert "contexts:" not in text_out and '"heading"' not in text_out
+    link_titles = [c.title for c in res if c.type == "resource_link"]
+    assert link_titles == ["Заголовок FM"]
+
+
+def test_chunk_article_late_chunking_strips_frontmatter(monkeypatch):
+    monkeypatch.setattr(s, "LATE_CHUNKING", True)
+    chunks = s._chunk_article(FM_ARTICLE, "infra/nginx_niksdv.md")
+    assert len(chunks) == 1
+    _, chunk_text = chunks[0]
+    assert "---" not in chunk_text and "contexts:" not in chunk_text
+    assert "nginx_niksdv (203.0.113.99)" in chunk_text
+
+
+def test_context_gaps_ignores_timestamp_log_sections(knowledge_dir):
+    import json
+    base = knowledge_dir / "testproj"
+    (base / "log.md").write_text(
+        "# Log\n\n**Теги:** t\n\n### 2026-07-17 14:30\nзапись 1\n\n### 2026-07-16 09:00\nзапись 2\n",
+        encoding="utf-8")
+    (base / "ref.md").write_text(
+        "# Ref\n\n**Теги:** t\n\n### Установка\nшаги\n\n### Обновление\n\n### 2026-07-17 10:00\nправка\n",
+        encoding="utf-8")
+    payload = json.loads("".join(c.text for c in asyncio.run(h.context_gaps("testproj", 10))))
+    names = {a["filename"] for a in payload["articles"]}
+    assert "log.md" not in names  # только timestamp-секции → не пробел
+    ref = next(a for a in payload["articles"] if a["filename"] == "ref.md")
+    assert ref["sections"] == ["Установка", "Обновление"]  # timestamp-секция отфильтрована

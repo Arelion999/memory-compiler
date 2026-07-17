@@ -281,11 +281,14 @@ def make_preview(text: str, n: int = 8) -> str:
     """Preview статьи: заголовок + первые n содержательных строк ТЕЛА.
     Раньше preview был первыми 10 строками файла: у статей с «**Обновлено:**»
     шапка занимает ровно 10 строк, и в search/get_context/start_task не попадало
-    ни одной строки контента, а reranker скорил пустой текст (issue #1)."""
-    lines = text.splitlines()
+    ни одной строки контента, а reranker скорил пустой текст (issue #1).
+    Статьи с YAML frontmatter (contexts: — генератор контекста, Release 2) сначала
+    очищаются от шапки — иначе заголовок/превью показывали бы сырой YAML."""
+    body = _parse_frontmatter(text)[1]
+    lines = body.splitlines()
     if not lines:
         return ""
-    return "\n".join(lines[:1] + article_body_lines(text, limit=n))
+    return "\n".join(lines[:1] + article_body_lines(body, limit=n))
 
 
 # ─── Article merging ─────────────────────────────────────────────────────────

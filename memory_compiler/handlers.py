@@ -971,9 +971,17 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     return [TextContent(type="text", text=msg)]
 
 
+def _is_log_heading(h: str) -> bool:
+    """True для append-лог секций вида '### 2026-07-17' / '### 2026-07-17 14:30' —
+    их не имеет смысла контекстуализировать (каждая новая запись — новый заголовок,
+    статья иначе никогда не покинула бы список пробелов)."""
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}", h.strip()))
+
+
 async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent]:
     """Выдать батч статей, требующих ИИ-контекст: многосекционные, не-секретные,
-    у которых есть '### '-секции без записи в contexts. Stateless."""
+    у которых есть '### '-секции без записи в contexts. Timestamp-секции (append-лог)
+    игнорируются — иначе статьи-логи никогда не покидали бы список пробелов. Stateless."""
     import json
     from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS
     from memory_compiler.search import section_headings, _article_contexts, _strip_frontmatter
@@ -991,7 +999,7 @@ async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent
                 continue
             if is_secret_article(text, md.name):
                 continue
-            headings = section_headings(text)
+            headings = [hd for hd in section_headings(text) if not _is_log_heading(hd)]
             if len(headings) < 2:
                 continue
             have = set(_article_contexts(text).keys())
@@ -1090,6 +1098,8 @@ async def read_article(project: str, filename: str) -> list[TextContent]:
 
 
 async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
+    from memory_compiler.search import _strip_frontmatter
+
     tag_lower = tag.lower().strip()
     results = []
     check_projects = PROJECTS if project == "all" else [project]
@@ -1101,7 +1111,7 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
             if md.name.startswith("_"):
                 continue
             text = md.read_text(encoding="utf-8")
-            lines = text.splitlines()
+            lines = _strip_frontmatter(text).splitlines()
             title = lines[0].lstrip("# ").strip() if lines else md.stem
             for line in lines[:10]:
                 if line.lower().startswith("**теги:**"):

@@ -21,7 +21,7 @@ from memory_compiler.config import (
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
-    load_embeddings, get_index,
+    load_embeddings, get_index, _strip_frontmatter,
 )
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
@@ -150,7 +150,7 @@ async def web_project(request: Request):
     items = []
     for a in articles[:30]:
         text = a.read_text(encoding="utf-8")
-        lines = text.splitlines()
+        lines = _strip_frontmatter(text).splitlines()
         title = lines[0].lstrip("# ").strip() if lines else a.stem
         preview = make_preview(text)
         items.append({"title": title, "project": project, "file": a.name, "preview": preview})
@@ -481,7 +481,7 @@ async def web_by_tag(request: Request):
                 continue
             if tag in _article_tags(md):
                 text = md.read_text(encoding="utf-8")
-                lines = text.splitlines()
+                lines = _strip_frontmatter(text).splitlines()
                 title = lines[0].lstrip("# ").strip() if lines else md.stem
                 preview = make_preview(text)
                 items.append({"title": title, "project": proj, "file": md.name, "preview": preview})

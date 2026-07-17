@@ -398,7 +398,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
 
     if LATE_CHUNKING:
         ctx = _section_context(project, title, tags, "", article_contexts)
-        return [(path_key, f"{ctx} {text}")]
+        return [(path_key, f"{ctx} {body_text}")]
 
     sections = []
     current_lines = []
