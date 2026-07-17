@@ -15,6 +15,7 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, save_article_meta,
     _discover_projects, atomic_write_text, is_secret_article,
 )
+from memory_compiler import versioning
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -2113,18 +2114,9 @@ def load_tracking(project: str, entity: str) -> Optional[dict]:
 
 
 def _semver_key(v):
-    """Числовой ключ версии для сравнения. Pre-release (-rc/-beta/-alpha) сортируется
-    НИЖЕ одноимённого финального релиза: 1.8.0-rc1 < 1.8.0 < 1.8.1.
-      '1.7.16'    → ((1, 7, 16), 1, ())     # релиз: маркер 1 (выше)
-      '1.8.0-rc1' → ((1, 8, 0), 0, (1,))    # pre-release: маркер 0 (ниже) + номер rc
-    Без этого '1.8.0-rc1' давал (1,8,0,1) > (1,8,0) — guard пропускал откат финала
-    на rc, а _max_semver выбирал rc как «максимальную»."""
-    base, _, suffix = str(v).partition("-")
-    nums = tuple(int(x) for x in re.findall(r'\d+', base))
-    if suffix:
-        suf_nums = tuple(int(x) for x in re.findall(r'\d+', suffix))
-        return (nums, 0, suf_nums)
-    return (nums, 1, ())
+    """Делегат → versioning.version_key. Имя сохранено ради обратной совместимости
+    (тесты и guard в save_tracking_article импортируют/зовут из storage)."""
+    return versioning.version_key(v)
 
 
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
@@ -2271,18 +2263,8 @@ _HISTORICAL_MARKERS = re.compile(
 
 
 def _looks_like_date(v: str) -> bool:
-    """X.Y.Z, похожее на календарную дату (2024.06.25): год 2000-2099, месяц 1-12,
-    день 1-31. Такие строки — даты, не семантические версии. Без этого фильтра
-    _max_semver выбирал дату как «максимальную» (год >> мажор) и затирал версию
-    трекера — воспроизведено вживую: '2024.06.25' затёрла release 1.7.18."""
-    parts = v.split(".")
-    if len(parts) != 3:
-        return False
-    try:
-        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-    except ValueError:
-        return False
-    return 2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31
+    """Делегат → versioning.is_date_like."""
+    return versioning.is_date_like(v)
 
 
 def extract_facts_from_text(text: str, topic: str = "") -> dict:
@@ -2366,12 +2348,9 @@ def list_tracking_articles(project: str) -> list[dict]:
 
 
 def _max_semver(versions):
-    """Максимальная версия по числовым компонентам (1.7.16 > 1.7.9 > 1.7.11).
-    Список приходит из extract_facts_from_text в порядке текста."""
-    try:
-        return max(versions, key=_semver_key)
-    except Exception:
-        return versions[0]
+    """Делегат → versioning.max_version. Call-sites (auto_update_tracking, guard)
+    теперь маршрутизируются в общий резолвер — ретаргет write-путей выполнен здесь."""
+    return versioning.max_version(versions)
 
 
 def _entity_relevant_facts(entity: str, current: dict, topic: str, text: str) -> dict:
