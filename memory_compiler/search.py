@@ -124,6 +124,10 @@ CHUNK_MAX_SUBCHUNKS = 4      # кап под-чанков на секцию: н�
 # allocation ~18GB and OOMs on NAS-class machines even with 32GB RAM.
 EMBED_BATCH_SIZE = int(_os_embed.environ.get("EMBED_BATCH_SIZE", "8"))
 EMBED_MAX_SEQ_LENGTH = int(_os_embed.environ.get("EMBED_MAX_SEQ_LENGTH", "2048"))
+# Прогресс полной пересборки: rebuild_embeddings кодирует слайсами по столько чанков,
+# печатая «encoded N/total» после каждого (видно в docker logs). Раньше rebuild был
+# «чёрным ящиком» — encode всей базы одним вызовом, прогресс не виден до конца.
+REBUILD_PROGRESS_CHUNK = int(_os_embed.environ.get("REBUILD_PROGRESS_CHUNK", "500"))
 
 # SPLADE 3-way hybrid (opt-in). When true, whoosh_search adds a sparse-learned channel
 # to the RRF merge alongside BM25 and dense embeddings. Falls back to 2-way if the
@@ -188,15 +192,33 @@ def _needs_e5_prefix() -> bool:
     return "e5" in EMBED_MODEL_NAME.lower()
 
 
-def encode_passages(texts: list[str]):
-    """Закодировать документы/чанки (passage-сторона) с нужным префиксом."""
+def encode_passages(texts: list[str], progress_label: Optional[str] = None):
+    """Закодировать документы/чанки (passage-сторона) с нужным префиксом.
+
+    progress_label!=None → кодируем слайсами по REBUILD_PROGRESS_CHUNK, печатая
+    «label: encoded N/total» после каждого (путь полной пересборки — виден прогресс
+    в docker logs). Без label — один вызов encode (одиночный embed_document и т.п.).
+    """
     model = get_embed_model()
     if _needs_e5_prefix():
         texts = [f"passage: {t}" for t in texts]
-    return model.encode(
-        texts, normalize_embeddings=True, show_progress_bar=False,
-        batch_size=EMBED_BATCH_SIZE,
-    )
+    if not progress_label:
+        return model.encode(
+            texts, normalize_embeddings=True, show_progress_bar=False,
+            batch_size=EMBED_BATCH_SIZE,
+        )
+    total = len(texts)
+    out = []
+    for start in range(0, total, REBUILD_PROGRESS_CHUNK):
+        sl = texts[start:start + REBUILD_PROGRESS_CHUNK]
+        vecs = model.encode(
+            sl, normalize_embeddings=True, show_progress_bar=False,
+            batch_size=EMBED_BATCH_SIZE,
+        )
+        out.extend(vecs)
+        print(f"{progress_label}: encoded {min(start + len(sl), total)}/{total} chunks",
+              flush=True)
+    return np.array(out)
 
 
 def encode_query(text: str):
@@ -501,8 +523,11 @@ def rebuild_embeddings():
 
     if docs:
         # Batch in small chunks — long-context models (BGE-M3) blow up peak
-        # allocation when encoding hundreds of long docs at once.
-        vectors = encode_passages(docs)
+        # allocation when encoding hundreds of long docs at once. progress_label
+        # включает поэтапную печать «encoded N/total» в docker logs (rebuild — долгий).
+        print(f"rebuild_embeddings: encoding {len(docs)} chunks "
+              f"(reusing {total - len(docs)})", flush=True)
+        vectors = encode_passages(docs, progress_label="rebuild_embeddings")
         for i, path in enumerate(paths):
             new_embeddings[path] = vectors[i]
         print(f"rebuild_embeddings: encoded {len(docs)}, reused {total - len(docs)}")

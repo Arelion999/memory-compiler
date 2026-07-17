@@ -208,7 +208,7 @@ def test_rebuild_embeddings_incremental(knowledge_dir, monkeypatch):
     import memory_compiler.search as _smod
     calls = []
 
-    def fake_encode(texts):
+    def fake_encode(texts, progress_label=None):
         calls.append(list(texts))
         return [np.array([1.0, 0.0]) for _ in texts]
 
@@ -238,6 +238,53 @@ def test_rebuild_embeddings_incremental(knowledge_dir, monkeypatch):
     calls.clear()
     _smod.rebuild_embeddings()
     assert sum(len(c) for c in calls) == 1, f"пере-кодироваться должна только правленая: {calls}"
+
+
+def test_encode_passages_progress_slicing(monkeypatch, capsys):
+    """progress_label кодирует слайсами по REBUILD_PROGRESS_CHUNK, печатает
+    «encoded N/total» после каждого и сохраняет исходный порядок векторов."""
+    import numpy as np
+    import memory_compiler.search as s
+
+    monkeypatch.setattr(s, "REBUILD_PROGRESS_CHUNK", 2)
+    monkeypatch.setattr(s, "_needs_e5_prefix", lambda: False)
+
+    class FakeModel:
+        def encode(self, texts, **kw):
+            # уникальный вектор на текст — проверим порядок после склейки слайсов
+            return np.array([[float(t), 0.0] for t in texts])
+
+    monkeypatch.setattr(s, "get_embed_model", lambda: FakeModel())
+
+    vecs = s.encode_passages([1, 2, 3, 4, 5], progress_label="rebuild_embeddings")
+    # порядок сохранён (склейка слайсов не перемешала)
+    assert [v[0] for v in vecs] == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    out = capsys.readouterr().out
+    # 5 текстов / слайс 2 → печать на 2, 4, 5
+    assert "encoded 2/5 chunks" in out
+    assert "encoded 4/5 chunks" in out
+    assert "encoded 5/5 chunks" in out
+
+
+def test_encode_passages_no_progress_single_call(monkeypatch, capsys):
+    """Без progress_label — один encode, без построчной печати (путь embed_document)."""
+    import numpy as np
+    import memory_compiler.search as s
+
+    monkeypatch.setattr(s, "_needs_e5_prefix", lambda: False)
+    calls = []
+
+    class FakeModel:
+        def encode(self, texts, **kw):
+            calls.append(list(texts))
+            return np.array([[1.0, 0.0] for _ in texts])
+
+    monkeypatch.setattr(s, "get_embed_model", lambda: FakeModel())
+
+    s.encode_passages(["a", "b", "c"])
+    assert len(calls) == 1, "без label должен быть ровно один encode"
+    assert "chunks" not in capsys.readouterr().out
 
 
 def test_embed_batch_size_default_safe():

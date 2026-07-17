@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.18.1 — 2026-07-17
+
+### Changed
+
+- **Прогресс полной пересборки эмбеддингов виден в docker logs.** `rebuild_embeddings` раньше кодировал всю базу одним вызовом `encode_passages(docs)` — «чёрный ящик», прогресс не виден до конца (на смене `context_format_version` v1.18.0 это дало часовую нервотрёпку: непонятно, идёт rebuild или завис). Теперь `encode_passages` принимает `progress_label`: в rebuild-пути тексты кодируются слайсами по `REBUILD_PROGRESS_CHUNK` (env, default 500) с печатью `rebuild_embeddings: encoded N/total chunks` после каждого слайса (`flush=True` → видно в `docker logs` в реальном времени). Одиночный путь (`embed_document` при сохранении статьи) не изменился — без label, один вызов encode. Порядок векторов и инкрементальность (реюз неизменённых чанков по sha1) сохранены. Пиковая память не растёт (внутренний `batch_size=EMBED_BATCH_SIZE` прежний, слайс лишь добавляет точки печати). Затрагивает только `search.py`. Тесты: `tests/test_search.py` (+2). Требует `docker restart` (прогресс виден при следующем полном reindex).
+
 ## v1.18.0 — 2026-07-16
 
 ### Changed

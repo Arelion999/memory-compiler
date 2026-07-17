@@ -85,7 +85,7 @@ def test_embed_during_rebuild_survives_swap(knowledge_dir, monkeypatch):
     import memory_compiler.search as search_mod
     state = {"rebuild_encode": True}
 
-    def fake_encode(texts):
+    def fake_encode(texts, progress_label=None):
         if state["rebuild_encode"]:
             state["rebuild_encode"] = False  # не рекурсим на encode от embed_document
             # конкурентное сохранение во время «долгого» encode пересборки
@@ -108,7 +108,7 @@ def test_delete_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
     import memory_compiler.search as search_mod
     state = {"rebuild_encode": True}
 
-    def fake_encode(texts):
+    def fake_encode(texts, progress_label=None):
         if state["rebuild_encode"]:
             state["rebuild_encode"] = False
             search_mod.remove_embedding("testproj/test_article.md")
@@ -218,7 +218,7 @@ def test_reduce_chunks_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
         encoding="utf-8")
     state = {"done": False}
 
-    def fake_encode(texts):
+    def fake_encode(texts, progress_label=None):
         if not state["done"]:
             state["done"] = True
             # конкурентно: статья стала односекционной — один вектор parent, без #chunk
@@ -303,7 +303,7 @@ def test_concurrent_embed_and_search_no_crash(knowledge_dir, monkeypatch):
     (RuntimeError: dictionary changed size during iteration / торн pickle)."""
     import memory_compiler.search as search_mod
     monkeypatch.setattr(search_mod, "encode_passages",
-                        lambda texts: [np.array([1.0, 0.0]) for _ in texts])
+                        lambda texts, progress_label=None: [np.array([1.0, 0.0]) for _ in texts])
     monkeypatch.setattr(search_mod, "encode_query", lambda q: np.array([1.0, 0.0]))
     monkeypatch.setattr(search_mod, "get_embed_model", lambda: object())
     search_mod._embeddings = {f"testproj/a{i}.md": np.array([1.0, 0.0]) for i in range(60)}
