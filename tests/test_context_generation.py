@@ -34,3 +34,10 @@ def test_parse_article_and_embed_title_frontmatter_aware(monkeypatch):
     s._embeddings.clear(); s._embed_texts.clear(); s._chunk_hashes.clear()
     s.embed_document(FM_ARTICLE, "nginx_niksdv.md", "infra")
     assert s._embed_texts["infra/nginx_niksdv.md"] == "nginx_niksdv (203.0.113.99)"
+
+
+def test_article_contexts_list_format_and_section_headings():
+    ctx = s._article_contexts(FM_ARTICLE)
+    assert ctx == {"Доступ": "ИИ-контекст доступа"}
+    assert s._article_contexts("# T\n\nтело") == {}
+    assert s.section_headings(FM_ARTICLE) == ["Доступ", "Бэкап"]

@@ -358,6 +358,12 @@ def _article_contexts(text: str) -> dict:
         return {}
 
 
+def section_headings(text: str) -> list[str]:
+    """'### '-заголовки статьи в порядке появления (для сканера пробелов). Из тела."""
+    return [l[4:].strip() for l in _strip_frontmatter(text).splitlines()
+            if l.startswith("### ")]
+
+
 def _section_context(project: str, title: str, tags: str, header: str,
                      article_contexts: dict) -> str:
     """Контекст-заголовок к тексту чанка перед эмбеддингом. Фаза 2: если для секции есть
