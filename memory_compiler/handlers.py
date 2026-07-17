@@ -167,11 +167,16 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
 
     # Release tag → ensure tracking/release exists and update
     if "release" in tags_lower or "релиз" in tags_lower:
-        import re as _re
-        m = _re.search(r'v?(\d+\.\d+\.\d+)', topic) or _re.search(r'v?(\d+\.\d+\.\d+)', content)
-        if m:
-            version = m.group(1)
-            from memory_compiler.storage import save_tracking_article
+        # Версию берём ГАРДИРОВАННЫМ extract_facts_from_text (IP-коллизия, дата-фильтр,
+        # cue-логика), НЕ наивным regex v?(\d+\.\d+\.\d+): release-заметка с IP вида
+        # 192.0.2.100 иначе давала «версию» 192.0.2 (первые 3 октета) и, т.к.
+        # 192 > любого мажора, guard не считал это откатом и затирал трекер вживую.
+        from memory_compiler.storage import extract_facts_from_text, save_tracking_article
+        from memory_compiler import versioning
+        versions = (extract_facts_from_text(topic).get("version")
+                    or extract_facts_from_text(content).get("version"))
+        if versions:
+            version = versioning.max_version(versions)
             r = save_tracking_article(project, "release", {"version": version}, guard_version_regression=True)
             if r["action"] != "unchanged":
                 tracking_updates.append({

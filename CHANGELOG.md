@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.20.1 — 2026-07-17
+
+### Fixed
+
+- **Release-заметка с IP больше не затирает версию трекера.** Ветка `save_lesson` при теге `release`/`релиз` извлекала версию наивным regex `v?(\d+\.\d+\.\d+)` **без** IP-гардов (в отличие от `_FACT_PATTERNS["version"]`): заметка про релиз, содержащая IP вида `192.0.2.100`, давала «версию» `192.0.2` (первые 3 октета), и т.к. `192 > любого мажора`, `guard_version_regression` не считал это откатом → затирал `current` трекера релиза мусором (воспроизведено ВЖИВУЮ при релизе v1.20.0: сохранение урока с IP в тексте увело `tracking/release` в `192.0.2`). Фикс: извлечение через гардированный `extract_facts_from_text` (IP-коллизия + дата-фильтр + cue-логика) с выбором `versioning.max_version`. Тесты: `tests/test_handlers.py` (+2: IP-нерегресс + контроль реальной версии). Затронут только `handlers.py`. Требует `docker restart`.
+
 ## v1.20.0 — 2026-07-17
 
 ### Added

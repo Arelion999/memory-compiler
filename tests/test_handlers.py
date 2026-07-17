@@ -1160,3 +1160,34 @@ def test_get_current_no_version_entity_no_block(knowledge_dir):
     result = asyncio.run(get_current("testproj", "netconf"))
     text = result[0].text
     assert "Макс. известная версия" not in text
+
+
+def test_save_lesson_release_tag_ignores_ip_as_version(knowledge_dir):
+    """Баг v1.20.1: release-тег + IP в тексте (192.0.2.100) затирал версию
+    трекера первыми 3 октетами IP через наивный regex `v?(\\d+\\.\\d+\\.\\d+)` без
+    IP-гардов. Фикс: гардированное извлечение через extract_facts_from_text."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.20.0"})
+    asyncio.run(save_lesson(
+        "Ручной рестарт контейнера на NAS",
+        "Живой health: curl http://192.0.2.100:8765/api/health отдаёт status ok.",
+        "testproj",
+        ["release", "runbook"],
+    ))
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.20.0", \
+        "IP-октеты затёрли версию трекера"
+
+
+def test_save_lesson_release_tag_updates_real_version(knowledge_dir):
+    """Контроль: реальная версия в release-заметке по-прежнему обновляет трекер
+    (фикс не должен сломать легитимный путь)."""
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.20.0"})
+    asyncio.run(save_lesson(
+        "memory-compiler v1.20.1 — фикс IP-коллизии",
+        "Пофикшено извлечение версии в release-ветке.",
+        "testproj",
+        ["release"],
+    ))
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1", \
+        "реальная версия не подхватилась после фикса"
