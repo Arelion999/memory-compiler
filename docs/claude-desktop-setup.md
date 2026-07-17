@@ -171,7 +171,7 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 
 | Функция | Статус | Комментарий |
 |---------|--------|-------------|
-| MCP tools (все 38) | ✅ | Полная поддержка |
+| MCP tools (все 46) | ✅ | Полная поддержка |
 | Скил memory-autopilot | ✅ | Автотриггер по description |
 | Hooks Stop/PostCompact | ✅ | Страховка |
 | Авто-search_error при traceback | ✅ | Через скил (Фаза 0) |
