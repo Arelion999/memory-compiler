@@ -2,6 +2,16 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.19.1 — 2026-07-17
+
+### Fixed
+
+- **`reindex` через MCP всегда обрывался таймаутом клиента — в ответе была суррогатная пара.** Строка ответа записана как `"🔄 Reindex запущен…"`: это не эмодзи 🔄, а ДВА суррогатных code point (`0xd83d`, `0xdd04`) — Python не склеивает их в литерале. Такая строка не кодируется в UTF-8, поэтому SSE-writer падал на отправке: `PydanticSerializationError: Error serializing to JSON: UnicodeEncodeError: 'utf-8' codec can't encode characters in position 0-1: surrogates not allowed`. Сам reindex при этом отрабатывал штатно (`tool ok`, `dur_ms=2`, индексы перестраивались) — до клиента просто не доходил ответ, и вызов висел 300 с. Диагноз занимал время именно из-за расхождения: в логах «tool ok», а у клиента «reindex завис». Фикс: `\U0001F504` (один code point). Тесты: `tests/test_response_serializable.py` (3) — проверяют не только этот ответ, но и весь пакет: ни один `.py` не должен содержать `\udXXX`, и каждый строковый литерал обязан кодироваться в UTF-8. Требует только `docker restart`. (Багрепорт + патч: link28rus.)
+
+### Added
+
+- **`.dockerignore`.** Dockerfile копирует в образ только `requirements.txt`, `memory_compiler/`, `server.py` и `VERSION`, но в build context демону уходил весь каталог развёртывания. На реальном сервере это 860 МБ: `knowledge/` (277 МБ) + `knowledge.bak.*` + `backups/` и, что важнее, `.env` с `MC_API_KEY`/`MC_ENCRYPT_KEY`. После добавления образ пересобрался в 3.01 ГБ вместо 8.59 ГБ.
+
 ## v1.19.0 — 2026-07-17
 
 ### Added
@@ -97,7 +107,9 @@ Semantic versioning: major.minor.patch. Versions below 1.0 were development mile
 
 - **Транспорт Streamable HTTP на `/mcp` — закрывает корень транзиентного `-32602`.** Добавлен рядом с `/sse` (ADDITIVE — существующие клиенты не затронуты). Причина `-32602`: у SSE есть длинный GET-стрим и окно между новой сессией (после реконнекта) и завершением `initialize`; tool-call, попавший в это окно, падал в `RuntimeError` внутри MCP SDK → `-32602` с пустым `data` (повтор проходил). У Streamable HTTP такого окна нет — сессия ведётся хедером `Mcp-Session-Id`, нет постоянного GET-стрима. Интеграция: `StreamableHTTPSessionManager` (жизненный цикл в `lifespan` через `async with .run()`), `Mount("/mcp", ...)`, авторизация Bearer в `AuthMiddleware` (без `?key=` — streamable-клиенты шлют хедеры, ключ не течёт в логи). Проверено: сервер стартует, `/sse` работает, `/mcp` без Bearer → 401, initialize-handshake с Bearer → 200 + `Mcp-Session-Id`.
 
-  **Переключение клиентов (по готовности):** в конфиге MCP-клиента заменить URL `…/sse` на `…/mcp` (для `mcp-remote` — `mcp-remote https://host/mcp --header "Authorization: Bearer <MC_API_KEY>"`). `/sse` остаётся рабочим для обратной совместимости.
+  **Переключение клиентов (по готовности):** в конфиге MCP-клиента заменить URL `…/sse` на `…/mcp/` — **со слэшем на конце** (для `mcp-remote` — `mcp-remote https://host/mcp/ --header "Authorization: Bearer <MC_API_KEY>"`). `/sse` остаётся рабочим для обратной совместимости.
+
+  ⚠️ **Слэш обязателен.** `Mount("/mcp", …)` в Starlette на запрос без слэша отвечает `307 Temporary Redirect` на `/mcp/`, а MCP-клиенты на httpx по умолчанию редиректам не следуют (`follow_redirects=False`) — с URL `…/mcp` такой клиент не подключится. Проверено живым probe: `POST /mcp` → 307 (`location: /mcp/`), `POST /mcp/` → 200 + `Mcp-Session-Id`.
 
 ## v1.9.9 — 2026-07-15
 

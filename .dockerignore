@@ -1,0 +1,35 @@
+# Build context: Dockerfile берёт только requirements.txt, memory_compiler/, server.py, VERSION.
+# Без этого файла демону уходит весь каталог развёртывания — на реальном сервере это
+# сотни МБ базы знаний и, что важнее, .env с MC_API_KEY/MC_ENCRYPT_KEY.
+
+# База знаний и её бэкапы (на проде это основной вес контекста)
+knowledge/
+knowledge.bak.*
+backups/
+
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Прочие бэкапы, оставленные рядом при деплое
+*.bak
+*.bak.*
+
+# Не нужно для сборки образа
+.git/
+.github/
+docs/
+tests/
+skills/
+scripts/
+*.md
+!README.md
+
+# Мусор
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+.venv/
+venv/
