@@ -1,4 +1,5 @@
 import memory_compiler.search as s
+import memory_compiler.storage as st
 
 FM_ARTICLE = (
     "---\n"
@@ -41,3 +42,14 @@ def test_article_contexts_list_format_and_section_headings():
     assert ctx == {"Доступ": "ИИ-контекст доступа"}
     assert s._article_contexts("# T\n\nтело") == {}
     assert s.section_headings(FM_ARTICLE) == ["Доступ", "Бэкап"]
+
+
+def test_merge_contexts_roundtrip_special_chars():
+    art = "# T\n\n**Теги:** x\n\n### A: спец\nтело\n"
+    out = st.merge_contexts(art, {"A: спец": 'ctx с "кавычкой" и :'})
+    assert "# T" in out and "### A: спец" in out and "тело" in out
+    ctx = s._article_contexts(out)
+    assert ctx == {"A: спец": 'ctx с "кавычкой" и :'}
+    out2 = st.merge_contexts(out, {"B": "второй"})
+    ctx2 = s._article_contexts(out2)
+    assert ctx2 == {"A: спец": 'ctx с "кавычкой" и :', "B": "второй"}

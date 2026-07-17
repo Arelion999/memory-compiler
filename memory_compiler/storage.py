@@ -2043,6 +2043,24 @@ def _write_frontmatter(data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def merge_contexts(text: str, contexts: dict) -> str:
+    """Вписать/обновить `contexts:` (список {heading, context}) во frontmatter статьи,
+    не затрагивая прочие ключи frontmatter и тело. contexts — {heading: context}.
+    Возвращает новый полный текст статьи."""
+    fm, body = _parse_frontmatter(text)
+    if not isinstance(fm, dict):
+        fm = {}
+    existing: dict = {}
+    cur = fm.get("contexts")
+    if isinstance(cur, list):
+        for it in cur:
+            if isinstance(it, dict) and isinstance(it.get("heading"), str):
+                existing[it["heading"]] = it.get("context")
+    existing.update(contexts)
+    fm["contexts"] = [{"heading": h, "context": c} for h, c in existing.items()]
+    return _write_frontmatter(fm) + body
+
+
 def _write_yaml_dict(d: dict, lines: list, indent: int):
     pad = " " * indent
     for k, v in d.items():
