@@ -2,6 +2,12 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.20.0 — 2026-07-17
+
+### Added
+
+- **Детерминированная агрегация версий на чтении (roadmap п.1, research arXiv 2606.01435).** Новый чистый модуль `memory_compiler/versioning.py` — единственный дом сравнения/агрегации версий: `version_key` (2–4-part + pre-release: `1.8.0-rc1 < 1.8.0`; 1С `8.3.24.1234` сравнивается корректно), `is_date_like`/`is_version_like`, `max_version`, `resolve` (набор версий → `{max, sorted_desc, count, has_multiple}`, фильтрует даты/мусор, дедуплицирует). `storage.py` делегирует сюда исторические `_semver_key`/`_max_semver`/`_looks_like_date` — контракт сохранён байт-в-байт (zero-regression: прежний набор тестов зелёный без правок). Новое `storage.tracking_version_status(data)` считает `max_known` по `current + history` и детерминированно (НЕ по датам/recency) помечает `stale`, когда tracked current ниже максимума истории. `get_current` аддитивно показывает **«Макс. известная версия»** + предупреждение об откате/устаревании — только когда есть что сообщить (`max_known != current`; актуальный трекер → без шума). Инвариант: read-путь **не мутирует** tracking (реальные откаты v1.7.18 остаются легитимны — сигнал делаем видимым, но не «чиним»). Осознанно вне scope: детектор противоречий про версии по-прежнему молчит (детерминизм нужен на assembly, а не в write-детекторе — наследие FP-фиксов v1.7.11–16); авто-извлечение 4-part из свободного текста отложено (`_FACT_PATTERNS` строго 3-part, защита от IP-коллизии цела). Тесты: `tests/test_versioning.py` (13) + `tracking_version_status` (9) + `get_current` (3) = +25 (394→419). Требует `docker restart`.
+
 ## v1.19.2 — 2026-07-17
 
 ### Fixed
