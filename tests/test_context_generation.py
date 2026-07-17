@@ -104,6 +104,28 @@ def test_save_contexts_validates_and_writes(knowledge_dir, monkeypatch):
     assert "### Раздел B" in disk and "тело B" in disk
 
 
+def test_dance_roundtrip_reembeds_with_ai_context(knowledge_dir, monkeypatch):
+    import numpy as np, json
+    monkeypatch.setattr(s, "encode_passages",
+                        lambda texts, progress_label=None: [np.array([1.0, 0.0]) for _ in texts])
+    art = knowledge_dir / "testproj" / "multi.md"
+    art.write_text("# Multi\n\n**Теги:** t\n\n### A\nтело A\n\n### B\nтело B\n", encoding="utf-8")
+
+    before = dict(s._chunk_article(art.read_text(encoding="utf-8"), "testproj/multi.md"))
+    a_before = next(txt for txt in before.values() if "тело A" in txt)
+
+    asyncio.run(h.save_contexts("testproj", "multi.md",
+                                [{"heading": "A", "context": "ИИ-контекст A"}]))
+
+    after = dict(s._chunk_article(art.read_text(encoding="utf-8"), "testproj/multi.md"))
+    a_after = next(txt for txt in after.values() if "тело A" in txt)
+    assert "ИИ-контекст A" in a_after and a_after != a_before
+
+    payload = json.loads("".join(c.text for c in asyncio.run(h.context_gaps("testproj", 10))))
+    art_entry = next(a for a in payload["articles"] if a["filename"] == "multi.md")
+    assert art_entry["sections"] == ["A", "B"]
+
+
 def test_tools_registered_and_dispatch(knowledge_dir):
     import memory_compiler.tools as t
     names = {tool.name for tool in asyncio.run(t.list_tools())}
