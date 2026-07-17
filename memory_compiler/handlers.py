@@ -963,6 +963,61 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     return [TextContent(type="text", text=msg)]
 
 
+async def save_contexts(project: str, filename: str, contexts: list) -> list[TextContent]:
+    """Сохранить ИИ-контексты секций во frontmatter статьи (генератор контекста,
+    Release 2). Принимает список {heading, context}; принимаются только заголовки,
+    реально существующие в статье (### -секции) — иначе попадание чужого/устаревшего
+    контекста. Секретные статьи исключены: контекст сохраняется в открытом виде,
+    а тело секрета — нет."""
+    from memory_compiler.storage import merge_contexts
+    from memory_compiler.search import section_headings, _article_contexts
+
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
+    if not fpath.exists():
+        return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
+
+    text = fpath.read_text(encoding="utf-8")
+    if is_secret_article(text, filename):
+        return [TextContent(type="text", text=(
+            "❌ Секретная статья — ИИ-контексты не сохраняются (тело секрета не должно "
+            "участвовать в генерации контекста)."))]
+
+    valid = set(section_headings(text))
+    accepted: dict = {}
+    skipped: list = []
+    for item in contexts or []:
+        heading = item.get("heading") if isinstance(item, dict) else None
+        context = item.get("context") if isinstance(item, dict) else None
+        if isinstance(heading, str) and heading in valid and isinstance(context, str) and context.strip():
+            accepted[heading] = " ".join(context.split())[:300]
+        else:
+            skipped.append(heading if isinstance(heading, str) else str(item))
+
+    if not accepted:
+        return [TextContent(type="text", text=(
+            f"Ничего не сохранено — ни один заголовок не совпал с секциями статьи.\n"
+            f"skipped: {skipped}"))]
+
+    new_text = merge_contexts(text, accepted)
+    fpath.write_text(new_text, encoding="utf-8")
+    await _index_embed(new_text, filename, project)
+
+    still_missing = [hd for hd in valid if hd not in _article_contexts(new_text)]
+
+    log_event(project, "save_contexts", f"{filename} (+{len(accepted)}, skip {len(skipped)})")
+    git_commit(f"contexts: {filename} [{project}]")
+
+    msg = f"✅ Контексты сохранены: {project}/{filename} (+{len(accepted)}: {list(accepted)})"
+    if skipped:
+        msg += f"\nskipped: {skipped}"
+    if still_missing:
+        msg += f"\nstill_missing: {still_missing}"
+    return [TextContent(type="text", text=msg)]
+
+
 async def read_article(project: str, filename: str) -> list[TextContent]:
     try:
         fpath = safe_article_path(project, filename)

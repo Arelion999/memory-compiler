@@ -1,5 +1,8 @@
+import asyncio
+
 import memory_compiler.search as s
 import memory_compiler.storage as st
+import memory_compiler.handlers as h
 
 FM_ARTICLE = (
     "---\n"
@@ -53,3 +56,23 @@ def test_merge_contexts_roundtrip_special_chars():
     out2 = st.merge_contexts(out, {"B": "второй"})
     ctx2 = s._article_contexts(out2)
     assert ctx2 == {"A: спец": 'ctx с "кавычкой" и :', "B": "второй"}
+
+
+def test_save_contexts_validates_and_writes(knowledge_dir, monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(s, "encode_passages",
+                        lambda texts, progress_label=None: [np.array([1.0, 0.0]) for _ in texts])
+    art = knowledge_dir / "testproj" / "multi.md"
+    art.write_text("# Multi\n\n**Теги:** t\n\n### Раздел A\nтело A\n\n### Раздел B\nтело B\n",
+                   encoding="utf-8")
+    res = asyncio.run(h.save_contexts("testproj", "multi.md", [
+        {"heading": "Раздел A", "context": "контекст A"},
+        {"heading": "Нет такого", "context": "мимо"},
+    ]))
+    txt = "".join(c.text for c in res)
+    assert "skipped" in txt.lower() and "Нет такого" in txt
+    disk = art.read_text(encoding="utf-8")
+    ctx = s._article_contexts(disk)
+    assert ctx == {"Раздел A": "контекст A"}
+    assert disk.startswith("---")
+    assert "### Раздел B" in disk and "тело B" in disk
