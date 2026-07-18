@@ -117,9 +117,31 @@ def test_context_format_version_match_loads(knowledge_dir, monkeypatch):
 
 
 def test_chunk_article_caps_subchunks_per_section():
-    """Огромная секция (ingested PDF/URL) не должна взрывать число чанков — кап
-    CHUNK_MAX_SUBCHUNKS на секцию. Без капа тело ~21000 символов дало бы ~35 окон."""
-    from memory_compiler.search import _chunk_article, CHUNK_MAX_SUBCHUNKS
+    """Огромная секция (ingested PDF/URL) не должна взрывать число чанков.
+
+    Кап зависит от режима: CHUNK_SUBCHUNKS_CAP в адаптивном (с v1.28.0 — дефолт),
+    CHUNK_MAX_SUBCHUNKS в фиксированном. Без капа тело ~21000 символов дало бы ~35 окон."""
+    from memory_compiler.search import (
+        _chunk_article, CHUNK_MAX_SUBCHUNKS, CHUNK_SUBCHUNKS_CAP, CHUNK_ADAPTIVE,
+    )
+    cap = CHUNK_SUBCHUNKS_CAP if CHUNK_ADAPTIVE else CHUNK_MAX_SUBCHUNKS
     huge = "# T\n**Теги:** x\n\n## Записи\n\n### Big\n" + ("данные " * 3000)
     chunks = _chunk_article(huge, "proj/big.md")
-    assert len(chunks) <= 2 * CHUNK_MAX_SUBCHUNKS, f"кап не сработал: {len(chunks)} чанков"
+    assert len(chunks) <= 2 * cap, f"кап не сработал: {len(chunks)} чанков при капе {cap}"
+
+
+def test_adaptive_chunking_covers_more_text_than_fixed(monkeypatch):
+    """Суть v1.28.0: адаптивное окно закрывает длинную секцию целиком, а не обрезает хвост.
+
+    Замерено на живом корпусе: фиксированный режим терял 26.3% текста базы. Тест стережёт
+    само свойство — на секции, не влезающей в фиксированный кап, покрытие должно вырасти."""
+    import memory_compiler.search as sm
+    section = "".join("строка данных номер %d\n" % i for i in range(400))  # ~9 тыс. символов
+    art = "# T\n**Теги:** x\n\n## Записи\n\n### Big\n" + section
+
+    monkeypatch.setattr(sm, "CHUNK_ADAPTIVE", False)
+    fixed = sum(len(t) for _k, t in sm._chunk_article(art, "proj/a.md"))
+    monkeypatch.setattr(sm, "CHUNK_ADAPTIVE", True)
+    adaptive = sum(len(t) for _k, t in sm._chunk_article(art, "proj/a.md"))
+    assert adaptive > fixed, (
+        f"адаптивная нарезка покрыла не больше текста: {adaptive} vs {fixed}")

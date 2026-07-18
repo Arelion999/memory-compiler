@@ -12,16 +12,20 @@ embed/reranker, который в search.py стоит именно от OOM. П
 реранком в таком режиме не дожил до конца. Поэтому по умолчанию считается только
 hybrid; тяжёлую конфигурацию гонять малыми выборками или на остановленном сервере.
 """
+import os
 import sys
 import time
 
-sys.path.insert(0, "/app")
+sys.path.insert(0, "/app")   # контейнер
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # локальный клон
 
 from memory_compiler.retrieval_eval import (  # noqa: E402
     parse_audit, build_golden, filter_existing, evaluate,
 )
 
-KNOWLEDGE = "/knowledge"
+from memory_compiler.config import KNOWLEDGE_DIR  # noqa: E402
+
+KNOWLEDGE = str(KNOWLEDGE_DIR)   # уважаем env KNOWLEDGE_DIR: эксперименты идут на КОПИИ базы
 AUDIT = KNOWLEDGE + "/_audit.log"
 
 

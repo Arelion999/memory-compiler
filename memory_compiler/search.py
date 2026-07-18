@@ -113,11 +113,29 @@ LATE_CHUNKING = _os_embed.environ.get("LATE_CHUNKING", "false").lower() in ("1",
 # Контекстуализация чанков: project+title+section(+ИИ-контекст) в текст эмбеддинга,
 # нарезка длинных секций. Смена версии инвалидирует .embeddings.pkl → полный rebuild
 # (как смена model/late_chunking). v2 = + project, un-truncate, frontmatter contexts.
-CONTEXT_FORMAT_VERSION = 3
-CHUNK_BODY_MAX = 600         # макс. длина тела в одном под-чанке; длиннее — режем на окна
-CHUNK_MAX_SUBCHUNKS = 4      # кап под-чанков на секцию: не даём огромным секциям (ingested
-                            # PDF/URL) взрывать число чанков → индекс и rebuild управляемы.
-                            # 4×600=2400 симв./секция vs старые body[:400] — 6× покрытия, но ограниченно.
+CONTEXT_FORMAT_VERSION = 4   # v4: адаптивная нарезка по умолчанию (см. CHUNK_ADAPTIVE)
+CHUNK_BODY_MAX = int(_os_embed.environ.get("CHUNK_BODY_MAX", "600"))
+CHUNK_MAX_SUBCHUNKS = int(_os_embed.environ.get("CHUNK_MAX_SUBCHUNKS", "4"))
+# Кап под-чанков на секцию: не даём огромным секциям (ingested PDF/URL) взрывать число
+# чанков. ЦЕНА фиксированного режима замерена 2026-07-18: 600x4=2400 симв. на секцию, всё
+# сверх этого молча ОТБРАСЫВАЛОСЬ — 1 252 908 симв. = 26.3% текста корпуса, невидимых для
+# semantic-канала, при этом 70.7% реальных запросов golden-набора ведут на обрезанную статью.
+# ВКЛЮЧЕНА по умолчанию с v1.28.0 по результатам замера харнессом на 133 реальных запросах
+# (одна машина, три конфигурации; фикс = прежнее поведение):
+#   фикс (600x4)          MRR 0.4599  recall@5 0.5865  recall@10 0.6541  чанков 8034
+#   адаптив, бюджет 4     MRR 0.4580  recall@5 0.6165  recall@10 0.6842  чанков 6771
+#   адаптив, бюджет 16    MRR 0.4626  recall@5 0.6165  recall@10 0.6842  чанков 7219  <- выбрана
+# Выбран бюджет 16: тот же прирост recall, что и у 4, но без просадки recall@1, и покрытие
+# корпуса 93% против 85%. Лишние 8 п.п. текста не дали прироста на ИСТОРИЧЕСКИХ запросах
+# (их там не было), но определяют находимость БУДУЩИХ. Индекс всё равно на 10% меньше
+# нынешнего. Прирост скромный: +4 запроса из 133 в топ-5/топ-10, MRR не двигается —
+# чинится «не нашлось вообще», а не «нашлось не первым».
+CHUNK_ADAPTIVE = _os_embed.environ.get("CHUNK_ADAPTIVE", "true").lower() in ("1", "true", "yes")
+# Верхняя граница окна не произвольна: вход e5-base — 512 токенов (~1200-1500 симв. русского),
+# дальше режет сам токенизатор, и растить окно бессмысленно.
+CHUNK_WINDOW_MAX = int(_os_embed.environ.get("CHUNK_WINDOW_MAX", "1200"))
+# Бюджет окон на секцию в адаптивном режиме (в фиксированном роль играет CHUNK_MAX_SUBCHUNKS).
+CHUNK_SUBCHUNKS_CAP = int(_os_embed.environ.get("CHUNK_SUBCHUNKS_CAP", "16"))
 
 # Memory-safe encoding controls for big models (BGE-M3, Qwen3-Embedding etc):
 # without these, model.encode(docs=540, seq=8192, hidden=1024) tries a peak
@@ -326,6 +344,33 @@ def _split_body(body: str, max_len: int = CHUNK_BODY_MAX) -> list[str]:
     return windows or [""]
 
 
+def _section_windows(body: str) -> list[str]:
+    """Окна секции согласно политике нарезки.
+
+    Фиксированный режим (по умолчанию, историческое поведение): окна по CHUNK_BODY_MAX,
+    всё сверх бюджета CHUNK_MAX_SUBCHUNKS ОТБРАСЫВАЕТСЯ — именно так терялось 26% корпуса.
+
+    Адаптивный (CHUNK_ADAPTIVE=1): размер окна подгоняется под длину секции так, чтобы
+    она уместилась в бюджет ЦЕЛИКОМ, а не обрезалась. Секция 3000 симв. при бюджете 4 —
+    это 4 окна по 750 вместо "4x600 и выброс 600". Окно ограничено CHUNK_WINDOW_MAX
+    (дальше режет токенизатор модели), бюджет — CHUNK_SUBCHUNKS_CAP. Если секция не
+    влезает даже так (гигантские ingested-статьи), обрезка остаётся, но много меньшая.
+    """
+    body = body.strip()
+    if not CHUNK_ADAPTIVE:
+        return _split_body(body)[:CHUNK_MAX_SUBCHUNKS]
+    budget = max(1, CHUNK_SUBCHUNKS_CAP)
+    if len(body) <= CHUNK_BODY_MAX:
+        return _split_body(body)[:budget]
+    need = -(-len(body) // max(1, CHUNK_WINDOW_MAX))   # окон при максимальном окне
+    if need > budget:
+        win = CHUNK_WINDOW_MAX                          # покрыть целиком нельзя — берём максимум
+    else:
+        n = max(1, min(budget, need))
+        win = min(CHUNK_WINDOW_MAX, max(CHUNK_BODY_MAX, -(-len(body) // n)))
+    return _split_body(body, max_len=win)[:budget]
+
+
 def _strip_frontmatter(text: str) -> str:
     """Тело статьи без YAML-frontmatter — для извлечения заголовка/тегов/секций.
     Нет frontmatter → текст как есть (граница как в storage._parse_frontmatter)."""
@@ -418,7 +463,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     if len(sections) <= 1:
         ctx = _section_context(project, title, tags, "", article_contexts)
         body = " ".join(article_body_lines(body_text, limit=40))
-        windows = _split_body(body)[:CHUNK_MAX_SUBCHUNKS]
+        windows = _section_windows(body)
         # Один под-чанк → «голый» родительский ключ (обратная совместимость с логикой
         # конкурентного свопа rebuild/embed_document и dedup, ожидающей parent-key
         # для односекционных статей). Несколько окон (длинное тело) → #chunkN.
@@ -431,7 +476,7 @@ def _chunk_article(text: str, path_key: str) -> list[tuple[str, str]]:
     idx = 0
     for header, body in sections:
         ctx = _section_context(project, title, tags, header, article_contexts)
-        for window in _split_body(body)[:CHUNK_MAX_SUBCHUNKS]:
+        for window in _section_windows(body):
             chunks.append((f"{path_key}#chunk{idx}", f"{ctx} {window}"))
             idx += 1
     return chunks
