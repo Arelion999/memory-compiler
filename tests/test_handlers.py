@@ -88,6 +88,19 @@ def test_consolidate_empty_when_no_embeddings(knowledge_dir):
     assert "не построены" in result[0].text or "пропущен" in result[0].text
 
 
+def test_consolidate_schema_default_matches_handler():
+    """Guard: дефолт min_sim в схеме тула == дефолт хендлера. Иначе клиент шлёт старый
+    порог из схемы и фикс неэффективен (баг v1.21.0: хендлер 0.985, схема 0.90)."""
+    import inspect
+    import memory_compiler.tools as t
+    from memory_compiler.handlers import consolidate
+    tools = asyncio.run(t.list_tools())
+    cons = next(tl for tl in tools if tl.name == "consolidate")
+    schema_default = cons.inputSchema["properties"]["min_sim"]["default"]
+    handler_default = inspect.signature(consolidate).parameters["min_sim"].default
+    assert schema_default == handler_default == 0.985
+
+
 def test_save_compact_creates_and_fifo(knowledge_dir):
     from memory_compiler.handlers import save_compact
     proj = knowledge_dir / "myapp"

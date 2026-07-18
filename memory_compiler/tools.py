@@ -530,12 +530,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="consolidate",
-            description="Найти семантически похожие статьи в проекте — кандидаты на слияние. Использует embeddings (cosine similarity). НЕ мержит автоматически — возвращает список пар для ручной проверки.",
+            description="Найти дубли/похожие статьи: near-exact детектор РЕАЛЬНЫХ дублей (точный/containment матч по тексту) + похожие темы по embeddings. НЕ мержит автоматически.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "default": "all"},
-                    "min_sim": {"type": "number", "default": 0.90, "description": "Порог similarity (e5 с префиксами). 0.90 — близкие; 0.95+ — почти дубли"}
+                    "min_sim": {"type": "number", "default": 0.985, "description": "Порог embedding-similarity для «похожих тем» (e5). 0.985 — почти дубли; ниже — на коротком RU-корпусе много ложняков. Реальные дубли ловит near-exact, не порог."}
                 },
                 "required": []
             }
