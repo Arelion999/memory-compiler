@@ -1774,3 +1774,36 @@ def test_tracking_version_status_history_not_list():
     st = tracking_version_status(data)
     assert st["max_known"] == "1.8.0"
     assert st["stale"] is False
+
+
+def test_extract_versions_3part_unchanged():
+    from memory_compiler.storage import _extract_versions
+    assert _extract_versions("выкатили 1.20.1 на прод") == ["1.20.1"]
+
+
+def test_extract_versions_4part_over_255_no_cue():
+    from memory_compiler.storage import _extract_versions
+    # октет 1234 > 255 → структурно НЕ IP → версия даже без cue-слова
+    assert _extract_versions("число 8.3.24.1234 в записи") == ["8.3.24.1234"]
+
+
+def test_extract_versions_4part_le255_with_cue():
+    from memory_compiler.storage import _extract_versions
+    assert _extract_versions("конфа 9.2.6.57") == ["9.2.6.57"]
+    assert _extract_versions("обновили до версии 9.2.6.57") == ["9.2.6.57"]
+
+
+def test_extract_versions_4part_le255_no_cue_not_version():
+    from memory_compiler.storage import _extract_versions
+    # голое всё-≤255 без cue → НЕ версия (уйдёт в IP-ветку extract_facts)
+    assert _extract_versions("адрес 9.2.6.57 записан") == []
+
+
+def test_extract_versions_date_not_version():
+    from memory_compiler.storage import _extract_versions
+    assert _extract_versions("дата 2024.06.25 в отчёте") == []
+
+
+def test_extract_versions_dedupe():
+    from memory_compiler.storage import _extract_versions
+    assert _extract_versions("вышла 1.20.1, потом снова 1.20.1") == ["1.20.1"]

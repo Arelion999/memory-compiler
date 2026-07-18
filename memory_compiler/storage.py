@@ -2306,6 +2306,40 @@ def _looks_like_date(v: str) -> bool:
     return versioning.is_date_like(v)
 
 
+_VERSION4_RE = re.compile(
+    r'(?<!\d\.)\bv?(\d+\.\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)(?!\.\d)\b',
+    re.IGNORECASE,
+)
+
+
+def _octet_over_255(v: str) -> bool:
+    """Хотя бы один числовой компонент > 255 → структурно НЕ IPv4 (значит версия/сборка)."""
+    base = str(v).partition("-")[0]
+    return any(int(x) > 255 for x in re.findall(r'\d+', base))
+
+
+def _extract_versions(text: str) -> list:
+    """Версии из текста: 3-частные (как historically, с дата-фильтром) + 4-частные под
+    условием «version-cue перед числом ИЛИ октет>255». Голое 4-частное всё-≤255 без cue
+    не считаем версией (неотличимо от IP — оставляем IP-ветке extract_facts_from_text)."""
+    seen, out = set(), []
+    for m in _FACT_PATTERNS["version"].finditer(text):
+        v = m.group(1)
+        if versioning.is_date_like(v):
+            continue
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    for m in _VERSION4_RE.finditer(text):
+        v = m.group(1)
+        if not (_VERSION_CUE.search(text[:m.start()]) or _octet_over_255(v)):
+            continue
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 def extract_facts_from_text(text: str, topic: str = "") -> dict:
     """Extract structural facts from free text. Returns {kind: [values]}.
     Only returns values that appear in non-historical context.
