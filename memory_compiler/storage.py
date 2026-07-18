@@ -1787,7 +1787,11 @@ def parse_obsidian_note(text: str) -> dict:
             if isinstance(fm_tags, list):
                 result["tags"] = [t.strip().lstrip("#") for t in fm_tags]
             elif isinstance(fm_tags, str):
-                result["tags"] = [t.strip().lstrip("#") for t in re.split(r'[,\s]+', fm_tags) if t.strip()]
+                # flow-list [a, b] и кавычки: снять скобки/кавычки, иначе '[work'/'deploy]'
+                # попадали в теги (гардрейл: теги должны выживать импорт).
+                fm_tags = fm_tags.strip().strip("[]")
+                result["tags"] = [t.strip().strip('"').strip("'").lstrip("#")
+                                  for t in re.split(r'[,\s]+', fm_tags) if t.strip()]
             # Title
             if "title" in result["frontmatter"]:
                 result["title"] = str(result["frontmatter"]["title"])

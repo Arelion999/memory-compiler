@@ -692,6 +692,16 @@ def test_parse_obsidian_inline_tags():
     assert "docker" in r["tags"]
 
 
+def test_parse_obsidian_inline_flow_tags():
+    """flow-list теги [a, b] должны разбираться без скобок (гардрейл: теги выживают)."""
+    from memory_compiler.storage import parse_obsidian_note
+    note = "---\ntags: [work, deploy]\n---\n# T\n\nтело"
+    r = parse_obsidian_note(note)
+    assert "work" in r["tags"]
+    assert "deploy" in r["tags"]
+    assert "[work" not in r["tags"] and "deploy]" not in r["tags"]
+
+
 def test_parse_obsidian_alias_link():
     from memory_compiler.storage import parse_obsidian_note
     note = "See [[Target Page|display text]] here"
