@@ -1880,3 +1880,25 @@ def test_guard_garbage_version_no_crash(knowledge_dir):
     # битая версия на авто-пути → не падает; version_key("abc")=((),1,()) → откат-ветка держит старое
     save_tracking_article("testproj", "g1", {"version": "abc"}, guard_version_regression=True)
     assert load_tracking("testproj", "g1")["current"]["version"] == "1.20.1"
+
+
+def test_auto_update_tracks_1c_version_via_note(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "platform_1c", {"version": "8.3.23.100"})
+    # заметка упоминает сущность 'platform_1c' (релевантность) + 1С-версию с cue-словом
+    auto_update_tracking("testproj",
+                         "platform_1c: платформа обновлена до 8.3.24.1234",
+                         "обновление 1С")
+    assert load_tracking("testproj", "platform_1c")["current"]["version"] == "8.3.24.1234"
+
+
+def test_auto_update_ip_fragment_does_not_corrupt_version(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.20.1"})
+    # заметка релевантна ('release' + '1.20.1') и содержит голый 3-частный фрагмент 203.0.113;
+    # auto_update берёт max=203.0.113, но plausibility guard на tracking-уровне отклоняет
+    auto_update_tracking("testproj",
+                         "release 1.20.1: заметка, значение 203.0.113 в тексте",
+                         "release note")
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1", \
+        "IP-фрагмент через max затёр версию (guard не сработал)"
