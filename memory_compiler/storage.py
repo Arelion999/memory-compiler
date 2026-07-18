@@ -2390,9 +2390,6 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
         values = []
         for m in matches:
             v = m if isinstance(m, str) else m[0]
-            # Версия, похожая на дату (2024.06.25), — это дата, не версия.
-            if kind == "version" and _looks_like_date(v):
-                continue
             if v and v not in seen:
                 seen.add(v)
                 values.append(v)
