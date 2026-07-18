@@ -830,38 +830,88 @@ async def get_summary(project: str) -> list[TextContent]:
 # ─── ask ─────────────────────────────────────────────────────────────────────
 
 
-async def ask(question: str, project: str = "all") -> list[TextContent]:
-    results = await _whoosh_async(question, project=project, limit=5)
+ASK_TOP_K = 5  # ответу нужна горстка точных источников, а не широкая выдача как у search
+
+
+def ask_fragment(text: str, question: str, limit: int = 300) -> str:
+    """Наиболее релевантная вопросу секция статьи, обрезанная до limit символов.
+
+    Секции — по '### ' (запись статьи). Скор секции — сколько РАЗНЫХ значимых слов
+    вопроса в ней встретилось. Пустая строка, если не совпало ничего: вызывающий
+    подставит preview."""
+    q_words = {w.lower() for w in question.split() if len(w) > 2}
+    if not q_words:
+        return ""
+    best_score, best_sec = 0, ""
+    for sec in text.split("\n### "):
+        low = sec.lower()
+        score = sum(1 for w in q_words if w in low)
+        if score > best_score:
+            best_score, best_sec = score, sec.strip()
+    return best_sec[:limit].strip() if best_score else ""
+
+
+async def ask_sources(question: str, project: str = "all") -> tuple:
+    """Источники для ответа на вопрос: (список источников, был ли фолбэк на все проекты).
+
+    Общее ядро MCP-тула ask (рендерит в текст) и /api/ask (отдаёт JSON) — чтобы
+    ассистент и веб-UI отвечали на один вопрос одинаково, а не разными конвейерами.
+    Конвейер тот же, что у search: широкий пул кандидатов -> фолбэк на project=all
+    -> cross-encoder rerank. Раньше ask брал whoosh top-5 без реранка и без фолбэка,
+    т.е. отвечал ХУЖЕ, чем search (реранкер даёт +25-40% precision).
+    """
+    results = await _whoosh_async(question, project=project, limit=SEARCH_CANDIDATE_POOL)
+    fallback_all = False
+    if not results and project != "all":
+        results = await _whoosh_async(question, project="all", limit=SEARCH_CANDIDATE_POOL)
+        fallback_all = bool(results)
     if not results:
+        return [], False
+
+    results = await _rerank_async(question, results, top_k=ASK_TOP_K)
+    track_access([r["project"] + "/" + r["file"] for r in results])
+
+    sources = []
+    for r in results:
+        # Секретные статьи не цитируем: ask читал сырой файл с диска в обход этой
+        # проверки, которая у search есть, — во фрагмент попадали ENC-строки.
+        secret = bool(is_secret_article(r.get("preview", ""), r.get("file", "")))
+        fragment = ""
+        if not secret:
+            fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+            if fpath.exists():
+                fragment = ask_fragment(fpath.read_text(encoding="utf-8"), question)
+            if not fragment:
+                fragment = "\n".join(r["preview"].splitlines()[:5])
+        sources.append({
+            "project": r["project"],
+            "file": r["file"],
+            "title": r.get("title", r["file"]),
+            "score": r["score"],
+            "rerank": round(r["rerank_score"], 3) if "rerank_score" in r else None,
+            "fragment": fragment,
+            "secret": secret,
+        })
+    return sources, fallback_all
+
+
+async def ask(question: str, project: str = "all") -> list[TextContent]:
+    sources, fallback_all = await ask_sources(question, project=project)
+    if not sources:
         return [TextContent(type="text", text=f"Не найдено информации по: '{question}'")]
 
-    track_access([f"{r['project']}/{r['file']}" for r in results])
-
-    out = [f"# Ответ на: {question}\n"]
-    for r in results:
-        # Читаем полный текст статьи для извлечения релевантных фрагментов
-        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
-        if not fpath.exists():
-            continue
-        text = fpath.read_text(encoding="utf-8")
-        # Ищем параграфы, содержащие слова из вопроса
-        q_words = set(w.lower() for w in question.split() if len(w) > 2)
-        sections = text.split("\n### ")
-        best_sections = []
-        for sec in sections:
-            sec_lower = sec.lower()
-            matches = sum(1 for w in q_words if w in sec_lower)
-            if matches > 0:
-                best_sections.append((matches, sec.strip()))
-        best_sections.sort(key=lambda x: x[0], reverse=True)
-
-        if best_sections:
-            # Берём лучший фрагмент (до 300 символов)
-            fragment = best_sections[0][1][:300].strip()
-            out.append(f"---\n**[{r['project']}/{r['file']}]** (релевантность: {r['score']})\n> {fragment}\n")
-        else:
-            preview = "\n".join(r["preview"].splitlines()[:5])
-            out.append(f"---\n**[{r['project']}/{r['file']}]** (релевантность: {r['score']})\n> {preview}\n")
+    header = f"# Ответ на: {question}\n"
+    if fallback_all:
+        header += (f"\n*В проекте «{project}» ничего не найдено — показаны результаты "
+                   f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
+    out = [header]
+    for s in sources:
+        label = "[" + s["project"] + "/" + s["file"] + "]"
+        scores = "score: " + str(s["score"])
+        if s["rerank"] is not None:
+            scores += ", rerank: %.2f" % s["rerank"]
+        body = "[зашифровано — используй read_article для просмотра]" if s["secret"] else s["fragment"]
+        out.append("---\n**" + label + "** (" + scores + ")\n> " + body + "\n")
 
     return [TextContent(type="text", text="\n".join(out))]
 

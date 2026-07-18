@@ -29,7 +29,9 @@ from memory_compiler.storage import (
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
     make_preview, tracking_timeline, _parse_frontmatter,
 )
-from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
+from memory_compiler.handlers import (
+    compile as _compile, save_lesson, delete_article, lint as _lint, ask_sources,
+)
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
 from memory_compiler import obs
@@ -178,6 +180,21 @@ async def web_related(request: Request):
             "rel": round(related_display_score(score), 3),   # доля для полоски (от порога шума)
         })
     return JSONResponse({"related": items})
+
+
+async def web_ask(request: Request):
+    """Ответ по базе знаний — те же источники, что видит ассистент через MCP-tool ask.
+
+    ГЕНЕРАЦИИ НЕТ: в memory-compiler нет LLM, сервер — это память ассистента, а не
+    собеседник. Endpoint отдаёт РЕТРИВАЛ: релевантные вопросу фрагменты с указанием
+    статьи-источника. UI обязан показывать их как источники, а не как сочинённый ответ."""
+    q = request.query_params.get("q", "").strip()
+    empty = {"question": q, "fallback_all": False, "answers": []}
+    if not q:
+        return JSONResponse(empty)
+    project = request.query_params.get("project", "").strip() or "all"
+    sources, fallback_all = await ask_sources(q, project=project)
+    return JSONResponse({"question": q, "fallback_all": fallback_all, "answers": sources})
 
 
 async def web_timeline(request: Request):
@@ -883,6 +900,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/search", endpoint=web_search),
             Route("/api/related", endpoint=web_related),
             Route("/api/timeline", endpoint=web_timeline),
+            Route("/api/ask", endpoint=web_ask),
             Route("/api/save", endpoint=web_save, methods=["POST"]),
             Route("/api/article/{project}/{filename}", endpoint=web_article),
             Route("/api/projects/{project}", endpoint=web_project),

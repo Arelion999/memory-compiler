@@ -116,6 +116,16 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .tl-row .v{color:var(--text);word-break:break-word}
 .tl-row.changed .v{color:var(--accent);font-weight:600}
 .tl-row.changed .k::after{content:" \\2022";color:var(--accent)}
+/* Вкладка «Ответы» (retrieval с источниками, без генерации) */
+.ask-note{font-size:0.75em;color:var(--text2);margin-bottom:10px;padding:6px 10px;border-left:3px solid var(--border);background:var(--bg2);border-radius:0 4px 4px 0}
+.ask-fallback{font-size:0.78em;color:var(--accent);margin-bottom:8px}
+.ask-src{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.ask-src .h{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:5px}
+.ask-src .h .t{color:var(--accent);font-size:0.9em;cursor:pointer}
+.ask-src .h .t:hover{text-decoration:underline}
+.ask-src .h .s{color:var(--text2);font-size:0.72em;white-space:nowrap}
+.ask-src .frag{font-size:0.82em;line-height:1.5;color:var(--text);white-space:pre-wrap;word-break:break-word;border-left:3px solid var(--accent);padding-left:8px}
+.ask-src .src{color:var(--text2);font-size:0.72em;margin-top:6px}
 /*PYGMENTS_CSS*/
 </style>
 </head>
@@ -126,6 +136,7 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 </div>
 <div class="tab-bar">
 <a href="#" class="active" onclick="showTab('search');return false" id="tab-search">Поиск</a>
+<a href="#" onclick="showTab('ask');return false" id="tab-ask">Ответы</a>
 <a href="#" onclick="showTab('add');return false" id="tab-add">Добавить</a>
 <a href="#" onclick="showTab('graph');return false" id="tab-graph">Граф</a>
 <a href="#" onclick="showTab('compile');return false" id="tab-compile">Компиляция</a>
@@ -141,6 +152,15 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div class="tags-bar" id="tags-bar"></div>
 <div class="projects" id="projects"></div>
 <div id="results"></div>
+</div>
+<div id="view-ask" style="display:none">
+<div class="search-box">
+<input id="ask-q" type="search" placeholder="Вопрос по базе знаний...">
+<select id="ask-project"><option value="">Все проекты</option></select>
+<button onclick="doAsk()">Спросить</button>
+</div>
+<div class="ask-note">Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет.</div>
+<div id="ask-results"></div>
 </div>
 <div id="view-add" style="display:none">
 <div id="save-msg"></div>
@@ -195,13 +215,14 @@ let PROJECTS=[];
 fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
 if(d.version){$("version-badge").textContent="v"+d.version;}
 $("f-project").innerHTML=PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
-$("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
+$("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
+$("ask-project").innerHTML='<option value="">Все проекты</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
 const $=id=>document.getElementById(id);
 let current=null;
 let activeTag=null;
 
 function showTab(t){
-  ["search","add","graph","compile","analytics","audit"].forEach(v=>{
+  ["search","ask","add","graph","compile","analytics","audit"].forEach(v=>{
     $("view-"+v).style.display=v===t?"block":"none";
     $("tab-"+v).className=v===t?"active":"";
   });
@@ -771,6 +792,33 @@ function renderTimeline(idx){
       +'<span class="v">'+esc(v===undefined?"—":String(v))+'</span></div>';
   }).join("");
 }
+
+// Вкладка «Ответы»: retrieval с источниками (генерации нет — LLM на сервере отсутствует)
+let askItems=[];
+function askOpen(idx){const i=askItems[idx];if(i)openArticle(i.project,i.file,i.title);}
+async function doAsk(){
+  const q=$("ask-q").value.trim();
+  if(!q)return;
+  const p=$("ask-project").value;
+  $("ask-results").innerHTML='<div class="empty">Ищу…</div>';
+  try{
+    const r=await fetch("/api/ask?q="+encodeURIComponent(q)+(p?"&project="+encodeURIComponent(p):""));
+    const d=await r.json();
+    askItems=d.answers||[];
+    if(!askItems.length){$("ask-results").innerHTML='<div class="empty">Ничего не найдено</div>';return;}
+    let h=d.fallback_all?'<div class="ask-fallback">В выбранном проекте ничего не нашлось — показаны результаты по всем проектам.</div>':"";
+    h+=askItems.map((i,idx)=>{
+      const sc="score "+i.score+((i.rerank!==null&&i.rerank!==undefined)?" · rerank "+i.rerank:"");
+      const frag=i.secret?"[зашифровано — откройте статью для просмотра]":esc(i.fragment);
+      return '<div class="ask-src"><div class="h"><span class="t" onclick="askOpen('+idx+')">'+esc(i.title)+'</span>'
+        +'<span class="s">'+sc+'</span></div>'
+        +'<div class="frag">'+frag+'</div>'
+        +'<div class="src">'+esc(i.project)+' / '+esc(i.file)+'</div></div>';
+    }).join("");
+    $("ask-results").innerHTML=h;
+  }catch(e){$("ask-results").innerHTML='<div class="empty">Ошибка запроса</div>';}
+}
+$("ask-q").addEventListener("keydown",e=>{if(e.key==="Enter")doAsk()});
 
 $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
 // projects loaded dynamically from /api/health
