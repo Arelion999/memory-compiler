@@ -31,6 +31,7 @@ from memory_compiler.storage import (
 )
 from memory_compiler.handlers import (
     compile as _compile, save_lesson, delete_article, lint as _lint, ask_sources,
+    RERANK_ENABLED,
 )
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
@@ -845,8 +846,12 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             loop = asyncio.get_event_loop()
             try:
                 await loop.run_in_executor(None, _search_mod.get_embed_model)
-                await loop.run_in_executor(None, _search_mod.get_reranker_model)
-                print("[warm] ML models preloaded (embed + reranker)")
+                # Выключенный reranker не грузим вовсе: это ~0.6 ГБ RSS и секунды старта
+                # за модель, которая по замеру ничего не даёт (см. RERANK_ENABLED).
+                if RERANK_ENABLED:
+                    await loop.run_in_executor(None, _search_mod.get_reranker_model)
+                print("[warm] ML models preloaded (embed"
+                      + (" + reranker)" if RERANK_ENABLED else ", reranker выключен)"))
             except Exception as e:
                 print(f"[warm] model preload failed (lazy-load on first use): {e}")
 

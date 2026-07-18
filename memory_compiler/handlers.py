@@ -277,6 +277,20 @@ SEARCH_RERANK_BUDGET_S = float(os.environ.get("SEARCH_RERANK_BUDGET_S", "20"))
 # бюджет SEARCH_RERANK_BUDGET_S и rerank отваливался (мягкая деградация без reranker).
 # 10 даёт ~2x меньше forward-pass'ей при небольшой потере recall. Тюнится env.
 SEARCH_CANDIDATE_POOL = int(os.environ.get("SEARCH_CANDIDATE_POOL", "10"))
+# Cross-encoder reranker ВЫКЛЮЧЕН по умолчанию. Замерено 2026-07-18 харнессом
+# scripts/eval_retrieval.py на 132 РЕАЛЬНЫХ запросах аудит-лога (ground truth —
+# статьи, которые действительно открыли после поиска):
+#   hybrid         MRR 0.4634  recall@1 0.3636  recall@5 0.5833  recall@10 0.6515  [0.45 с/запрос]
+#   hybrid+rerank  MRR 0.4535  recall@1 0.3561  recall@5 0.5758  recall@10 0.6515  [14.5 с/запрос]
+# Прироста нет (сдвиг ровно по ОДНОМУ запросу на уровень — шум) при цене ×32.
+# recall@10 совпал структурно: пул кандидатов = 10 и меряем на @10, значит reranker
+# лишь переставляет те же 10 документов и новых внести не может. Польза cross-encoder
+# в литературе берётся из переранжирования БОЛЬШОГО пула (50-100) в короткий топ —
+# вытащить релевантное с 40-го места; при пуле 10 спасать нечего, а поднять пул на этом
+# CPU невозможно (14.5 с за 10 кандидатов → ~70 с за 50). Включить: RERANK_ENABLED=1 —
+# осмысленно только вместе с бо́льшим SEARCH_CANDIDATE_POOL и/или лёгкой моделью,
+# и обязательно с повторным замером тем же харнессом.
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 async def _whoosh_async(query: str, project: str = "all", limit: int = 10) -> list[dict]:
@@ -289,7 +303,13 @@ async def _whoosh_async(query: str, project: str = "all", limit: int = 10) -> li
 async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dict]:
     """rerank под бюджетом времени в потоке. При таймауте/ошибке — best-effort: отдаём
     hybrid-результаты как есть (обрезанные до top_k) вместо -32001. wait_for отменяет
-    ожидание, но фоновый поток допишет predict вхолостую — результат уже у пользователя."""
+    ожидание, но фоновый поток допишет predict вхолостую — результат уже у пользователя.
+
+    При выключенном reranker'е выходим СРАЗУ, не запуская поток. Выставить
+    SEARCH_RERANK_BUDGET_S=0 было бы недостаточно: wait_for снял бы ожидание, но
+    фоновый поток всё равно досчитал бы predict и сжёг те же ~14.5 с CPU впустую."""
+    if not RERANK_ENABLED:
+        return results[:top_k]
     from memory_compiler.search import rerank
     try:
         return await asyncio.wait_for(

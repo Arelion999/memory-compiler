@@ -416,8 +416,14 @@ def _seed_postgres_articles(knowledge_dir, titles):
 
 
 def test_search_applies_reranker(knowledge_dir, monkeypatch):
-    """search() must run results through cross-encoder reranker and surface rerank_score."""
+    """search() must run results through cross-encoder reranker and surface rerank_score.
+
+    С v1.27.0 reranker выключен по умолчанию (замер: прироста нет, цена ×32), поэтому
+    тест интеграции включает его явно — проверяем, что ВКЛЮЧЁННЫЙ reranker применяется.
+    """
     import memory_compiler.search as search_mod
+    import memory_compiler.handlers as handlers_mod
+    monkeypatch.setattr(handlers_mod, "RERANK_ENABLED", True)
     titles = ["postgres tuning queries", "postgres backup script", "postgres ssl client cert"]
     _seed_postgres_articles(knowledge_dir, titles)
 
@@ -1071,11 +1077,16 @@ def test_lint_does_not_flag_existing_cross_ref(knowledge_dir):
 
 
 def test_get_context_applies_reranker(knowledge_dir, monkeypatch):
-    """get_context() with query must also use reranker."""
+    """get_context() with query must also use reranker.
+
+    С v1.27.0 reranker выключен по умолчанию — тест интеграции включает его явно.
+    """
     import memory_compiler.search as search_mod
     import memory_compiler.config as _cfg
+    import memory_compiler.handlers as handlers_mod
     from memory_compiler.handlers import get_context
     from memory_compiler.search import rebuild_index, rebuild_embeddings
+    monkeypatch.setattr(handlers_mod, "RERANK_ENABLED", True)
 
     proj = knowledge_dir / "testproj"
     for i, title in enumerate(["nginx ssl config", "nginx access log rotation", "nginx upstream load balance"]):
