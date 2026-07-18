@@ -1191,3 +1191,31 @@ def test_save_lesson_release_tag_updates_real_version(knowledge_dir):
     ))
     assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1", \
         "реальная версия не подхватилась после фикса"
+
+
+def test_import_obsidian_end_to_end_fixes(knowledge_dir, tmp_path):
+    """E2E: импорт заметки с встроенным ### <дата>-блоком, [[wiki]] и «См. также»
+    с реальной+псевдо ссылкой. Проверяем все 3 фикса разом (данные не теряются)."""
+    import asyncio
+    from memory_compiler.handlers import import_obsidian
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Заметка.md").write_text(
+        "---\ntags: [work]\n---\n"
+        "### 2026-01-01 10:00\n"
+        "Основной контент про [[Клиенты]].\n\n"
+        "## См. также\n- [[Обновление 1С]]\n- голый текст без ссылки\n",
+        encoding="utf-8",
+    )
+    asyncio.run(import_obsidian(str(vault), "testproj", dry_run=False))
+    art = knowledge_dir / "testproj" / "заметка.md"
+    assert art.exists(), [pp.name for pp in (knowledge_dir / "testproj").glob("*.md")]
+    text = art.read_text(encoding="utf-8")
+    # Баг 1: встроенный ### 2026-01-01 сплющен, остаётся только ### save_lesson
+    assert "### 2026-01-01" not in text
+    # Баг 2: рабочая ссылка вместо **Клиенты**
+    assert "[Клиенты](./клиенты.md)" in text
+    assert "**Клиенты**" not in text
+    # Баг 3: реальная См.также-ссылка жива, псевдоссылка отброшена
+    assert "[Обновление 1С](./обновление_1с.md)" in text
+    assert "голый текст без ссылки" not in text
