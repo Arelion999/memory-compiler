@@ -2158,6 +2158,9 @@ def _semver_key(v):
     return versioning.version_key(v)
 
 
+_VERSION_MAJOR_JUMP_CAP = 100  # major-скачок больше → неправдоподобно (IP-фрагмент/мусор)
+
+
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
                           guard_version_regression: bool = False) -> dict:
     """Create or update tracking article with bi-temporal frontmatter.
@@ -2200,8 +2203,14 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     if (guard_version_regression and old_current
             and "version" in new_facts and "version" in old_current):
         try:
-            if _semver_key(new_facts["version"]) < _semver_key(old_current["version"]):
-                new_facts = {**new_facts, "version": old_current["version"]}
+            old_v, new_v = old_current["version"], new_facts["version"]
+            old_key, new_key = versioning.version_key(old_v), versioning.version_key(new_v)
+            old_major = old_key[0][0] if old_key[0] else 0
+            new_major = new_key[0][0] if new_key[0] else 0
+            # держим старую версию при откате ИЛИ неправдоподобном скачке major
+            # (IP-фрагмент 203.0.113 major 203 поверх 1.20.1 major 1 — мусор, не версия)
+            if new_key < old_key or new_major > old_major + _VERSION_MAJOR_JUMP_CAP:
+                new_facts = {**new_facts, "version": old_v}
         except Exception:
             pass
 

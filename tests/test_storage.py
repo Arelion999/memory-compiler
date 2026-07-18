@@ -1827,3 +1827,37 @@ def test_extract_facts_bare_4part_le255_goes_to_ip_not_version():
     f = extract_facts_from_text("адрес 203.0.113.50 в сети")
     assert "203.0.113.50" not in f.get("version", [])
     assert "203.0.113.50" in f.get("ip", [])
+
+
+def test_guard_rejects_implausible_major_jump(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.20.1"})
+    # авто-путь (guard=True), неправдоподобный major (IP-фрагмент 203.0.113 → major 203)
+    save_tracking_article("testproj", "release", {"version": "203.0.113"},
+                          guard_version_regression=True)
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1", \
+        "неправдоподобный major-скачок затёр версию"
+
+
+def test_guard_allows_legit_upgrade(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "1.20.1"})
+    save_tracking_article("testproj", "release", {"version": "1.21.0"},
+                          guard_version_regression=True)
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.21.0"
+
+
+def test_guard_allows_1c_version_bump(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "platform_1c", {"version": "8.3.23.9999"})
+    save_tracking_article("testproj", "platform_1c", {"version": "8.3.24.1234"},
+                          guard_version_regression=True)
+    assert load_tracking("testproj", "platform_1c")["current"]["version"] == "8.3.24.1234"
+
+
+def test_guard_off_allows_explicit_any_change(knowledge_dir):
+    # guard=False (явный save) не ограничивает — реальные скачки/rollback у человека
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "release", {"version": "203.0.113"})   # guard=False default
+    save_tracking_article("testproj", "release", {"version": "1.20.1"})      # guard=False, explicit
+    assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1"
