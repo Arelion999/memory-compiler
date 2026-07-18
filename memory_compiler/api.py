@@ -27,7 +27,7 @@ from memory_compiler.search import (
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
-    make_preview,
+    make_preview, tracking_timeline, _parse_frontmatter,
 )
 from memory_compiler.handlers import compile as _compile, save_lesson, delete_article, lint as _lint
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
@@ -178,6 +178,32 @@ async def web_related(request: Request):
             "rel": round(related_display_score(score), 3),   # доля для полоски (от порога шума)
         })
     return JSONResponse({"related": items})
+
+
+async def web_timeline(request: Request):
+    """Ряд bi-temporal снимков tracking-статьи — данные timeline-слайдера.
+
+    Для обычной (не tracking) статьи возвращает пустой ряд, а не ошибку: UI просто
+    не рисует слайдер, и одному и тому же вызову на раскрытие любой статьи не нужен
+    предварительный запрос «а это вообще tracking?»."""
+    project = request.query_params.get("project", "").strip()
+    filename = request.query_params.get("file", "").strip()
+    empty = {"entity": None, "fields": [], "snapshots": []}
+    if not project or not filename:
+        return JSONResponse(empty)
+    try:
+        fpath = safe_article_path(project, filename)  # отвергает traversal
+    except ValueError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not fpath.exists() or fpath.suffix != ".md":
+        return JSONResponse(empty)
+    try:
+        data, _ = _parse_frontmatter(fpath.read_text(encoding="utf-8"))
+    except Exception:
+        return JSONResponse(empty)
+    if not isinstance(data, dict) or data.get("type") != "tracking":
+        return JSONResponse(empty)
+    return JSONResponse(tracking_timeline(data))
 
 
 async def web_project(request: Request):
@@ -856,6 +882,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/version", endpoint=web_version),
             Route("/api/search", endpoint=web_search),
             Route("/api/related", endpoint=web_related),
+            Route("/api/timeline", endpoint=web_timeline),
             Route("/api/save", endpoint=web_save, methods=["POST"]),
             Route("/api/article/{project}/{filename}", endpoint=web_article),
             Route("/api/projects/{project}", endpoint=web_project),

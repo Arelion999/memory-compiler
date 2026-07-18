@@ -2279,6 +2279,63 @@ def tracking_version_status(data: dict) -> Optional[dict]:
     }
 
 
+# Ключи снимка, описывающие ИНТЕРВАЛ валидности, а не сам факт: в facts не попадают,
+# иначе слайдер показывал бы служебные даты как «поля факта». `date` намеренно НЕ здесь —
+# он есть не у всех снимков и является частью факта (когда именно факт зафиксирован).
+_TRACKING_INTERVAL_KEYS = frozenset({"from", "to", "since"})
+
+
+def _tracking_json_safe(value):
+    """YAML разбирает `since: 2026-07-18` в datetime.date, а JSONResponse такое не
+    сериализует (endpoint падал бы 500 на реальной tracking-статье — на строковых
+    датах в тестах баг не виден). Даты → ISO-строка, вложенные списки/словари обходим."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_tracking_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _tracking_json_safe(v) for k, v in value.items()}
+    return value
+
+
+def _tracking_snapshot(raw: dict, is_current: bool) -> dict:
+    facts = {k: _tracking_json_safe(v) for k, v in raw.items()
+             if k not in _TRACKING_INTERVAL_KEYS}
+    return {
+        "from": _tracking_json_safe(raw.get("from") or raw.get("since")),
+        "to": None if is_current else _tracking_json_safe(raw.get("to")),
+        "current": is_current,
+        "facts": facts,
+    }
+
+
+def tracking_timeline(data: dict) -> dict:
+    """Хронологический ряд снимков tracking-статьи — данные для timeline-слайдера.
+
+    Порядок: history[] как есть (save_tracking дописывает его в конец, т.е. по
+    возрастанию), затем current последним — у него интервал открыт (to=None).
+    `fields` — объединение ключей фактов в порядке первого появления: даёт UI
+    стабильный набор строк и позволяет подсвечивать изменившиеся между снимками.
+    Не мутирует data; на не-tracking/битых данных возвращает пустой ряд."""
+    history = data.get("history") or []
+    if not isinstance(history, list):
+        history = []
+    current = data.get("current")
+    if not isinstance(current, dict):
+        current = {}
+
+    snapshots = [_tracking_snapshot(h, False) for h in history if isinstance(h, dict)]
+    if current:
+        snapshots.append(_tracking_snapshot(current, True))
+
+    fields: list[str] = []
+    for snap in snapshots:
+        for key in snap["facts"]:
+            if key not in fields:
+                fields.append(key)
+    return {"entity": data.get("entity"), "fields": fields, "snapshots": snapshots}
+
+
 def _semver_key(v):
     """Обратно-совместимый делегат → versioning.version_key. Имя сохранено, потому что
     тесты импортируют его из storage (сам код зовёт versioning.version_key напрямую)."""

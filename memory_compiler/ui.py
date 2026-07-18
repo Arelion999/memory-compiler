@@ -104,6 +104,18 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .related-bar i{display:block;height:100%;background:var(--accent)}
 .related-empty{padding:12px 10px;color:var(--text2);font-size:0.78em;text-align:center}
 @media(max-width:1099px){.related{position:static;width:auto;max-height:none;margin:12px 0}}
+/* Timeline-слайдер версий (bi-temporal снимки tracking-статьи) */
+.timeline{border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0;background:var(--bg)}
+.tl-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:0.78em;color:var(--text2);margin-bottom:4px}
+.tl-head .tl-pos{color:var(--accent);white-space:nowrap}
+.tl-range{width:100%;margin:2px 0}
+.tl-when{font-size:0.72em;color:var(--text2);margin:2px 0 6px}
+.tl-facts{display:flex;flex-direction:column;gap:3px}
+.tl-row{display:flex;gap:8px;font-size:0.78em}
+.tl-row .k{color:var(--text2);min-width:92px;flex-shrink:0}
+.tl-row .v{color:var(--text);word-break:break-word}
+.tl-row.changed .v{color:var(--accent);font-weight:600}
+.tl-row.changed .k::after{content:" \\2022";color:var(--accent)}
 /*PYGMENTS_CSS*/
 </style>
 </head>
@@ -285,6 +297,7 @@ async function expandCard(proj,file,el){
   card.classList.add("expanded");
   el.textContent="Свернуть";
   loadRelated(proj,file);   // «Похожие» следуют за раскрытой статьёй (если не заморожены)
+  loadTimeline(proj,file,card);   // слайдер версий — только у tracking-статей
   // Scroll to first match
   const firstMark=bodyEl.querySelector("mark");
   if(firstMark){setTimeout(()=>firstMark.scrollIntoView({behavior:"smooth",block:"center"}),100);}
@@ -315,7 +328,7 @@ function renderResults(items){
     }else{
       snippetHtml='<div class="body">'+highlight(md2html(i.preview))+'</div>';
     }
-    return `<div class="card">${bc}<h3>${highlight(esc(i.title))}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}${i.snippets&&i.snippets.length?' &middot; '+i.snippets.length+' совпадений':''}</div>${snippetHtml}<div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">Развернуть</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">Удалить</button></div></div>`;
+    return `<div class="card">${bc}<h3>${highlight(esc(i.title))}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}${i.snippets&&i.snippets.length?' &middot; '+i.snippets.length+' совпадений':''}</div><div class="timeline-holder"></div>${snippetHtml}<div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">Развернуть</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">Удалить</button></div></div>`;
   }).join("");
 }
 
@@ -721,6 +734,42 @@ function openArticle(proj,file,title){
   renderResults([{project:proj,file:file,title:title,preview:"",snippets:[]}]);
   const exp=$("results").querySelector(".expand");
   if(exp)exp.click();               // развернуть => expandCard подтянет тело и обновит «Похожие»
+}
+
+// Timeline-слайдер версий: прокрутка bi-temporal снимков tracking-статьи
+let tlData=null,tlRoot=null;
+async function loadTimeline(proj,file,card){
+  const holder=card?card.querySelector(".timeline-holder"):null;
+  if(!holder)return;
+  holder.innerHTML="";
+  try{
+    const r=await fetch("/api/timeline?project="+encodeURIComponent(proj)+"&file="+encodeURIComponent(file));
+    const d=await r.json();
+    if(!d.snapshots||d.snapshots.length<2)return;   // один снимок нечего прокручивать
+    tlData=d;
+    const last=d.snapshots.length-1;
+    holder.innerHTML='<div class="timeline">'
+      +'<div class="tl-head"><span>Версии факта'+(d.entity?" &middot; "+esc(d.entity):"")+'</span><span class="tl-pos"></span></div>'
+      +'<input type="range" class="tl-range" min="0" max="'+last+'" value="'+last+'" oninput="renderTimeline(this.value)">'
+      +'<div class="tl-when"></div><div class="tl-facts"></div></div>';
+    tlRoot=holder.querySelector(".timeline");
+    renderTimeline(last);
+  }catch(e){holder.innerHTML="";}
+}
+function renderTimeline(idx){
+  if(!tlData||!tlRoot)return;
+  idx=+idx;
+  const s=tlData.snapshots[idx],prev=idx>0?tlData.snapshots[idx-1]:null;
+  tlRoot.querySelector(".tl-pos").textContent=(idx+1)+" / "+tlData.snapshots.length+(s.current?" · текущая":"");
+  tlRoot.querySelector(".tl-when").textContent=
+    (s.from?"действует с "+s.from:"дата не указана")+(s.to?" по "+s.to:(s.current?" — по сейчас":""));
+  tlRoot.querySelector(".tl-facts").innerHTML=tlData.fields.map(f=>{
+    const v=s.facts[f],p=prev?prev.facts[f]:undefined;
+    if(v===undefined&&p===undefined)return "";
+    const changed=!!prev&&String(v)!==String(p);   // подсветка того, что изменилось к этому снимку
+    return '<div class="tl-row'+(changed?' changed':'')+'"><span class="k">'+esc(f)+'</span>'
+      +'<span class="v">'+esc(v===undefined?"—":String(v))+'</span></div>';
+  }).join("");
 }
 
 $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
