@@ -2647,7 +2647,7 @@ async def import_obsidian(vault_path: str, project: str,
     Parses YAML frontmatter, converts wiki-links to bold text, preserves tags.
     folder_mapping maps Obsidian subfolders to KB projects (e.g. {"Работа": "work"}).
     """
-    from memory_compiler.storage import parse_obsidian_note, _flatten_import_body
+    from memory_compiler.storage import parse_obsidian_note, _flatten_import_body, _clean_see_also
     from pathlib import Path
 
     vault = Path(vault_path)
@@ -2702,7 +2702,8 @@ async def import_obsidian(vault_path: str, project: str,
 
         # Баг 1: сплющить встроенный compiler-scaffold (### <дата>/**Источник:**/дубли),
         # иначе save_lesson обернёт в свой ### ts → два блока.
-        content = _flatten_import_body(parsed["body"]).strip()
+        # Баг 3: отбросить голые псевдоссылки в «См. также».
+        content = _clean_see_also(_flatten_import_body(parsed["body"])).strip()
         if not content:
             stats["skipped"] += 1
             continue
@@ -2719,7 +2720,10 @@ async def import_obsidian(vault_path: str, project: str,
             stats["saved"] += 1
         else:
             try:
-                await save_lesson(topic=topic, content=content, project=target_project, tags=tags)
+                # Баг 3: force_new — не мёржить разные Obsidian-заметки в одну статью
+                # (склейка роняла «См. также» в чужие блоки). Каждая заметка → своя статья.
+                await save_lesson(topic=topic, content=content, project=target_project,
+                                  tags=tags, force_new=True)
                 stats["saved"] += 1
                 if stats["saved"] <= 10:
                     summaries.append(f"✓ [{target_project}] {topic}")

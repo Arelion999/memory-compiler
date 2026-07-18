@@ -1863,6 +1863,26 @@ def _flatten_import_body(body: str) -> str:
     return "\n\n".join(_norm(k) for k in kept).strip()
 
 
+def _clean_see_also(body: str) -> str:
+    """Баг 3: в секции «## См. также»/«## See also» отбросить голые буллеты-псевдоссылки
+    без markdown-URL (мина импорта — текст без ссылки; наивное удаление блока их теряет).
+    Реальные ссылки (после баг-2 фикса [[X]]→[X](./x.md)) остаются. Вне секции не трогаем."""
+    lines = body.splitlines()
+    out, in_see_also = [], False
+    for ln in lines:
+        low = ln.strip().lower()
+        if ln.startswith("## ") and ("см. также" in low or "see also" in low):
+            in_see_also = True
+            out.append(ln)
+            continue
+        if in_see_also and ln.startswith("## "):
+            in_see_also = False  # следующая секция — вышли из См. также
+        if in_see_also and re.match(r'^\s*[-*]\s', ln) and "](" not in ln:
+            continue  # буллет без markdown-ссылки — псевдоссылка, отбросить
+        out.append(ln)
+    return "\n".join(out)
+
+
 def _validate_fetch_url(url: str) -> None:
     """SSRF-guard: только http/https; хост не должен резолвиться в приватный/loopback/
     link-local/reserved адрес. Блокирует file://, доступ к 127.0.0.1, cloud-metadata

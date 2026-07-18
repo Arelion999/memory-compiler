@@ -739,6 +739,21 @@ def test_flatten_import_body_keeps_distinct_blocks():
     assert "первый уникальный контент" in out
     assert "второй отдельный контент" in out
 
+
+def test_clean_see_also_drops_bare_pseudolinks():
+    from memory_compiler.storage import _clean_see_also
+    body = "текст\n\n## См. также\n- [Реальная](./real.md)\n- просто голый текст\n- [Ещё](./two.md)\n"
+    out = _clean_see_also(body)
+    assert "[Реальная](./real.md)" in out       # реальная ссылка сохранена
+    assert "[Ещё](./two.md)" in out
+    assert "просто голый текст" not in out        # псевдоссылка отброшена
+
+
+def test_clean_see_also_noop_without_section():
+    from memory_compiler.storage import _clean_see_also
+    body = "# Заголовок\n\nОбычный текст.\n- буллет без секции остаётся"
+    assert _clean_see_also(body) == body
+
 # ─── Tracking articles ──────────────────────────────────────────────────
 
 def test_tracking_create_and_update(knowledge_dir):
