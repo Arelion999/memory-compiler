@@ -87,6 +87,23 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .cmdk-item .m{color:var(--text2);font-size:0.75em;margin-top:2px}
 .cmdk-empty{padding:16px;color:var(--text2);text-align:center;font-size:0.85em}
 .cmdk-hint{padding:6px 16px;color:var(--text2);font-size:0.72em;border-top:1px solid var(--border);display:flex;gap:14px}
+/* Related-notes сайдбар */
+.related{position:fixed;right:12px;top:76px;width:262px;max-height:72vh;display:none;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden;z-index:900}
+.related.open{display:flex}
+.related-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:0.8em}
+.related-head .ttl{flex:1;color:var(--accent)}
+.related-head button{background:none;border:1px solid var(--border);border-radius:5px;color:var(--text2);cursor:pointer;font-size:11px;padding:2px 6px}
+.related-head button.on{color:var(--accent);border-color:var(--accent)}
+.related-list{overflow-y:auto}
+.related-item{padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border)}
+.related-item:last-child{border-bottom:none}
+.related-item:hover{background:var(--bg3)}
+.related-item .t{color:var(--accent);font-size:0.8em;line-height:1.3}
+.related-item .m{color:var(--text2);font-size:0.7em;margin-top:2px;display:flex;justify-content:space-between;gap:6px}
+.related-bar{height:3px;background:var(--bg3);border-radius:2px;margin-top:4px;overflow:hidden}
+.related-bar i{display:block;height:100%;background:var(--accent)}
+.related-empty{padding:12px 10px;color:var(--text2);font-size:0.78em;text-align:center}
+@media(max-width:1099px){.related{position:static;width:auto;max-height:none;margin:12px 0}}
 /*PYGMENTS_CSS*/
 </style>
 </head>
@@ -152,6 +169,14 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div class="cmdk-results" id="cmdk-results"></div>
 <div class="cmdk-hint"><span>&uarr;&darr; навигация</span><span>&crarr; открыть</span><span>Esc закрыть</span></div>
 </div>
+</div>
+<div class="related" id="related">
+<div class="related-head">
+<span class="ttl">Похожие</span>
+<button id="related-play" onclick="toggleRelatedPause()" title="Заморозить список: не переключаться на другую статью при переходах">следит</button>
+<button onclick="closeRelated()" title="Закрыть">&times;</button>
+</div>
+<div class="related-list" id="related-list"></div>
 </div>
 <script>
 let PROJECTS=[];
@@ -259,6 +284,7 @@ async function expandCard(proj,file,el){
   }
   card.classList.add("expanded");
   el.textContent="Свернуть";
+  loadRelated(proj,file);   // «Похожие» следуют за раскрытой статьёй (если не заморожены)
   // Scroll to first match
   const firstMark=bodyEl.querySelector("mark");
   if(firstMark){setTimeout(()=>firstMark.scrollIntoView({behavior:"smooth",block:"center"}),100);}
@@ -652,6 +678,47 @@ document.addEventListener("keydown",e=>{
   else if(e.key==="Enter"&&cmdkSel>=0){e.preventDefault();cmdkOpen(cmdkSel);}
 });
 $("cmdk-input").addEventListener("input",()=>{clearTimeout(cmdkTimer);cmdkTimer=setTimeout(cmdkSearch,160);});
+
+// Related-notes сайдбар (семантически близкие к раскрытой статье)
+let relatedItems=[],relatedPaused=false,relatedViewing=null,relatedSeq=0;
+function closeRelated(){$("related").classList.remove("open");}
+function toggleRelatedPause(){
+  relatedPaused=!relatedPaused;
+  const b=$("related-play");
+  b.textContent=relatedPaused?"заморожен":"следит";
+  b.classList.toggle("on",relatedPaused);
+  // разморозка => подхватить статью, открытую СЕЙЧАС, а не ту, на которой заморозились
+  if(!relatedPaused&&relatedViewing)loadRelated(relatedViewing.project,relatedViewing.file,true);
+}
+function relatedOpen(idx){const i=relatedItems[idx];if(i)openArticle(i.project,i.file,i.title);}
+async function loadRelated(proj,file,force){
+  relatedViewing={project:proj,file:file};   // помним открытое даже когда заморожено
+  if(relatedPaused&&!force)return;           // «заморожен»: список не трогаем
+  const seq=++relatedSeq;
+  $("related").classList.add("open");
+  $("related-list").innerHTML='<div class="related-empty">Загрузка…</div>';
+  try{
+    const r=await fetch("/api/related?project="+encodeURIComponent(proj)+"&file="+encodeURIComponent(file));
+    const d=await r.json();
+    if(seq!==relatedSeq)return;      // отбросить устаревший ответ
+    relatedItems=d.related||[];
+    if(!relatedItems.length){$("related-list").innerHTML='<div class="related-empty">Похожих не нашлось</div>';return;}
+    $("related-list").innerHTML=relatedItems.map((i,idx)=>
+      '<div class="related-item" onclick="relatedOpen('+idx+')">'
+      +'<div class="t">'+esc(i.title)+'</div>'
+      +'<div class="m"><span>'+esc(i.project)+'</span><span>'+i.score.toFixed(2)+'</span></div>'
+      +'<div class="related-bar"><i style="width:'+Math.round(Math.max(0,Math.min(1,i.score))*100)+'%"></i></div>'
+      +'</div>'
+    ).join("");
+  }catch(e){$("related-list").innerHTML='<div class="related-empty">Ошибка загрузки</div>';}
+}
+function openArticle(proj,file,title){
+  showTab("search");
+  lastQueryWords=[];
+  renderResults([{project:proj,file:file,title:title,preview:"",snippets:[]}]);
+  const exp=$("results").querySelector(".expand");
+  if(exp)exp.click();               // развернуть => expandCard подтянет тело и обновит «Похожие»
+}
 
 $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
 // projects loaded dynamically from /api/health

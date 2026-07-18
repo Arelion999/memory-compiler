@@ -701,6 +701,36 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
     return results[:limit]
 
 
+def related_articles(path: str, limit: int = 8) -> list[tuple[str, float]]:
+    """Семантически близкие статьи к заданной. path = "project/filename".
+
+    Основа related-notes сайдбара. В отличие от semantic_search модель здесь НЕ
+    дёргается: берём уже готовые эмбеддинги чанков самой статьи и ищем ближайших
+    среди чанков остальных — выдача мгновенная даже на слабом NAS. Схлопывание
+    чанк→статья: max по всем парам (чанк цели × чанк кандидата), как в
+    semantic_search. Эмбеддинги нормализованы, поэтому dot = косинус (0..1).
+    Сама статья (вместе со всеми своими #chunkN) из выдачи исключается."""
+    with _index_lock:  # один проход под локом: снимаем и матрицу, и векторы цели
+        if not _embeddings:
+            return []
+        keys = list(_embeddings.keys())
+        target_vecs = [_embeddings[k] for k in keys if k.split("#")[0] == path]
+        if not target_vecs:
+            return []
+        matrix = np.stack([_embeddings[k] for k in keys])  # (N, d)
+        target = np.stack(target_vecs)                     # (T, d)
+    sims = (matrix @ target.T).max(axis=1)  # (N,) — лучший из чанков цели
+    seen: dict[str, float] = {}
+    for key, sim in zip(keys, sims):
+        parent = key.split("#")[0]
+        if parent == path:
+            continue  # сама статья себе не сосед
+        sim = float(sim)
+        if parent not in seen or sim > seen[parent]:
+            seen[parent] = sim
+    return sorted(seen.items(), key=lambda x: x[1], reverse=True)[:limit]
+
+
 # ─── Whoosh index ────────────────────────────────────────────────────────────
 
 _ix = None  # global whoosh index

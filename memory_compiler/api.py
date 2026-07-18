@@ -21,7 +21,7 @@ from memory_compiler.config import (
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
-    load_embeddings, get_index, _strip_frontmatter,
+    load_embeddings, get_index, _strip_frontmatter, related_articles,
 )
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
@@ -139,6 +139,43 @@ async def web_search(request: Request):
         r["snippets"] = snippets
         r["query_words"] = query_words  # for client-side highlight
     return JSONResponse({"results": results, "query": q})
+
+
+async def web_related(request: Request):
+    """Семантически близкие статьи — данные для related-notes сайдбара.
+
+    Модель здесь не дёргается (related_articles сравнивает уже готовые
+    эмбеддинги), поэтому эндпоинт дешёвый и его нормально звать на каждое
+    раскрытие статьи."""
+    project = request.query_params.get("project", "").strip()
+    filename = request.query_params.get("file", "").strip()
+    if not project or not filename:
+        return JSONResponse({"related": []})
+    try:
+        safe_article_path(project, filename)  # отвергает traversal (../, абс. путь)
+    except ValueError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        limit = int(request.query_params.get("limit", "8"))
+    except ValueError:
+        limit = 8
+    limit = max(1, min(limit, 25))
+    items = []
+    for path, score in related_articles(f"{project}/{filename}", limit=limit):
+        proj, _, fname = path.partition("/")
+        try:
+            fpath = safe_article_path(proj, fname)
+        except ValueError:
+            continue
+        if not fpath.exists():
+            continue  # статья удалена, эмбеддинги ещё не пересобраны
+        lines = _strip_frontmatter(fpath.read_text(encoding="utf-8")).splitlines()
+        items.append({
+            "project": proj, "file": fname,
+            "title": lines[0].lstrip("# ").strip() if lines else fname,
+            "score": round(score, 3),
+        })
+    return JSONResponse({"related": items})
 
 
 async def web_project(request: Request):
@@ -816,6 +853,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/health", endpoint=web_health),
             Route("/api/version", endpoint=web_version),
             Route("/api/search", endpoint=web_search),
+            Route("/api/related", endpoint=web_related),
             Route("/api/save", endpoint=web_save, methods=["POST"]),
             Route("/api/article/{project}/{filename}", endpoint=web_article),
             Route("/api/projects/{project}", endpoint=web_project),
