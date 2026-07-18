@@ -678,7 +678,9 @@ Some content with [[Target]] link.
     assert r["title"] == "Test Note"
     assert "foo" in r["tags"]
     assert "bar" in r["tags"]
-    assert "**Target**" in r["body"]
+    # Баг 2 фикс: [[X]] → рабочая markdown-ссылка, не мёртвый **X**
+    assert "[Target](./target.md)" in r["body"]
+    assert "**Target**" not in r["body"]
     assert "Target" in r["wiki_links"]
 
 
@@ -694,9 +696,23 @@ def test_parse_obsidian_alias_link():
     from memory_compiler.storage import parse_obsidian_note
     note = "See [[Target Page|display text]] here"
     r = parse_obsidian_note(note)
-    assert "**display text**" in r["body"]
+    # Баг 2: алиас — текст ссылки, target-слаг — цель
+    assert "[display text](./target_page.md)" in r["body"]
+    assert "**display text**" not in r["body"]
     assert "Target Page" in r["wiki_links"]
 
+
+def test_parse_obsidian_normalizes_heading_whitespace():
+    """Баг: импортёр даёт заголовки с NBSP/табами/кратными пробелами (см. v1.19.2).
+    Нормализуем whitespace заголовков на импорте — иначе save_contexts не матчит секцию."""
+    from memory_compiler.storage import parse_obsidian_note
+    tab, nbsp, nl = chr(9), chr(160), chr(10)
+    note = "###" + tab + "1." + nbsp + " Что" + tab + tab + "такое X" + nl + nl + "тело" + nl
+    r = parse_obsidian_note(note)
+    first_line = r["body"].splitlines()[0]
+    assert first_line == "### 1. Что такое X"
+    assert tab not in first_line
+    assert nbsp not in first_line
 
 # ─── Tracking articles ──────────────────────────────────────────────────
 

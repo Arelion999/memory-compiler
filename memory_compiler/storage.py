@@ -1807,8 +1807,19 @@ def parse_obsidian_note(text: str) -> dict:
     def _repl(m):
         target = m.group(1).strip()
         alias = (m.group(2) or target).strip()
-        return f"**{alias}**"
+        # Баг 2: рабочая markdown-ссылка вместо мёртвого **X**
+        return f"[{alias}](./{make_slug(target)}.md)"
     result["body"] = re.sub(r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]', _repl, result["body"])
+
+    # Нормализация whitespace заголовков: NBSP/табы/кратные пробелы в '#'-строках ломают
+    # whitespace-устойчивый матч секций save_contexts (см. v1.19.2). Схлопываем внутри тела.
+    _nlines = []
+    for _ln in result["body"].splitlines():
+        _hm = re.match(r'^(#{1,6})\s+(.*)$', _ln)
+        if _hm:
+            _ln = _hm.group(1) + " " + " ".join(_hm.group(2).split())
+        _nlines.append(_ln)
+    result["body"] = "\n".join(_nlines)
 
     return result
 
