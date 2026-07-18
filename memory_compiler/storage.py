@@ -2153,8 +2153,8 @@ def tracking_version_status(data: dict) -> Optional[dict]:
 
 
 def _semver_key(v):
-    """Делегат → versioning.version_key. Имя сохранено ради обратной совместимости
-    (тесты и guard в save_tracking_article импортируют/зовут из storage)."""
+    """Обратно-совместимый делегат → versioning.version_key. Имя сохранено, потому что
+    тесты импортируют его из storage (сам код зовёт versioning.version_key напрямую)."""
     return versioning.version_key(v)
 
 

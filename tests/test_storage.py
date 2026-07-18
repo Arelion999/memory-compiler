@@ -1861,3 +1861,22 @@ def test_guard_off_allows_explicit_any_change(knowledge_dir):
     save_tracking_article("testproj", "release", {"version": "203.0.113"})   # guard=False default
     save_tracking_article("testproj", "release", {"version": "1.20.1"})      # guard=False, explicit
     assert load_tracking("testproj", "release")["current"]["version"] == "1.20.1"
+
+
+def test_guard_major_jump_boundary(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    # ровно +100 → разрешено (строгое >); +101 → отклонено
+    save_tracking_article("testproj", "b1", {"version": "1.0.0"})
+    save_tracking_article("testproj", "b1", {"version": "101.0.0"}, guard_version_regression=True)
+    assert load_tracking("testproj", "b1")["current"]["version"] == "101.0.0"  # 1→101 = +100
+    save_tracking_article("testproj", "b2", {"version": "1.0.0"})
+    save_tracking_article("testproj", "b2", {"version": "102.0.0"}, guard_version_regression=True)
+    assert load_tracking("testproj", "b2")["current"]["version"] == "1.0.0"    # 1→102 = +101 отклонён
+
+
+def test_guard_garbage_version_no_crash(knowledge_dir):
+    from memory_compiler.storage import save_tracking_article, load_tracking
+    save_tracking_article("testproj", "g1", {"version": "1.20.1"})
+    # битая версия на авто-пути → не падает; version_key("abc")=((),1,()) → откат-ветка держит старое
+    save_tracking_article("testproj", "g1", {"version": "abc"}, guard_version_regression=True)
+    assert load_tracking("testproj", "g1")["current"]["version"] == "1.20.1"
