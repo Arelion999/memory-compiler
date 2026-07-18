@@ -1824,6 +1824,45 @@ def parse_obsidian_note(text: str) -> dict:
     return result
 
 
+_IMPORT_TS_HEADING = re.compile(r'^### \d{4}-\d{2}-\d{2}')
+_IMPORT_SCAFFOLD_META = re.compile(r'^\*\*(?:Источник|Дата|Обновлено|Проект|Время):\*\*')
+
+
+def _flatten_import_body(body: str) -> str:
+    """Баг 1 (удвоение): заметки vault со встроенными compiler-блоками '### <дата>'
+    при обёртке save_lesson давали два '### ts'-блока (второй — копия/подмножество/пустой
+    без **Источник:**). Сплющиваем: срезаем '## Записи'/'### <дата>'/**Источник:** и пр.
+    scaffold-метастроки, разбиваем на блоки и дедупим (первый полный оставляем, копии и
+    подмножества убираем). Обычная Obsidian-заметка без '### <дата>' — no-op."""
+    lines = body.splitlines()
+    if not any(_IMPORT_TS_HEADING.match(ln) for ln in lines):
+        return body
+    blocks, cur = [], []
+    for ln in lines:
+        if _IMPORT_TS_HEADING.match(ln):
+            blocks.append(cur)
+            cur = []
+        elif ln.strip() == "## Записи" or _IMPORT_SCAFFOLD_META.match(ln):
+            continue
+        else:
+            cur.append(ln)
+    blocks.append(cur)
+
+    def _norm(b):
+        return "\n".join(l.rstrip() for l in b).strip()
+
+    kept = []
+    for b in blocks:
+        nb = _norm(b)
+        if not nb:
+            continue
+        if any(nb in _norm(k) for k in kept):
+            continue  # копия/подмножество уже сохранённого блока
+        kept = [k for k in kept if _norm(k) not in nb]  # менее полное заменяем
+        kept.append(b)
+    return "\n\n".join(_norm(k) for k in kept).strip()
+
+
 def _validate_fetch_url(url: str) -> None:
     """SSRF-guard: только http/https; хост не должен резолвиться в приватный/loopback/
     link-local/reserved адрес. Блокирует file://, доступ к 127.0.0.1, cloud-metadata

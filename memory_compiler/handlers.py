@@ -2647,7 +2647,7 @@ async def import_obsidian(vault_path: str, project: str,
     Parses YAML frontmatter, converts wiki-links to bold text, preserves tags.
     folder_mapping maps Obsidian subfolders to KB projects (e.g. {"Работа": "work"}).
     """
-    from memory_compiler.storage import parse_obsidian_note
+    from memory_compiler.storage import parse_obsidian_note, _flatten_import_body
     from pathlib import Path
 
     vault = Path(vault_path)
@@ -2700,7 +2700,9 @@ async def import_obsidian(vault_path: str, project: str,
         if not topic:
             topic = md_path.stem
 
-        content = parsed["body"].strip()
+        # Баг 1: сплющить встроенный compiler-scaffold (### <дата>/**Источник:**/дубли),
+        # иначе save_lesson обернёт в свой ### ts → два блока.
+        content = _flatten_import_body(parsed["body"]).strip()
         if not content:
             stats["skipped"] += 1
             continue

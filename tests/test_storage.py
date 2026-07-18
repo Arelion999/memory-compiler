@@ -714,6 +714,31 @@ def test_parse_obsidian_normalizes_heading_whitespace():
     assert tab not in first_line
     assert nbsp not in first_line
 
+
+def test_flatten_import_body_removes_scaffold_and_dedupes():
+    from memory_compiler.storage import _flatten_import_body
+    body = ("### 2026-01-01 10:00\n**Источник:** X\nконтент строка альфа\n"
+            "### 2026-01-01 10:00\nконтент строка альфа")
+    out = _flatten_import_body(body)
+    assert "### 2026-01-01" not in out       # scaffold-заголовок убран
+    assert "**Источник:**" not in out         # метастрока убрана
+    assert out.count("контент строка альфа") == 1  # копия дедуплицирована
+
+
+def test_flatten_import_body_noop_for_plain_note():
+    from memory_compiler.storage import _flatten_import_body
+    body = "# Заголовок\n\nОбычный текст без compiler-структуры."
+    assert _flatten_import_body(body) == body
+
+
+def test_flatten_import_body_keeps_distinct_blocks():
+    from memory_compiler.storage import _flatten_import_body
+    body = ("### 2026-01-01 10:00\nпервый уникальный контент\n"
+            "### 2026-01-02 11:00\nвторой отдельный контент")
+    out = _flatten_import_body(body)
+    assert "первый уникальный контент" in out
+    assert "второй отдельный контент" in out
+
 # ─── Tracking articles ──────────────────────────────────────────────────
 
 def test_tracking_create_and_update(knowledge_dir):
