@@ -249,6 +249,7 @@ memory-compiler/
 │   ├── ui.py                  # Web UI HTML шаблон
 │   ├── markdown_render.py     # Серверный рендер MD статей (markdown-it-py + Pygments + nh3)
 │   ├── obs.py                 # Observability: structured logging, request_id, счётчики ошибок
+│   ├── retrieval_eval.py      # Оценка качества поиска: golden-набор из аудит-лога, recall@k/MRR
 │   └── maintenance.py         # Одноразовые проходы обслуживания
 ├── tests/                     # pytest (офлайн: HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1)
 │   ├── conftest.py            # Фикстуры (tmp knowledge dir)
