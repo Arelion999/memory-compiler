@@ -74,6 +74,19 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .card .body.rendered table{border-collapse:collapse;margin:8px 0;font-size:0.9em;display:block;overflow-x:auto}
 .card .body.rendered th,.card .body.rendered td{border:1px solid var(--border);padding:4px 8px;text-align:left}
 .card .body.rendered th{background:var(--bg3)}
+/* Командная палитра (Ctrl+K) */
+.cmdk-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:1000;align-items:flex-start;justify-content:center}
+.cmdk-overlay.open{display:flex}
+.cmdk-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;width:92%;max-width:600px;margin-top:12vh;box-shadow:0 12px 48px rgba(0,0,0,.5);overflow:hidden}
+.cmdk-box input{width:100%;padding:14px 16px;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text);font-size:16px;outline:none}
+.cmdk-results{max-height:52vh;overflow-y:auto}
+.cmdk-item{padding:9px 16px;cursor:pointer;border-bottom:1px solid var(--border)}
+.cmdk-item:last-child{border-bottom:none}
+.cmdk-item.sel{background:var(--bg3)}
+.cmdk-item .t{color:var(--accent);font-size:0.92em}
+.cmdk-item .m{color:var(--text2);font-size:0.75em;margin-top:2px}
+.cmdk-empty{padding:16px;color:var(--text2);text-align:center;font-size:0.85em}
+.cmdk-hint{padding:6px 16px;color:var(--text2);font-size:0.72em;border-top:1px solid var(--border);display:flex;gap:14px}
 /*PYGMENTS_CSS*/
 </style>
 </head>
@@ -132,6 +145,13 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 </div>
 <div id="view-audit" style="display:none">
 <div id="audit-content"></div>
+</div>
+<div class="cmdk-overlay" id="cmdk" onclick="if(event.target===this)closeCmdk()">
+<div class="cmdk-box">
+<input id="cmdk-input" type="search" placeholder="Поиск по базе знаний…" autocomplete="off">
+<div class="cmdk-results" id="cmdk-results"></div>
+<div class="cmdk-hint"><span>&uarr;&darr; навигация</span><span>&crarr; открыть</span><span>Esc закрыть</span></div>
+</div>
 </div>
 <script>
 let PROJECTS=[];
@@ -579,6 +599,59 @@ async function loadAudit(){
   h+='</div>';
   $("audit-content").innerHTML=h;
 }
+
+// Командная палитра (Ctrl/Cmd+K)
+let cmdkItems=[],cmdkSel=-1,cmdkTimer=null,cmdkSeq=0;
+function openCmdk(){$("cmdk").classList.add("open");const i=$("cmdk-input");i.value="";i.focus();cmdkItems=[];cmdkSel=-1;renderCmdk();}
+function closeCmdk(){$("cmdk").classList.remove("open");}
+function renderCmdk(){
+  const box=$("cmdk-results");
+  if(!cmdkItems.length){box.innerHTML='<div class="cmdk-empty">'+($("cmdk-input").value.trim()?"Ничего не найдено":"Начните вводить запрос…")+'</div>';return;}
+  box.innerHTML=cmdkItems.map((it,idx)=>
+    '<div class="cmdk-item'+(idx===cmdkSel?' sel':'')+'" onmouseenter="cmdkSel='+idx+';cmdkMark()" onclick="cmdkOpen('+idx+')">'
+    +'<div class="t">'+esc(it.title)+'</div>'
+    +'<div class="m">'+esc(it.project||"")+' &middot; '+esc(it.file)+(it.score?' &middot; '+it.score:'')+'</div></div>'
+  ).join("");
+  cmdkMark();
+}
+function cmdkMark(){
+  const els=$("cmdk-results").querySelectorAll(".cmdk-item");
+  els.forEach((e,i)=>e.classList.toggle("sel",i===cmdkSel));
+  const s=els[cmdkSel];if(s)s.scrollIntoView({block:"nearest"});
+}
+async function cmdkSearch(){
+  const q=$("cmdk-input").value.trim();
+  if(!q){cmdkItems=[];cmdkSel=-1;renderCmdk();return;}
+  const seq=++cmdkSeq;
+  try{
+    const r=await fetch("/api/search?q="+encodeURIComponent(q));
+    const d=await r.json();
+    if(seq!==cmdkSeq)return;   // отбросить устаревший ответ
+    cmdkItems=(d.results||[]).slice(0,8);
+    cmdkSel=cmdkItems.length?0:-1;
+    renderCmdk();
+  }catch(e){}
+}
+function cmdkOpen(idx){
+  const it=cmdkItems[idx];if(!it)return;
+  const q=$("cmdk-input").value.trim();
+  closeCmdk();
+  showTab("search");
+  $("q").value=q;
+  lastQueryWords=q.toLowerCase().split(/[\\s,;.:]+/).filter(w=>w.length>2);
+  renderResults([it]);
+  const exp=$("results").querySelector(".expand");   // авто-развернуть выбранную статью
+  if(exp)exp.click();
+}
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();openCmdk();return;}
+  if(!$("cmdk").classList.contains("open"))return;
+  if(e.key==="Escape"){e.preventDefault();closeCmdk();}
+  else if(e.key==="ArrowDown"){e.preventDefault();if(cmdkItems.length){cmdkSel=(cmdkSel+1)%cmdkItems.length;cmdkMark();}}
+  else if(e.key==="ArrowUp"){e.preventDefault();if(cmdkItems.length){cmdkSel=(cmdkSel-1+cmdkItems.length)%cmdkItems.length;cmdkMark();}}
+  else if(e.key==="Enter"&&cmdkSel>=0){e.preventDefault();cmdkOpen(cmdkSel);}
+});
+$("cmdk-input").addEventListener("input",()=>{clearTimeout(cmdkTimer);cmdkTimer=setTimeout(cmdkSearch,160);});
 
 $("q").addEventListener("keydown",e=>{if(e.key==="Enter")doSearch()});
 // projects loaded dynamically from /api/health
