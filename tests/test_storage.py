@@ -754,6 +754,36 @@ def test_clean_see_also_noop_without_section():
     body = "# Заголовок\n\nОбычный текст.\n- буллет без секции остаётся"
     assert _clean_see_also(body) == body
 
+
+def test_near_exact_dupes_finds_containment(knowledge_dir):
+    from memory_compiler.storage import near_exact_dupes
+    import memory_compiler.config as _cfg
+    proj = knowledge_dir / "dupproj"
+    proj.mkdir()
+    long_body = "Это длинный уникальный текст статьи про настройку сервера и прокси. " * 4
+    (proj / "canon.md").write_text(
+        f"# Канон\n\n**Теги:** t\n\n## Записи\n\n### 2026-01-01 10:00\n{long_body}\nдополнительный хвост.",
+        encoding="utf-8")
+    (proj / "dupe.md").write_text(f"# Дубль\n\n**Теги:** t\n\n{long_body}", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    dupes = near_exact_dupes("dupproj")
+    assert any({d["a"], d["b"]} == {"dupproj/canon.md", "dupproj/dupe.md"} for d in dupes)
+
+
+def test_near_exact_dupes_ignores_distinct(knowledge_dir):
+    from memory_compiler.storage import near_exact_dupes
+    import memory_compiler.config as _cfg
+    proj = knowledge_dir / "distinctproj"
+    proj.mkdir()
+    (proj / "a.md").write_text(
+        "# A\n\n" + "Совершенно уникальное содержание про базы данных PostgreSQL. " * 4,
+        encoding="utf-8")
+    (proj / "b.md").write_text(
+        "# B\n\n" + "Абсолютно другое про сети Mikrotik и firewall правила. " * 4,
+        encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    assert near_exact_dupes("distinctproj") == []
+
 # ─── Tracking articles ──────────────────────────────────────────────────
 
 def test_tracking_create_and_update(knowledge_dir):

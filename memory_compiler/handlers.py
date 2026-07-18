@@ -1461,32 +1461,27 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
     return [TextContent(type="text", text="\n".join(parts))]
 
 
-async def consolidate(project: str = "all", min_sim: float = 0.90) -> list[TextContent]:
-    """Найти семантически похожие статьи в проекте — кандидаты на слияние.
-
-    Использует кэшированные embeddings: попарное cosine similarity между всеми
-    статьями проекта. Возвращает группы где sim >= min_sim. НЕ мержит автоматически
-    (слияние требует ручной проверки — статьи могут быть тонко разные).
-
-    Параметры:
-      project — фильтр ("all" = все)
-      min_sim — порог similarity (0.78 — найти близкие но не дубли,
-                0.85+ — почти точные дубли)
-    """
-    # ВАЖНО: импортируем модуль, не значения. _embeddings в search.py
-    # переприсваивается (rebuild/load), а импорт `from search import _embeddings`
-    # сохранил бы ссылку на устаревший dict.
+async def consolidate(project: str = "all", min_sim: float = 0.985) -> list[TextContent]:
+    "Дубли: near-exact (точный/containment по тексту, надёжно на коротком RU-корпусе) + похожие темы (эмбеддинги, порог 0.985 — на низком ложняки). Решение 2026-07-18."
     import memory_compiler.search as _smod
     import numpy as np
-    import memory_compiler.config as _cfg
-
+    from memory_compiler.storage import near_exact_dupes
+    _NL = chr(10)
+    parts = [f"# Consolidate report ({project}){_NL}"]
+    ne = near_exact_dupes(project)
+    if ne:
+        parts.append(f"## РЕАЛЬНЫЕ дубли (точный/containment матч): {len(ne)}{_NL}")
+        parts.append("Слить: edit_article(append=true) в канон + delete_article дубля.")
+        for d in ne[:25]:
+            parts.append(f"- **{d['kind']}**: `{d['a']}` <-> `{d['b']}`")
+        if len(ne) > 25:
+            parts.append(f"*...и ещё {len(ne) - 25}.*")
+    else:
+        parts.append(f"## РЕАЛЬНЫЕ дубли: не найдено (точный/containment матч){_NL}")
     if not _smod._embeddings:
-        return [TextContent(type="text", text="# Consolidate\n\n*Embeddings ещё не построены. Запусти reindex().*")]
-
-    # Аггрегация: для статей с ### секциями хранятся chunk-keys (path#chunk0).
-    # Берём MEAN-vector по всем chunks статьи как её представление.
-    # Параллельно фильтруем по проекту и сервисным файлам.
-    article_chunks: dict[str, list] = {}  # parent_path -> list of vectors
+        parts.append(_NL + "*Эмбеддинги не построены — раздел похожих тем пропущен (reindex).*")
+        return [TextContent(type="text", text=_NL.join(parts))]
+    article_chunks = {}
     for k, v in _smod._embeddings.items():
         parent = k.split("#", 1)[0]
         if "/" not in parent:
@@ -1498,23 +1493,15 @@ async def consolidate(project: str = "all", min_sim: float = 0.90) -> list[TextC
         if project != "all" and proj != project:
             continue
         article_chunks.setdefault(parent, []).append(v)
-
     if len(article_chunks) < 2:
-        return [TextContent(type="text", text=(
-            f"# Consolidate ({project})\n\n*Меньше 2 статей в выборке — нечего сравнивать.*"
-        ))]
-
+        parts.append(_NL + "*Меньше 2 статей — для похожих тем сравнивать нечего.*")
+        return [TextContent(type="text", text=_NL.join(parts))]
     paths = list(article_chunks.keys())
-    # Mean-vector per article
     vectors = np.array([np.mean(article_chunks[p], axis=0) for p in paths])
-    # Нормализация для cosine = dot product
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1
     vectors = vectors / norms
-
-    # Попарная similarity matrix
     sim_matrix = vectors @ vectors.T
-    # Upper triangle (i < j)
     pairs = []
     n = len(paths)
     for i in range(n):
@@ -1522,30 +1509,21 @@ async def consolidate(project: str = "all", min_sim: float = 0.90) -> list[TextC
             sim = float(sim_matrix[i, j])
             if sim >= min_sim:
                 pairs.append({"a": paths[i], "b": paths[j], "sim": sim})
-
     pairs.sort(key=lambda p: -p["sim"])
-
-    parts = [f"# Consolidate report ({project})\n"]
-    parts.append(f"*Порог similarity: {min_sim}, найдено пар: {len(pairs)}*\n")
-
+    parts.append(_NL + f"## Похожие темы (эмбеддинги, порог {min_sim}) — НЕ обязательно дубли")
+    parts.append(f"*Найдено пар: {len(pairs)}*{_NL}")
     if not pairs:
-        parts.append("\n*Нет дублей выше порога. База чистая.*")
-        return [TextContent(type="text", text="\n".join(parts))]
-
-    parts.append(f"\n## Топ кандидатов на слияние\n")
-    parts.append("Каждая строка = пара статей с близкой темой. Проверь вручную — мерж через `edit_article(append=true)` + `delete_article` для дубликата.\n")
-    for p in pairs[:25]:
-        title_a = _smod._embed_texts.get(p["a"], p["a"]).split("\n")[0][:60]
-        title_b = _smod._embed_texts.get(p["b"], p["b"]).split("\n")[0][:60]
-        parts.append(f"\n**sim {p['sim']:.2f}**")
-        parts.append(f"- A: `{p['a']}` — {title_a}")
-        parts.append(f"- B: `{p['b']}` — {title_b}")
-
-    if len(pairs) > 25:
-        parts.append(f"\n*…и ещё {len(pairs) - 25} пар.*")
-
-    return [TextContent(type="text", text="\n".join(parts))]
-
+        parts.append("*Нет пар выше порога — по эмбеддингам чисто.*")
+    else:
+        for p in pairs[:25]:
+            title_a = _smod._embed_texts.get(p["a"], p["a"]).split(_NL)[0][:60]
+            title_b = _smod._embed_texts.get(p["b"], p["b"]).split(_NL)[0][:60]
+            parts.append(_NL + f"**sim {p['sim']:.3f}**")
+            parts.append(f"- A: `{p['a']}` — {title_a}")
+            parts.append(f"- B: `{p['b']}` — {title_b}")
+        if len(pairs) > 25:
+            parts.append(_NL + f"*...и ещё {len(pairs) - 25} пар.*")
+    return [TextContent(type="text", text=_NL.join(parts))]
 
 async def save_compact(project: str, summary: str) -> list[TextContent]:
     """Сохранить промежуточный summary при сжатии контекста (PostCompact event).

@@ -1883,6 +1883,59 @@ def _clean_see_also(body: str) -> str:
     return "\n".join(out)
 
 
+def _normalize_article_body(text: str) -> str:
+    """Нормализованное тело статьи для near-exact сравнения: без frontmatter, шапки,
+    метастрок, '## Записи'/'### <дата>'-scaffold и заголовка; whitespace схлопнут."""
+    body = _parse_frontmatter(text)[1]
+    lines = []
+    for l in body.splitlines():
+        s = l.strip()
+        if not s:
+            continue
+        if s.startswith(("**Дата:**", "**Обновлено:**", "**Проект:**", "**Теги:**",
+                         "**Время:**", "**Источник:**")):
+            continue
+        if s == "## Записи" or re.match(r'^### \d{4}', s) or s.startswith("# "):
+            continue
+        lines.append(s)
+    return " ".join(" ".join(lines).split())
+
+
+def near_exact_dupes(project: str, min_len: int = 120) -> list:
+    """РЕАЛЬНЫЕ дубли по нормализованному тексту: точная копия ИЛИ containment (тело одной
+    статьи ⊂ тело другой). На коротком однотипном RU-корпусе надёжнее эмбеддингов
+    (решение 2026-07-18: эмбеддинги там — детектор шума). Возвращает [{a, b, kind}].
+    Секреты и служебные (_*) исключены; min_len отсекает тривиальные короткие совпадения."""
+    import memory_compiler.config as _cfg
+    projects = [project] if project != "all" else list(_cfg.PROJECTS)
+    arts = []
+    for proj in projects:
+        pd = project_dir(proj)
+        if not pd.exists():
+            continue
+        for md in pd.glob("*.md"):
+            if md.name.startswith("_") or md.name.startswith("secret_"):
+                continue
+            try:
+                norm = _normalize_article_body(md.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if len(norm) >= min_len:
+                arts.append((f"{proj}/{md.name}", norm))
+    out = []
+    for i in range(len(arts)):
+        for j in range(i + 1, len(arts)):
+            a_path, a = arts[i]
+            b_path, b = arts[j]
+            if a == b:
+                out.append({"a": a_path, "b": b_path, "kind": "точная копия"})
+            elif a in b:
+                out.append({"a": a_path, "b": b_path, "kind": "A внутри B"})
+            elif b in a:
+                out.append({"a": a_path, "b": b_path, "kind": "B внутри A"})
+    return out
+
+
 def _validate_fetch_url(url: str) -> None:
     """SSRF-guard: только http/https; хост не должен резолвиться в приватный/loopback/
     link-local/reserved адрес. Блокирует file://, доступ к 127.0.0.1, cloud-metadata

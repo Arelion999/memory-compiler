@@ -85,7 +85,7 @@ def test_consolidate_empty_when_no_embeddings(knowledge_dir):
     from memory_compiler.search import _embeddings
     _embeddings.clear()
     result = asyncio.run(consolidate(project="all"))
-    assert "Embeddings" in result[0].text or "нечего сравнивать" in result[0].text
+    assert "не построены" in result[0].text or "пропущен" in result[0].text
 
 
 def test_save_compact_creates_and_fifo(knowledge_dir):
