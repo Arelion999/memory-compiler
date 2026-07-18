@@ -1807,3 +1807,23 @@ def test_extract_versions_date_not_version():
 def test_extract_versions_dedupe():
     from memory_compiler.storage import _extract_versions
     assert _extract_versions("вышла 1.20.1, потом снова 1.20.1") == ["1.20.1"]
+
+
+def test_extract_facts_1c_platform_version_with_cue():
+    from memory_compiler.storage import extract_facts_from_text
+    f = extract_facts_from_text("обновили платформу 1С до 8.3.24.1234 на сервере")
+    assert "8.3.24.1234" in f.get("version", [])
+
+
+def test_extract_facts_1c_config_version_with_cue_not_ip():
+    from memory_compiler.storage import extract_facts_from_text
+    f = extract_facts_from_text("конфа обновлена до версии 9.2.6.57")
+    assert "9.2.6.57" in f.get("version", [])
+    assert "9.2.6.57" not in f.get("ip", [])   # cue → версия, НЕ ip
+
+
+def test_extract_facts_bare_4part_le255_goes_to_ip_not_version():
+    from memory_compiler.storage import extract_facts_from_text
+    f = extract_facts_from_text("адрес 203.0.113.50 в сети")
+    assert "203.0.113.50" not in f.get("version", [])
+    assert "203.0.113.50" in f.get("ip", [])

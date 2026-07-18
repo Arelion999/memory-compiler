@@ -2376,6 +2376,12 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
                 facts[kind] = values
             continue
 
+        if kind == "version":
+            vals = _extract_versions(relevant_text)
+            if vals:
+                facts[kind] = vals
+            continue
+
         matches = pattern.findall(relevant_text)
         if not matches:
             continue
