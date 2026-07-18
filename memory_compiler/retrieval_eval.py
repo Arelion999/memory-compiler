@@ -29,7 +29,28 @@ from pathlib import Path
 
 # Инструменты, которые начинают новый поисковый интент: всё, что открыто ПОСЛЕ них,
 # относится уже к следующему запросу.
-_QUERY_TOOLS = {"search": "query", "ask": "question", "get_context": "query"}
+#
+# Состав подобран ЗАМЕРОМ (2026-07-19), а не по количеству событий. Важная тонкость:
+# добавление источника не только добавляет пары, но и ПЕРЕНАЗНАЧАЕТ клики — новый
+# «запрос» закрывает предыдущий, и открытие статьи достаётся ему. Поэтому смотреть надо
+# не на нетто-прирост, а на то, что теряется:
+#   search/ask/get_context — 212 пар (база)
+#   + search_by_tag        — 229 пар (−23 базовых, +40 новых). Взят: тег — это тот же
+#                            retrieval-интент, и на замере вариант устойчиво лучше базы.
+#   + start_task           — 241 пара (−22 базовых, +34 новых). ОТВЕРГНУТ: обменивает
+#                            полноценные поисковые запросы («бэкап NAS Synology offsite
+#                            хранилище», «VPS ... nginx ssh root доступ») на описания
+#                            задач, часть которых как запрос бессмысленна («UserAI»,
+#                            «F4+F5 двусторонний форвард ... через бота»). На замере
+#                            метрика падала на всём наборе — набор становился шумнее,
+#                            а не богаче.
+#   search_error           — 0 (всего 5 событий)
+_QUERY_TOOLS = {
+    "search": "query",
+    "ask": "question",
+    "get_context": "query",
+    "search_by_tag": "tag",
+}
 _OPEN_TOOL = "read_article"
 
 
@@ -105,6 +126,45 @@ def filter_existing(golden: list[dict], knowledge_dir: str | Path) -> list[dict]
         if alive:
             out.append({**item, "expected": alive})
     return out
+
+
+def build_known_item_set(knowledge_dir: str | Path, skip_prefixes=("_",)) -> list[dict]:
+    """Known-item набор: заголовок статьи как запрос, ожидаемый ответ — сама статья.
+
+    ЭТО НЕ ЗАМЕНА поведенческому golden-набору, и смешивать их нельзя. Природа разная:
+      * поведенческий (build_golden) — настоящие запросы и настоящие «клики», но их мало
+        (133) и покрывают они лишь то, что искали в прошлом;
+      * known-item — покрывает ВЕСЬ корпус, но задача заведомо проще и частично
+        самореферентна: заголовок индексируется с высоким весом (title_B), так что
+        высокий recall тут — не признак хорошего поиска.
+    Ценность known-item в другом: это широкая СТРАХОВОЧНАЯ СЕТЬ. Она ловит катастрофу
+    вида «часть корпуса перестала находиться вообще» (битый индекс, потерянные чанки,
+    сломанная нарезка), которую 133 исторических запроса могут не задеть. Читать её
+    как регрессионный сигнал, а не как оценку качества.
+
+    Служебные файлы (`_log.md`, `_session.md`, ...) пропускаются: это не статьи-ответы.
+    """
+    root = Path(knowledge_dir)
+    items: list[dict] = []
+    for proj_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        for md in sorted(proj_dir.glob("*.md")):
+            if any(md.name.startswith(pref) for pref in skip_prefixes):
+                continue
+            try:
+                first = md.read_text(encoding="utf-8", errors="replace").lstrip().splitlines()[:1]
+            except Exception:
+                continue
+            if not first:
+                continue
+            title = first[0].lstrip("# ").strip()
+            if len(title) < 8:      # слишком короткий заголовок — запрос бессмысленный
+                continue
+            items.append({
+                "query": title,
+                "project": proj_dir.name,
+                "expected": {f"{proj_dir.name}/{md.name}"},
+            })
+    return items
 
 
 def evaluate(golden: list[dict], retrieve, ks=(1, 3, 5, 10), limit: int = 10) -> dict:

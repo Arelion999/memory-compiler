@@ -20,7 +20,7 @@ sys.path.insert(0, "/app")   # контейнер
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # локальный клон
 
 from memory_compiler.retrieval_eval import (  # noqa: E402
-    parse_audit, build_golden, filter_existing, evaluate,
+    parse_audit, build_golden, filter_existing, evaluate, build_known_item_set,
 )
 
 from memory_compiler.config import KNOWLEDGE_DIR  # noqa: E402
@@ -69,6 +69,18 @@ def main():
         dt = time.time() - t0
         line = " ".join(f"{k}={v}" for k, v in res.items())
         print(f"{name:16} {line}  [{dt:.1f}s]")
+
+    # Known-item — ОТДЕЛЬНАЯ метрика, не смешивать с поведенческой (см. докстринг
+    # build_known_item_set): она проще и самореферентна, её роль — страховочная сеть.
+    if "--known-item" in sys.argv[1:]:
+        ki = build_known_item_set(KNOWLEDGE)
+        ki_take = int(args[1]) if len(args) > 1 else 300
+        ki_sample = ki[:ki_take] if ki_take else ki
+        print(f"\nknown-item набор: {len(ki)} статей (в выборке {len(ki_sample)})")
+        t0 = time.time()
+        res = evaluate(ki_sample, hybrid, limit=10)
+        print("known-item       " + " ".join(f"{k}={v}" for k, v in res.items())
+              + "  [%.1fs]" % (time.time() - t0))
 
 
 if __name__ == "__main__":

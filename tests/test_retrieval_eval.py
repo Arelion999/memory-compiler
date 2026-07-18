@@ -4,7 +4,9 @@
 проверена: ошибка в подсчёте recall/MRR или в сборке golden-набора привела бы к
 неверному выводу «стало лучше/хуже» и к изменению чанкования на ложных основаниях.
 """
-from memory_compiler.retrieval_eval import build_golden, evaluate, filter_existing
+from memory_compiler.retrieval_eval import (
+    build_golden, evaluate, filter_existing, build_known_item_set,
+)
 
 
 def _q(tool, **args):
@@ -54,6 +56,56 @@ def test_golden_drops_queries_without_opens():
     ]
     g = build_golden(entries)
     assert [x["query"] for x in g] == ["с результатом"]
+
+
+def test_golden_accepts_tag_search():
+    """search_by_tag — тот же retrieval-интент: тег как запрос, открытие как клик."""
+    entries = [
+        _q("search_by_tag", tag="nginx", project="infra"),
+        _open("infra", "ngx.md"),
+    ]
+    g = build_golden(entries)
+    assert [x["query"] for x in g] == ["nginx"]
+    assert g[0]["expected"] == {"infra/ngx.md"}
+
+
+def test_golden_ignores_start_task():
+    """start_task ОТВЕРГНУТ как источник (замер 2026-07-19): он закрывал предыдущий
+    запрос и переназначал клик с полноценного поискового запроса на описание задачи —
+    набор становился шумнее. Клик должен остаться за поиском."""
+    entries = [
+        _q("search", query="бэкап NAS Synology offsite", project="infra"),
+        _q("start_task", topic="Доработка макета НИКС_ПФ_MXL", project="infra"),
+        _open("infra", "backup.md"),
+    ]
+    g = build_golden(entries)
+    assert [x["query"] for x in g] == ["бэкап NAS Synology offsite"], \
+        "start_task перехватил клик у настоящего поискового запроса"
+    assert g[0]["expected"] == {"infra/backup.md"}
+
+
+# ─── known-item набор ────────────────────────────────────────────────────────
+
+def test_known_item_builds_title_to_article_pairs(knowledge_dir):
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx.md").write_text("# Проксирование nginx на бэкенд\n\nтело\n", encoding="utf-8")
+    items = build_known_item_set(knowledge_dir)
+    mine = [i for i in items if i["expected"] == {"testproj/nginx.md"}]
+    assert len(mine) == 1
+    assert mine[0]["query"] == "Проксирование nginx на бэкенд"
+    assert mine[0]["project"] == "testproj"
+
+
+def test_known_item_skips_service_files_and_short_titles(knowledge_dir):
+    """Служебные файлы — не статьи-ответы; слишком короткий заголовок даёт бессмысленный запрос."""
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "_log.md").write_text("# Журнал проекта тестового\n\nтело\n", encoding="utf-8")
+    (proj / "short.md").write_text("# 1С\n\nтело\n", encoding="utf-8")
+    names = {next(iter(i["expected"])) for i in build_known_item_set(knowledge_dir)}
+    assert "testproj/_log.md" not in names, "служебный файл попал в набор"
+    assert "testproj/short.md" not in names, "слишком короткий заголовок попал в набор"
 
 
 def test_golden_accepts_ask_and_get_context():
