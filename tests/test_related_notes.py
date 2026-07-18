@@ -151,6 +151,46 @@ def test_web_related_rejects_traversal():
     assert resp.status_code == 404
 
 
+# ─── шкала релевантности (v1.23.1) ───────────────────────────────────────────
+
+def test_display_score_scales_from_noise_floor():
+    """Сырой косинус растягивается из [floor..1] в [0..1]: 0.95 при floor=0.9 → ровно 0.5."""
+    from memory_compiler.search import related_display_score
+    assert related_display_score(0.90) == 0.0
+    assert related_display_score(1.00) == 1.0
+    assert abs(related_display_score(0.95) - 0.5) < 1e-9
+
+
+def test_display_score_clamps_below_floor_and_above_one():
+    """Ниже шума — 0 (а не отрицательное), выше 1 — 1: ширина полоски всегда валидна."""
+    from memory_compiler.search import related_display_score
+    assert related_display_score(0.10) == 0.0
+    assert related_display_score(1.50) == 1.0
+
+
+def test_display_score_honours_floor_override(monkeypatch):
+    """При смене EMBED_MODEL порог шума другой — floor берётся из модуля, не захардкожен."""
+    from memory_compiler.search import related_display_score
+    monkeypatch.setattr(_smod, "RELATED_SCORE_FLOOR", 0.5)
+    assert abs(related_display_score(0.75) - 0.5) < 1e-9
+
+
+def test_web_related_exposes_both_raw_score_and_rel(knowledge_dir, monkeypatch):
+    """Endpoint отдаёт и сырой косинус, и rel для полоски; rel меньше сырого (шкала сжата)."""
+    from memory_compiler.search import related_display_score
+    _write(knowledge_dir, "testproj", "a.md")
+    _write(knowledge_dir, "testproj", "near.md")
+    monkeypatch.setattr(_smod, "_embeddings", {
+        "testproj/a.md": _v(1, 0, 0),
+        "testproj/near.md": _v(1, 0.1, 0),
+    })
+    item = _json(asyncio.run(web_related(
+        FakeRequest(query={"project": "testproj", "file": "a.md"}))))["related"][0]
+    assert 0.0 <= item["rel"] <= 1.0
+    assert item["rel"] < item["score"], "полоска рисуется по сырому косинусу — связь завышена"
+    assert abs(item["rel"] - related_display_score(item["score"])) < 0.01
+
+
 def test_web_related_clamps_limit(knowledge_dir, monkeypatch):
     """limit ограничен сверху, мусорное значение не роняет endpoint."""
     _write(knowledge_dir, "testproj", "a.md")

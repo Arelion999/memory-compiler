@@ -703,13 +703,16 @@ async function loadRelated(proj,file,force){
     if(seq!==relatedSeq)return;      // отбросить устаревший ответ
     relatedItems=d.related||[];
     if(!relatedItems.length){$("related-list").innerHTML='<div class="related-empty">Похожих не нашлось</div>';return;}
-    $("related-list").innerHTML=relatedItems.map((i,idx)=>
-      '<div class="related-item" onclick="relatedOpen('+idx+')">'
+    $("related-list").innerHTML=relatedItems.map((i,idx)=>{
+      // полоска — по rel (шкала от порога шума модели), число — сырой косинус:
+      // рисовать полоску по сырому значению значило бы завышать связь (см. RELATED_SCORE_FLOOR)
+      const rel=(typeof i.rel==="number")?i.rel:i.score;
+      return '<div class="related-item" onclick="relatedOpen('+idx+')" title="косинус '+i.score.toFixed(3)+' — полоска отсчитывается от порога шума модели">'
       +'<div class="t">'+esc(i.title)+'</div>'
       +'<div class="m"><span>'+esc(i.project)+'</span><span>'+i.score.toFixed(2)+'</span></div>'
-      +'<div class="related-bar"><i style="width:'+Math.round(Math.max(0,Math.min(1,i.score))*100)+'%"></i></div>'
-      +'</div>'
-    ).join("");
+      +'<div class="related-bar"><i style="width:'+Math.round(Math.max(0,Math.min(1,rel))*100)+'%"></i></div>'
+      +'</div>';
+    }).join("");
   }catch(e){$("related-list").innerHTML='<div class="related-empty">Ошибка загрузки</div>';}
 }
 function openArticle(proj,file,title){

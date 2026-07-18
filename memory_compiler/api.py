@@ -22,6 +22,7 @@ from memory_compiler import search as _search_mod
 from memory_compiler.search import (
     whoosh_search, rebuild_index, rebuild_embeddings,
     load_embeddings, get_index, _strip_frontmatter, related_articles,
+    related_display_score,
 )
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
@@ -173,7 +174,8 @@ async def web_related(request: Request):
         items.append({
             "project": proj, "file": fname,
             "title": lines[0].lstrip("# ").strip() if lines else fname,
-            "score": round(score, 3),
+            "score": round(score, 3),                        # сырой косинус
+            "rel": round(related_display_score(score), 3),   # доля для полоски (от порога шума)
         })
     return JSONResponse({"related": items})
 

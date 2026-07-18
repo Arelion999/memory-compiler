@@ -701,6 +701,24 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
     return results[:limit]
 
 
+# Порог «шума» косинуса для ОТОБРАЖЕНИЯ релевантности related-notes. На коротком
+# русском корпусе этот эмбеддер выдаёт ~0.90 даже несвязанным текстам (замерено
+# 2026-07-18: из-за этого дефолт consolidate пришлось поднять 0.9→0.985). Поэтому
+# сырой скор 0.93 — это «чуть выше шума», а не «93% похожести», и полоска в UI,
+# нарисованная по сырому значению, завышала бы связь. related_display_score
+# растягивает [floor, 1.0] в [0, 1]: различимо и честно. При смене EMBED_MODEL
+# floor другой — потому вынесен в env.
+RELATED_SCORE_FLOOR = float(_os_embed.environ.get("RELATED_SCORE_FLOOR", "0.90"))
+
+
+def related_display_score(score: float) -> float:
+    """Сырой косинус → доля 0..1 для полоски релевантности (шкала от порога шума)."""
+    span = 1.0 - RELATED_SCORE_FLOOR
+    if span <= 0:
+        return 1.0
+    return max(0.0, min(1.0, (score - RELATED_SCORE_FLOOR) / span))
+
+
 def related_articles(path: str, limit: int = 8) -> list[tuple[str, float]]:
     """Семантически близкие статьи к заданной. path = "project/filename".
 
