@@ -72,6 +72,7 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from whoosh import index as whoosh_index
 from whoosh.qparser import MultifieldParser, OrGroup, AndGroup, FuzzyTermPlugin
+from whoosh.query import Or as _WhooshOr, Term as _WhooshTerm
 from whoosh.scoring import BM25F
 
 from memory_compiler.config import (
@@ -168,6 +169,31 @@ DECAY_WEIGHT = float(_os_embed.environ.get("DECAY_WEIGHT", "0.3"))
 BM25_TITLE_B = float(_os_embed.environ.get("BM25_TITLE_B", "0.75"))
 BM25_TAGS_B = float(_os_embed.environ.get("BM25_TAGS_B", "0.75"))
 BM25_BODY_B = float(_os_embed.environ.get("BM25_BODY_B", "0.75"))
+
+# ─── Отбор кандидатов ────────────────────────────────────────────────────────
+# Диагностика (scripts/diag_retrieval.py) на 140 реальных запросах аудит-лога показала,
+# почему сетки по ВЕСАМ (v1.30.0: RRF_K, decay, b-параметры) не двигали метрику: они
+# переставляют то, что уже попало в пул, а цель до пула часто не доходила.
+#
+# SEARCH_QUERY_GROUP — как склеивать термы многословного запроса.
+#   "and" (было): документ обязан содержать ВСЕ термы. Замер: канал BM25 оказывался
+#   ПУСТ на 48.6% запросов, а на запросах от 6 слов — на 75%. То есть половина поиска
+#   работала как чисто семантическая, и никакие настройки BM25 на неё не влияли физически.
+#   "or" (сейчас): частичное совпадение не выбрасывается, документ с бо́льшим покрытием
+#   термов и так получает выше скор (сумма по совпавшим). Замер: MRR +0.046,
+#   recall@1 +8 запросов из 140. OrGroup.factory(scale) проверен со scale 0.9/0.7/0.5 —
+#   результат побайтово тот же (RRF сливает по РАНГУ, а не по скору), поэтому обычный Or.
+SEARCH_QUERY_GROUP = _os_embed.environ.get("SEARCH_QUERY_GROUP", "or").lower()
+# SEARCH_POOL — сколько кандидатов берёт КАЖДЫЙ канал. Было limit*2 (=20 при limit=10):
+# на 12.9% запросов цель лежала в широком пуле, но не в узком. Добор до 100 спасает 16
+# таких из 18 (добор до 50 — 10 из 18). Цена нулевая: и Whoosh, и numpy отдают
+# отсортированный список, глубина среза на время не влияет.
+SEARCH_POOL = int(_os_embed.environ.get("SEARCH_POOL", "100"))
+# SEARCH_SCOPE_AWARE — применять скоуп проекта ВНУТРИ запроса, а не после выборки.
+# Было: оба канала брали топ-20 по ВСЕЙ базе и только потом отбрасывали чужие проекты —
+# при 43 проектах от 20 кандидатов оставалось в среднем 2 у BM25 и 9.7 у семантики.
+# Стало: пул набирается из самого проекта. Замер: recall@10 +9 запросов из 140.
+SEARCH_SCOPE_AWARE = _os_embed.environ.get("SEARCH_SCOPE_AWARE", "true").lower() in ("1", "true", "yes")
 
 
 def _splade_search(query: str, project: str = "all", limit: int = 20) -> dict[str, float]:
@@ -735,8 +761,13 @@ def embed_document(text: str, filename: str, project: str):
         _persist_embeddings_locked()
 
 
-def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
+def semantic_search(query: str, limit: int = 10, keep=None) -> list[tuple[str, float]]:
     """Search by semantic similarity. Returns [(path, score), ...]. Deduplicates chunks to parent articles.
+
+    keep — предикат path->bool, применяемый ДО среза по limit (скоуп проекта). Раньше
+    скоуп накладывался вызывающим ПОСЛЕ среза, из-за чего при узком проекте от топ-N
+    оставались единицы: чужие проекты вытесняли своих ещё до фильтра. Фильтровать
+    нужно до среза, иначе limit тратится на заведомо отбрасываемые документы.
 
     Векторизовано: вместо Python-цикла np.dot по каждому вектору (+ отдельная копия
     словаря) — один проход под локом собирает матрицу (N×d), затем одно BLAS-умножение
@@ -754,6 +785,8 @@ def semantic_search(query: str, limit: int = 10) -> list[tuple[str, float]]:
     seen: dict[str, float] = {}
     for key, sim in zip(keys, sims):
         parent = key.split("#")[0]
+        if keep is not None and not keep(parent):
+            continue
         sim = float(sim)
         if parent not in seen or sim > seen[parent]:
             seen[parent] = sim
@@ -827,6 +860,27 @@ def _tags_are_shared(tags: str) -> bool:
     """True, если среди тегов есть маркер кросс-проектности (shared/global/общий)."""
     toks = set(re.findall(r"[\wа-яё-]+", tags.lower()))
     return bool(toks & _SHARED_TAG_MARKERS)
+
+
+def load_shared_paths(ix) -> int:
+    """Наполнить _shared_paths из УЖЕ существующего индекса, без пересборки.
+
+    Набор заполнялся только внутри rebuild_index, а startup_prepare_index на быстром
+    пути (индекс на диске, схема совпала) выходил раньше — и после каждого обычного
+    рестарта кросс-проектные статьи переставали быть кросс-проектными до явного
+    reindex. Теги уже лежат в индексе stored-полем, так что достаточно одного прохода
+    по reader'у: диск не читаем, статьи не парсим."""
+    global _shared_paths
+    found: set[str] = set()
+    with ix.reader() as reader:
+        for sf in reader.all_stored_fields():
+            if _tags_are_shared(sf.get("tags") or ""):
+                path = sf.get("path")
+                if path:
+                    found.add(path)
+    with _index_lock:
+        _shared_paths = found
+    return len(found)
 
 
 def _index_safe_text(raw_text: str, filename: str) -> str:
@@ -997,6 +1051,9 @@ def startup_prepare_index() -> int:
             schema_ok = None  # индекс не открылся — пересобрать ниже
         if schema_ok:
             try:
+                # Без этого _shared_paths остался бы пустым до следующего reindex —
+                # см. load_shared_paths. Скоуп поиска опирается на него напрямую.
+                load_shared_paths(ix)
                 with ix.searcher() as s:
                     return s.doc_count()
             except Exception:
@@ -1053,10 +1110,59 @@ def delete_project_documents(project: str) -> int:
     return n
 
 
+def in_search_scope(path: str, project: str) -> bool:
+    """Виден ли документ при скоупе на project. Кросс-проектные (shared/global) видны
+    из любого проекта — общая сущность физически лежит в одном, а нужна везде."""
+    return (project == "all" or path.startswith(project + "/")
+            or path in _shared_paths)
+
+
+def _scope_filter(project: str):
+    """Фильтр Whoosh под скоуп проекта — чтобы срез топ-N набирался ИЗ проекта.
+    None для project='all'. Shared-статьи добавляются поимённо (их единицы)."""
+    if project == "all" or not SEARCH_SCOPE_AWARE:
+        return None
+    clauses = [_WhooshTerm("project", project)]
+    clauses += [_WhooshTerm("path", p) for p in _shared_paths]
+    return clauses[0] if len(clauses) == 1 else _WhooshOr(clauses)
+
+
+def _semantic_only_info(path: str) -> dict:
+    """Карточка документа, найденного ТОЛЬКО семантическим каналом (в Whoosh-выдаче
+    его нет, значит нет и stored-полей). Превью откладывается: см. _fill_previews."""
+    proj = path.split("/", 1)[0] if "/" in path else "unknown"
+    fname = path.split("/", 1)[-1] if "/" in path else path
+    return {"title": _embed_texts.get(path, fname), "project": proj,
+            "file": fname, "preview": "", "_preview_of": path}
+
+
+def _fill_previews(results: list[dict]) -> list[dict]:
+    """Дочитать превью тем результатам, у которых оно отложено. Вызывать ТОЛЬКО на
+    финальном срезе — иначе читаем с диска весь пул кандидатов ради выброшенного."""
+    for info in results:
+        path = info.pop("_preview_of", None)
+        if path is None:
+            continue
+        fpath = KNOWLEDGE_DIR / path
+        if not fpath.exists():
+            continue
+        try:
+            raw = fpath.read_text(encoding="utf-8")
+        except Exception:
+            continue  # нечитаемый/битый файл не должен ронять выдачу
+        info["preview"] = make_preview(
+            _index_safe_text(raw, path.split("/", 1)[-1]), n=10)
+    return results
+
+
 def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list[dict]:
     """Hybrid search: BM25F keyword + semantic similarity."""
     ix = get_index()
-    group = AndGroup if len(query_str.split()) > 1 else OrGroup
+    # Ширина пула кандидатов на канал: не меньше исторического limit*2, иначе
+    # вызывающий с большим limit получил бы МЕНЬШЕ кандидатов, чем раньше.
+    pool = max(SEARCH_POOL, limit * 2)
+    multiword = len(query_str.split()) > 1
+    group = OrGroup if (SEARCH_QUERY_GROUP == "or" or not multiword) else AndGroup
     parser = MultifieldParser(["title", "tags", "body"], schema=ix.schema, group=group)
     parser.add_plugin(FuzzyTermPlugin())  # fuzzy matching
 
@@ -1069,12 +1175,14 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     if q:
         with ix.searcher(weighting=BM25F(title_B=BM25_TITLE_B, tags_B=BM25_TAGS_B,
                                          body_B=BM25_BODY_B)) as s:
-            hits = s.search(q, limit=limit * 2)
+            hits = s.search(q, limit=pool, filter=_scope_filter(project))
             max_bm25 = max((h.score for h in hits), default=1.0) or 1.0
             for hit in hits:
                 path = hit["path"]
                 # Скоуп на проект, НО shared/global-статьи из других проектов пропускаем.
-                if project != "all" and hit["project"] != project and path not in _shared_paths:
+                # При SEARCH_SCOPE_AWARE фильтр уже отработал в запросе — проверка
+                # остаётся страховкой и единственным скоупом в legacy-режиме.
+                if not in_search_scope(path, project):
                     continue
                 bm25_scores[path] = {
                     "title": hit["title"],
@@ -1089,8 +1197,11 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     # Деградируем к BM25 (симметрично каналу SPLADE ниже) и помечаем деградацию.
     sem_scores: dict[str, float] = {}
     from memory_compiler import obs
+    # Скоуп передаётся ВНУТРЬ semantic_search: фильтр до среза по limit, иначе
+    # чужие проекты вытесняют своих ещё до фильтра (см. keep в semantic_search).
+    keep = (lambda p: in_search_scope(p, project)) if SEARCH_SCOPE_AWARE else None
     try:
-        sem_results = semantic_search(query_str, limit=limit * 2)
+        sem_results = semantic_search(query_str, limit=pool, keep=keep)
         obs.set_semantic_degraded(False)
     except Exception as e:
         print(f"Semantic search failed, fallback to BM25: {e}")
@@ -1098,7 +1209,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         sem_results = []
     for path, sim in sem_results:
         # Скоуп на проект, НО shared/global-статьи пропускаем в любой проект.
-        if project != "all" and not path.startswith(project + "/") and path not in _shared_paths:
+        if not in_search_scope(path, project):
             continue
         sem_scores[path] = max(sim, 0)  # cosine sim, already 0-1
 
@@ -1106,7 +1217,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     splade_scores: dict[str, float] = {}
     if SPLADE_ENABLED:
         try:
-            splade_scores = _splade_search(query_str, project=project, limit=limit * 2)
+            splade_scores = _splade_search(query_str, project=project, limit=pool)
         except Exception:
             splade_scores = {}
 
@@ -1139,16 +1250,12 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         if path in bm25_scores:
             info = bm25_scores[path]
         else:
-            # Semantic-only result — get info from embed_texts
-            proj = path.split("/", 1)[0] if "/" in path else "unknown"
-            fname = path.split("/", 1)[-1] if "/" in path else path
-            title = _embed_texts.get(path, fname)
-            fpath = KNOWLEDGE_DIR / path
-            preview = ""
-            if fpath.exists():
-                raw = fpath.read_text(encoding="utf-8")
-                preview = make_preview(_index_safe_text(raw, fname), n=10)
-            info = {"title": title, "project": proj, "file": fname, "preview": preview}
+            # Semantic-only result — get info from embed_texts. Превью НЕ читается
+            # здесь: с пулом в SEARCH_POOL кандидатов это означало бы до сотни
+            # дисковых чтений на запрос, из которых почти все выбрасываются отсечкой
+            # и срезом по limit. Подставляется лениво (_fill_previews) только тем,
+            # кто реально попал в выдачу.
+            info = _semantic_only_info(path)
 
         # Apply temporal decay
         decay = decay_factor(path)
@@ -1157,12 +1264,25 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         # multiply by 3000 → top result lands around 100, comfortable for thresholds.
         rrf_scaled = rrf * 3000 * ((1.0 - DECAY_WEIGHT) + DECAY_WEIGHT * decay)
         info["score"] = round(rrf_scaled, 1)
+        info["_raw"] = rrf_scaled
+        info["_path"] = path
         merged.append(info)
 
-    merged.sort(key=lambda x: x["score"], reverse=True)
+    # Сортировка по СЫРОМУ скору, при точном равенстве — по пути. Раньше сортировали
+    # округлённый до 0.1 score, а порядок равных брался из обхода set(all_paths) —
+    # то есть из рандомизированного хэша строк, РАЗНОГО в разных процессах. Слипание
+    # не редкость: из 210 пар рангов двухканальных документов 79 дают один и тот же
+    # округлённый скор. Замер: один и тот же код на пяти PYTHONHASHSEED давал разброс
+    # до 4 запросов из 140 по recall@1 (MRR 0.4847-0.4970) — этот шум и съедал прежние
+    # замеры. С детерминированным порядком все пять прогонов совпадают побайтово.
+    # На качество это не влияет (0.4914 — середина прежнего разброса), только на
+    # воспроизводимость: и метрики, и выдача пользователю.
+    merged.sort(key=lambda x: (-x["_raw"], x["_path"]))
     # Remove internal fields
     for m in merged:
         m.pop("bm25", None)
+        m.pop("_raw", None)
+        m.pop("_path", None)
 
     if not merged:
         return []
@@ -1176,7 +1296,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     # High-confidence path: standard relative cutoff
     if top_score >= HIGH_CONF:
         threshold = max(top_score * 0.5, 32)
-        return [m for m in merged if m["score"] >= threshold][:limit]
+        return _fill_previews([m for m in merged if m["score"] >= threshold][:limit])
 
     # Soft-fallback path: top result is weak. Show up to 3 with `confidence: low`
     # marker IF they share at least one query token with title/preview.
@@ -1185,6 +1305,9 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         q_tokens = set(_content_tokens(query_str))
         if not q_tokens:
             return []
+        # Здесь превью — часть РЕШЕНИЯ (по нему ищется пересечение с запросом),
+        # поэтому пятёрке кандидатов его нужно дочитать до цикла.
+        _fill_previews(merged[:5])
         soft_results = []
         for m in merged[:5]:
             haystack = (m.get("title", "") + " " + m.get("preview", "")).lower()
