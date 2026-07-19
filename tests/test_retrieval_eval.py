@@ -61,17 +61,6 @@ def test_golden_drops_queries_without_opens():
     assert [x["query"] for x in g] == ["с результатом"]
 
 
-def test_golden_accepts_tag_search():
-    """search_by_tag — тот же retrieval-интент: тег как запрос, открытие как клик."""
-    entries = [
-        _q("search_by_tag", tag="nginx", project="infra"),
-        _open("infra", "ngx.md"),
-    ]
-    g = build_golden(entries)
-    assert [x["query"] for x in g] == ["nginx"]
-    assert g[0]["expected"] == {"infra/ngx.md"}
-
-
 def test_golden_ignores_start_task():
     """start_task ОТВЕРГНУТ как источник (замер 2026-07-19): он закрывал предыдущий
     запрос и переназначал клик с полноценного поискового запроса на описание задачи —
@@ -282,3 +271,77 @@ def test_load_golden_applies_both_filters(tmp_path):
     clean = load_golden(kd, _scope)
     assert clean[0]["expected"] == {"a/ok.md"}, \
         "удалённая должна выпасть по filter_existing, чужая — по filter_reachable"
+
+
+# ─── Состав источников и окно по времени (v1.36.0) ───────────────────────────
+
+def _ev(ts, tool, **args):
+    return {"ts": ts, "tool": tool, "args": args}
+
+
+def test_search_by_tag_is_not_a_source():
+    """Тег не порождает golden-запрос: search_by_tag не ранжирует вообще.
+
+    Он перебирает файлы, точно сверяет тег и отдаёт совпадения в порядке обхода
+    каталога — «первого места» там нет, поэтому клик из такого списка ничего не
+    говорит о качестве ранжирования."""
+    golden = build_golden([
+        _ev("2026-01-01T10:00:00", "search_by_tag", tag="docker", project="p"),
+        _ev("2026-01-01T10:00:30", "read_article", project="p", filename="a.md"),
+    ])
+    assert golden == [], f"тег не должен становиться запросом: {golden}"
+
+
+def test_tag_search_does_not_steal_reads_from_real_query():
+    """Регресс, ради которого источник и убран: тег ПЕРЕНАЗНАЧАЛ клики.
+
+    Раньше событие search_by_tag закрывало предыдущий настоящий запрос, и открытие
+    статьи доставалось тегу. На живом логе из-за этого метрика была занижена: набор
+    ужался всего на 3 запроса, а MRR вырос на 0.03 — открытия вернулись владельцам."""
+    golden = build_golden([
+        _ev("2026-01-01T10:00:00", "search", query="настоящий запрос", project="p"),
+        _ev("2026-01-01T10:00:10", "search_by_tag", tag="docker", project="p"),
+        _ev("2026-01-01T10:00:20", "read_article", project="p", filename="a.md"),
+    ])
+    assert len(golden) == 1 and golden[0]["query"] == "настоящий запрос"
+    assert golden[0]["expected"] == {"p/a.md"}, \
+        "открытие должно достаться поисковому запросу, а не тегу"
+
+
+def test_max_gap_window_drops_late_reads():
+    """Окно по времени отсекает открытия, случившиеся сильно позже запроса."""
+    ev = [
+        _ev("2026-01-01T10:00:00", "search", query="q", project="p"),
+        _ev("2026-01-01T10:00:30", "read_article", project="p", filename="близкая.md"),
+        _ev("2026-01-01T11:30:00", "read_article", project="p", filename="поздняя.md"),
+    ]
+    assert build_golden(ev)[0]["expected"] == {"p/близкая.md", "p/поздняя.md"}, \
+        "по умолчанию окно выключено — берутся оба"
+    assert build_golden(ev, max_gap_s=300)[0]["expected"] == {"p/близкая.md"}
+
+
+def test_max_gap_window_off_by_default():
+    """Дефолт — без окна: порог не выбран намеренно, разлома в распределении нет."""
+    ev = [
+        _ev("2026-01-01T10:00:00", "search", query="q", project="p"),
+        _ev("2026-01-02T10:00:00", "read_article", project="p", filename="через_сутки.md"),
+    ]
+    assert build_golden(ev)[0]["expected"] == {"p/через_сутки.md"}
+
+
+def test_max_gap_keeps_pairs_with_unparsable_timestamps():
+    """Битая отметка времени не повод терять пару: окно — уточнение, а не фильтр качества."""
+    ev = [
+        _ev("не-дата", "search", query="q", project="p"),
+        _ev("тоже-не-дата", "read_article", project="p", filename="a.md"),
+    ]
+    assert build_golden(ev, max_gap_s=60)[0]["expected"] == {"p/a.md"}
+
+
+def test_build_golden_does_not_leak_internal_fields():
+    """Служебное поле окна не должно попадать в выдачу набора."""
+    golden = build_golden([
+        _ev("2026-01-01T10:00:00", "search", query="q", project="p"),
+        _ev("2026-01-01T10:00:05", "read_article", project="p", filename="a.md"),
+    ], max_gap_s=60)
+    assert "_dt" not in golden[0], f"утекло служебное поле: {golden[0].keys()}"
