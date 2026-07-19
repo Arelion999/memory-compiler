@@ -176,3 +176,24 @@ def test_warm_skips_reranker_when_disabled(monkeypatch):
 
     asyncio.run(_api.warm_models())
     assert loaded == [], "reranker загружен несмотря на выключенный флаг"
+
+
+def test_ui_styles_bare_pre_inside_card():
+    """Голый <pre> — прямой потомок .card — обязан переносить строки.
+
+    Регресс (замечен визуально 2026-07-19): у превью компиляции и блоков аналитики
+    своих стилей не было, браузерный дефолт white-space:pre не переносит — длинные
+    строки вылезали за правый край карточки. Селектор должен быть ПРЯМЫМ, иначе
+    заденет блоки кода в .body.rendered, где перенос не нужен."""
+    from memory_compiler.ui import WEB_HTML
+
+    assert ".card>pre{" in WEB_HTML, "нет правила для голого <pre> в карточке"
+    rule = WEB_HTML[WEB_HTML.index(".card>pre{"):]
+    rule = rule[:rule.index("}")]
+    assert "pre-wrap" in rule and "break-word" in rule, f"строки не переносятся: {rule}"
+    assert "overflow-x:auto" in rule, f"нет страховки на неразрывную строку: {rule}"
+    # блоки кода в отрендеренных статьях НЕ должны переноситься
+    code = WEB_HTML[WEB_HTML.index(".card .body.rendered pre{"):]
+    code = code[:code.index("}")]
+    assert "white-space:pre" in code and "pre-wrap" not in code, \
+        f"правило задело блоки кода — там перенос ломает форматирование: {code}"

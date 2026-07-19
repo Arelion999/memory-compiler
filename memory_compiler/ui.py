@@ -30,6 +30,14 @@ h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 .card h3{font-size:0.95em;color:var(--accent);margin-bottom:6px}
 .card .meta{font-size:0.8em;color:var(--text2);margin-bottom:8px}
 .card .body{white-space:pre-wrap;font-size:0.85em;color:var(--text);line-height:1.5;max-height:200px;overflow-y:auto}
+/* Голый <pre> — ПРЯМОЙ потомок карточки: превью компиляции и блоки аналитики.
+   Своих стилей у него не было вовсе, браузерный дефолт white-space:pre не переносит
+   строки — длинные («Уже в статье: «заголовок» → файл.md», списки имён файлов)
+   вылезали за правый край карточки. Селектор именно ПРЯМОЙ (.card>pre), чтобы не
+   задеть блоки кода внутри .body.rendered: там перенос не нужен и стоит своё
+   правило с overflow-x. pre-wrap + break-word переносят, overflow-x — страховка
+   на случай неразрывной строки (длинный путь без пробелов). */
+.card>pre{white-space:pre-wrap;word-break:break-word;overflow-x:auto;margin:0;font-size:0.85em;line-height:1.5;color:var(--text)}
 .snippet{background:#1a2332;border-left:3px solid var(--accent);padding:6px 10px;margin:6px 0;font-size:0.8em;font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;border-radius:4px;line-height:1.4}
 [data-theme=light] .snippet{background:#f0f6fc}
 mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-weight:600}
