@@ -224,3 +224,15 @@ def test_rrf_weight_zero_disables_channel(knowledge_dir, monkeypatch):
     only_kw = {r["file"] for r in whoosh_search("уникальныйтерм", project="testproj", limit=10)}
     assert "sem.md" not in only_kw, \
         f"при нулевом весе семантики её единственный документ не должен выживать: {only_kw}"
+
+
+def test_embed_model_ready_reflects_load_state(monkeypatch):
+    """Признак готовности модели: до загрузки False, после — True.
+
+    Без него состояние «модель ещё грузится» неотличимо снаружи от поломки:
+    /api/health отвечает ok (индекс открыт), а семантический запрос ждёт загрузки
+    под локом до таймаута клиента."""
+    monkeypatch.setattr(_smod, "_embed_model", None)
+    assert _smod.embed_model_ready() is False
+    monkeypatch.setattr(_smod, "_embed_model", object())
+    assert _smod.embed_model_ready() is True

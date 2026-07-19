@@ -238,6 +238,18 @@ _dirty_parents: set[str] = set()
 _deleted_parents: set[str] = set()
 
 
+def embed_model_ready() -> bool:
+    """Загружена ли embed-модель.
+
+    До загрузки первый семантический запрос ЖДЁТ её под _model_load_lock, и снаружи
+    это выглядит как зависание: /api/health отвечает `ok` (индекс-то открыт), а поиск
+    молчит до таймаута клиента. На NAS загрузка e5-base занимает минуты, поэтому
+    первый запрос после КАЖДОГО рестарта отваливался с -32001 — семь деплоев подряд
+    (2026-07-19). Прогрев на старте есть (api._warm_models), но пока он идёт, признака
+    «ещё не готово» не было нигде, и состояние путали со сбоем."""
+    return _embed_model is not None
+
+
 def get_embed_model() -> SentenceTransformer:
     global _embed_model
     if _embed_model is None:

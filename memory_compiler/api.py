@@ -35,6 +35,8 @@ from memory_compiler.handlers import (
 )
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
+import time as _time
+
 from memory_compiler import obs
 
 
@@ -277,9 +279,55 @@ async def web_save(request: Request):
     return JSONResponse({"result": result[0].text})
 
 
+async def warm_models() -> float:
+    """Прогреть ML-модели в фоне. Возвращает длительность в секундах (0.0 при сбое).
+
+    Модели грузятся лениво при ПЕРВОМ запросе, и на NAS это минуты: семь деплоев
+    подряд (2026-07-19) заканчивались тем, что первый поиск падал в таймаут клиента
+    (-32001), хотя /api/health уже отвечал `ok`. Прогрев переносит эту плату на старт.
+
+    Два расхода, а не один: конструирование модели И первый forward-pass. Раньше
+    прогревалось только первое, поэтому первый живой запрос всё равно платил за
+    инициализацию токенизатора и аллокации. Поэтому здесь гоняется фиктивный encode.
+
+    Вынесено из lifespan в модульную функцию, чтобы поведение можно было проверить
+    тестом, а не чтением исходника.
+    """
+    loop = asyncio.get_event_loop()
+    # Логируем СТРУКТУРНО, а не только print: stdout уходит в docker-логи, доступные
+    # лишь root на NAS. Из-за этого длительность прогрева нельзя было измерить снаружи
+    # вообще — её приходилось выводить из таймаутов клиента.
+    log = obs.get_logger("warm")
+    t0 = _time.monotonic()
+    log.info("model preload started", extra={"model": _search_mod.EMBED_MODEL_NAME})
+    try:
+        await loop.run_in_executor(None, _search_mod.get_embed_model)
+        await loop.run_in_executor(None, _search_mod.encode_query, "прогрев")
+        # Выключенный reranker не грузим вовсе: это ~0.6 ГБ RSS и секунды старта за
+        # модель, которая по замеру ничего не даёт (см. RERANK_ENABLED).
+        if RERANK_ENABLED:
+            await loop.run_in_executor(None, _search_mod.get_reranker_model)
+        dt = _time.monotonic() - t0
+        log.info("model preload done", extra={"seconds": round(dt, 1),
+                                              "reranker": RERANK_ENABLED})
+        print(f"[warm] ML models preloaded за {dt:.0f} с (embed"
+              + (" + reranker)" if RERANK_ENABLED else ", reranker выключен)"))
+        return dt
+    except Exception as e:
+        log.warning("model preload failed", extra={"err": str(e)})
+        print(f"[warm] model preload failed (lazy-load on first use): {e}")
+        return 0.0
+
+
 async def web_health(request: Request):
     ix = get_index()
-    payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count()}
+    # models_ready отдаётся ПУБЛИЧНО (как status/version/documents): это состояние
+    # сервера, а не сведения о базе. Без него «поиск молчит» неотличимо от «сервер
+    # сломан» — health отвечает ok, потому что индекс открыт, а семантический запрос
+    # в это время ждёт загрузки модели под локом. Именно так выглядели семь деплоев
+    # подряд (2026-07-19): первый поиск после каждого падал в таймаут клиента.
+    payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count(),
+               "models_ready": _search_mod.embed_model_ready()}
     # Детали (имена проектов = клиентов, размеры, usage-счётчики) — только под
     # настроенным auth. Публичный /api/health нужен Docker healthcheck (без токена),
     # поэтому он отдаёт лишь status/version/documents, без разведданных о базе.
@@ -842,20 +890,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         # лениво при ПЕРВОМ search. На NAS холодная загрузка bge-reranker-v2-m3 +
         # предикт не укладывались в MCP-таймаут клиента → первый поиск падал в -32001.
         # Грузим заранее в executor'е, не блокируя старт; к первому запросу модели готовы.
-        async def _warm_models():
-            loop = asyncio.get_event_loop()
-            try:
-                await loop.run_in_executor(None, _search_mod.get_embed_model)
-                # Выключенный reranker не грузим вовсе: это ~0.6 ГБ RSS и секунды старта
-                # за модель, которая по замеру ничего не даёт (см. RERANK_ENABLED).
-                if RERANK_ENABLED:
-                    await loop.run_in_executor(None, _search_mod.get_reranker_model)
-                print("[warm] ML models preloaded (embed"
-                      + (" + reranker)" if RERANK_ENABLED else ", reranker выключен)"))
-            except Exception as e:
-                print(f"[warm] model preload failed (lazy-load on first use): {e}")
-
-        warm_task = asyncio.create_task(_warm_models())  # strong ref: avoid GC
+        warm_task = asyncio.create_task(warm_models())  # strong ref: avoid GC
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
 
