@@ -195,3 +195,32 @@ def test_pool_never_below_legacy_width(knowledge_dir, monkeypatch):
     results = whoosh_search("docker", project="testproj", limit=15)
     assert len(results) > 5, \
         f"пул сузился до SEARCH_POOL и обрезал выдачу: получено {len(results)}"
+
+
+def test_rrf_channel_weights_default_neutral():
+    """Дефолт — равные веса каналов: поведение прежнее, замер ничего не изменил."""
+    assert _smod.RRF_WEIGHT_BM25 == 1.0
+    assert _smod.RRF_WEIGHT_SEMANTIC == 1.0
+
+
+def test_rrf_weight_zero_disables_channel(knowledge_dir, monkeypatch):
+    """Вес 0 отключает канал: документ, найденный ТОЛЬКО им, выпадает из выдачи.
+
+    Ручка нужна для дешёвого перезамера (замер 2026-07-19 значимого выигрыша не дал,
+    но при большем наборе вопрос откроется снова)."""
+    proj = knowledge_dir / "testproj"
+    (proj / "kw.md").write_text(
+        "# Ключевая\n\n**Теги:** t\n\nтело про уникальныйтерм\n", encoding="utf-8")
+    (proj / "sem.md").write_text(
+        "# Семантическая\n\n**Теги:** t\n\nсовсем другое\n", encoding="utf-8")
+    rebuild_index()
+    monkeypatch.setattr(_smod, "semantic_search",
+                        lambda q, limit=10, keep=None: [("testproj/sem.md", 0.9)])
+
+    both = {r["file"] for r in whoosh_search("уникальныйтерм", project="testproj", limit=10)}
+    assert {"kw.md", "sem.md"} <= both, f"при равных весах должны быть оба: {both}"
+
+    monkeypatch.setattr(_smod, "RRF_WEIGHT_SEMANTIC", 0.0)
+    only_kw = {r["file"] for r in whoosh_search("уникальныйтерм", project="testproj", limit=10)}
+    assert "sem.md" not in only_kw, \
+        f"при нулевом весе семантики её единственный документ не должен выживать: {only_kw}"

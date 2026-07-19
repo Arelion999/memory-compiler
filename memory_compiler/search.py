@@ -161,6 +161,20 @@ SPLADE_ENABLED = _os_embed.environ.get("SPLADE_ENABLED", "false").lower() in ("1
 # — самые дешёвые в проекте. Дефолты = историческое поведение, менять только по замеру
 # (scripts/eval_ranking.py).
 RRF_K = int(_os_embed.environ.get("RRF_K", "60"))          # константа RRF (Cormack et al., 2009)
+# Вес каналов в RRF: score(d) = Σ_канал w_канал / (RRF_K + rank_канал(d)).
+# Значение имеет только ОТНОШЕНИЕ весов (общий множитель уходит в масштаб скора).
+# Замер на очищенном наборе (n=132, 2026-07-19, scripts/eval_pipeline.py + бутстрэп):
+#   вес BM25 x1 (дефолт)  MRR 0.5212  recall@1 0.3939
+#   вес BM25 x2           MRR 0.5435  recall@1 0.4242   ΔMRR +0.0223, ДИ [-0.0008, +0.0466]
+#   только BM25 (sem=0)   MRR 0.5493  recall@1 0.4470   ΔMRR +0.0281, ДИ [-0.0158, +0.0738]
+#   только семантика      MRR 0.4564  recall@1 0.3258
+# Дефолты НЕ изменены: ни одна конфигурация не значима, а у «только BM25» запросов
+# стало ХУЖЕ больше, чем лучше (27 против 25) — прирост MRR держится на нескольких
+# крупных улучшениях, перекрывающих чуть более многочисленные ухудшения. Дальнейшее
+# уточнение упирается не в идеи, а в мощность набора: при n=132 различимы только
+# сдвиги от ~0.024 MRR.
+RRF_WEIGHT_BM25 = float(_os_embed.environ.get("RRF_WEIGHT_BM25", "1.0"))
+RRF_WEIGHT_SEMANTIC = float(_os_embed.environ.get("RRF_WEIGHT_SEMANTIC", "1.0"))
 # Доля temporal decay в итоговом скоре: score = rrf * 3000 * ((1-w) + w*decay).
 # w=0 — свежесть не влияет вовсе, w=1 — влияет максимально.
 DECAY_WEIGHT = float(_os_embed.environ.get("DECAY_WEIGHT", "0.3"))
@@ -1241,9 +1255,9 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     for path in all_paths:
         rrf = 0.0
         if path in bm25_rank:
-            rrf += 1.0 / (RRF_K + bm25_rank[path])
+            rrf += RRF_WEIGHT_BM25 / (RRF_K + bm25_rank[path])
         if path in sem_rank:
-            rrf += 1.0 / (RRF_K + sem_rank[path])
+            rrf += RRF_WEIGHT_SEMANTIC / (RRF_K + sem_rank[path])
         if path in splade_rank:
             rrf += 1.0 / (RRF_K + splade_rank[path])
 
