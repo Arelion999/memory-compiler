@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory_compiler import search as S  # noqa: E402
 from memory_compiler.config import KNOWLEDGE_DIR  # noqa: E402
 from memory_compiler.retrieval_eval import (  # noqa: E402
-    parse_audit, build_golden, filter_existing, evaluate,
+    load_golden, evaluate,
 )
 
 K = str(KNOWLEDGE_DIR)
@@ -43,7 +43,7 @@ def main():
     S.load_embeddings()
     print("эмбеддингов:", len(S.snapshot_embeddings()))
 
-    golden = filter_existing(build_golden(parse_audit(K + "/_audit.log")), K)
+    golden = load_golden(K, S.in_search_scope)
     print("golden-запросов:", len(golden), "\n")
 
     def hybrid(query, project, limit):

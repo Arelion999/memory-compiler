@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory_compiler import search as S  # noqa: E402
 from memory_compiler.config import KNOWLEDGE_DIR  # noqa: E402
 from memory_compiler.retrieval_eval import (  # noqa: E402
-    parse_audit, build_golden, filter_existing, evaluate,
+    load_golden, evaluate,
 )
 
 K = str(KNOWLEDGE_DIR)
@@ -46,7 +46,7 @@ def main():
     print("индекс: %s статей за %.1f с | эмбеддинги: %d чанков за %.1f с"
           % (n_idx, t_idx, n_chunks, t_emb))
 
-    golden = filter_existing(build_golden(parse_audit(K + "/_audit.log")), K)
+    golden = load_golden(K, S.in_search_scope)
     sample = golden[-take:] if take else golden
     print("golden: %d (в выборке %d)" % (len(golden), len(sample)))
 

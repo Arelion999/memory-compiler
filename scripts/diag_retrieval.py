@@ -5,15 +5,16 @@
 не меняет ничего — он разбирает конвейер на этапы и говорит, на каком именно
 теряется ожидаемая статья:
 
-  1. нет даже в широком пуле (WIDE по каждому каналу) — проблема представления
-     (индекс/чанки/эмбеддинги), ранжированием не лечится;
-  2. есть в широком, но не в узком (limit*2) — добор кандидатов мал;
-  3. была в пуле, но выпала на скоупе проекта — скоуп применяется ПОСЛЕ выборки;
-  4. дошла до слияния, но срезана порогом отсечки;
-  5. в выдаче, но не первой — вот это и есть работа для ранжирования.
+  1. в выдаче первой — попадание;
+  2. в выдаче, но не первой — работа для ранжирования;
+  3. была в топ-LIMIT слияния, но не дошла до выдачи — виновата отсечка по скору;
+  4. в слиянии, но ниже LIMIT-го места — снова ранжирование, порог ни при чём;
+  5. есть в широком пуле (WIDE), но не в боевом — мал добор кандидатов;
+  6. нет даже в широком — проблема ПРЕДСТАВЛЕНИЯ (нарезка/эмбеддинги/маскировка
+     секретных статей) либо мусор в самом golden-наборе; ранжированием не лечится.
 
-Размер группы (2) + (3) — это потолок, который может дать починка выборки
-кандидатов. Размер (5) — потолок, который может дать тюнинг весов/бустов.
+Размер (5) — потолок починки выборки кандидатов, (3) — потолок починки отсечки,
+(2)+(4) — всё, на что вообще способен тюнинг ранжирования.
 
 Ничего не пишет в базу: только читает индекс и .embeddings.pkl. Безопасен на проде.
 
@@ -38,11 +39,13 @@ from whoosh.scoring import BM25F  # noqa: E402
 from memory_compiler import search as S  # noqa: E402
 from memory_compiler.config import KNOWLEDGE_DIR, decay_factor  # noqa: E402
 from memory_compiler.retrieval_eval import (  # noqa: E402
-    parse_audit, build_golden, filter_existing,
+    load_golden,
 )
 
 K = str(KNOWLEDGE_DIR)
-WIDE = 200          # «широкий» пул: сколько кандидатов канал МОГ БЫ отдать
+# «Широкий» пул — сколько кандидатов канал МОГ БЫ отдать. Должен быть заметно шире
+# боевого SEARCH_POOL, иначе категория «есть в широком, нет в узком» вырождается.
+WIDE = 500
 LIMIT = 10          # как в замерах (eval_ranking / eval_chunking)
 
 
@@ -56,10 +59,7 @@ def _rank_of(paths, expected) -> int | None:
 
 def _scoped(paths, project):
     """Отфильтровать по проекту ТАК ЖЕ, как это делает whoosh_search."""
-    if project == "all":
-        return list(paths)
-    return [p for p in paths
-            if p.startswith(project + "/") or p in S._shared_paths]
+    return [p for p in paths if S.in_search_scope(p, project)]
 
 
 def diag_one(ix, item):
@@ -68,7 +68,10 @@ def diag_one(ix, item):
     expected = item["expected"]
 
     # ── канал BM25F ──────────────────────────────────────────────────────
-    group = AndGroup if len(query_str.split()) > 1 else OrGroup
+    # Группировка и скоуп берутся из БОЕВОЙ конфигурации, иначе разбор описывал бы
+    # не тот конвейер, который работает в проде.
+    multiword = len(query_str.split()) > 1
+    group = OrGroup if (S.SEARCH_QUERY_GROUP == "or" or not multiword) else AndGroup
     parser = MultifieldParser(["title", "tags", "body"], schema=ix.schema, group=group)
     parser.add_plugin(FuzzyTermPlugin())
     try:
@@ -76,34 +79,38 @@ def diag_one(ix, item):
     except Exception:
         q = None
 
+    filt = S._scope_filter(project)
     bm_wide = []
     if q is not None:
         with ix.searcher(weighting=BM25F(title_B=S.BM25_TITLE_B, tags_B=S.BM25_TAGS_B,
                                          body_B=S.BM25_BODY_B)) as s:
-            bm_wide = [h["path"] for h in s.search(q, limit=WIDE)]
+            bm_wide = [h["path"] for h in s.search(q, limit=WIDE, filter=filt)]
 
-    # Тот же запрос через OrGroup — оценить, сколько отнимает требование «все термы».
-    parser_or = MultifieldParser(["title", "tags", "body"], schema=ix.schema, group=OrGroup)
-    parser_or.add_plugin(FuzzyTermPlugin())
-    bm_or_wide = []
+    # Контрольный прогон противоположной группировкой — видно цену выбора.
+    alt_group = AndGroup if group is OrGroup else OrGroup
+    parser_alt = MultifieldParser(["title", "tags", "body"], schema=ix.schema, group=alt_group)
+    parser_alt.add_plugin(FuzzyTermPlugin())
+    bm_alt_wide = []
     try:
-        q_or = parser_or.parse(query_str)
+        q_alt = parser_alt.parse(query_str)
         with ix.searcher(weighting=BM25F(title_B=S.BM25_TITLE_B, tags_B=S.BM25_TAGS_B,
                                          body_B=S.BM25_BODY_B)) as s:
-            bm_or_wide = [h["path"] for h in s.search(q_or, limit=WIDE)]
+            bm_alt_wide = [h["path"] for h in s.search(q_alt, limit=WIDE, filter=filt)]
     except Exception:
         pass
 
     # ── канал семантики ──────────────────────────────────────────────────
     # top-N отсортирован, поэтому узкий пул — префикс широкого (один вызов на оба).
+    keep = (lambda p: S.in_search_scope(p, project)) if S.SEARCH_SCOPE_AWARE else None
     try:
-        sem_wide = [p for p, _ in S.semantic_search(query_str, limit=WIDE)]
+        sem_wide = [p for p, _ in S.semantic_search(query_str, limit=WIDE, keep=keep)]
     except Exception:
         sem_wide = []
 
-    # ── как это видит прод: узкий пул (limit*2), затем скоуп ─────────────
-    bm_narrow = bm_wide[:LIMIT * 2]
-    sem_narrow = sem_wide[:LIMIT * 2]
+    # ── как это видит прод: боевая ширина пула, затем скоуп ──────────────
+    pool = max(S.SEARCH_POOL, LIMIT * 2)
+    bm_narrow = bm_wide[:pool]
+    sem_narrow = sem_wide[:pool]
     bm_final = _scoped(bm_narrow, project)
     sem_final = _scoped(sem_narrow, project)
 
@@ -117,11 +124,12 @@ def diag_one(ix, item):
             rrf += 1.0 / (S.RRF_K + bm_rank[path])
         if path in sem_rank:
             rrf += 1.0 / (S.RRF_K + sem_rank[path])
-        score = round(rrf * 3000 * ((1.0 - S.DECAY_WEIGHT)
-                                    + S.DECAY_WEIGHT * decay_factor(path)), 1)
-        merged.append((path, score))
-    merged.sort(key=lambda x: -x[1])
-    merged_paths = [p for p, _ in merged]
+        raw = rrf * 3000 * ((1.0 - S.DECAY_WEIGHT)
+                            + S.DECAY_WEIGHT * decay_factor(path))
+        merged.append((path, round(raw, 1), raw))
+    # Порядок как в проде: по сырому скору, при равенстве — по пути.
+    merged.sort(key=lambda x: (-x[2], x[0]))
+    merged_paths = [p for p, _, _ in merged]
 
     # отсечка, как в whoosh_search
     after_cut = []
@@ -129,7 +137,7 @@ def diag_one(ix, item):
         top = merged[0][1]
         if top >= 35:
             thr = max(top * 0.5, 32)
-            after_cut = [p for p, sc in merged if sc >= thr][:LIMIT]
+            after_cut = [p for p, sc, _ in merged if sc >= thr][:LIMIT]
         elif top >= 18:
             after_cut = merged_paths[:3]      # мягкий путь, приближённо
 
@@ -151,11 +159,16 @@ def diag_one(ix, item):
         cat = "1_первой"
     elif r_real is not None:
         cat = "2_в_выдаче_не_первой"
-    elif r_merged is not None:
+    elif r_merged is not None and r_merged <= LIMIT:
+        # Цель была в топ-LIMIT слияния, но до выдачи не дошла — значит её убрала
+        # именно отсечка по скору. Только это и лечится порогом.
         cat = "3_срезана_порогом"
-    elif r_bm_final is None and r_sem_final is None and (
-            r_bm_narrow is not None or r_sem_narrow is not None):
-        cat = "4_выпала_на_скоупе"
+    elif r_merged is not None:
+        # Цель в пуле, но ниже LIMIT-го места: порог ни при чём, это ранжирование.
+        # Разделение важно: без него обе причины сливались в одну строку и
+        # выглядели как «виноват порог» (на замере 2026-07-19 порог не был виноват
+        # НИ РАЗУ из 25 — все цели лежали на 11-м месте и глубже).
+        cat = "4_глубоко_в_слиянии"
     elif r_bm_wide is not None or r_sem_wide is not None:
         cat = "5_есть_в_широком_нет_в_узком"
     else:
@@ -167,9 +180,9 @@ def diag_one(ix, item):
         "words": len(query_str.split()),
         "scoped": project != "all",
         "expected": sorted(expected),
-        "bm25_and_hits": len(bm_wide),
-        "bm25_or_hits": len(bm_or_wide),
-        "bm25_and_empty": len(bm_wide) == 0,
+        "bm25_hits": len(bm_wide),
+        "bm25_alt_hits": len(bm_alt_wide),
+        "bm25_empty": len(bm_wide) == 0,
         "pool_bm_narrow": len(bm_narrow),
         "pool_bm_after_scope": len(bm_final),
         "pool_sem_narrow": len(sem_narrow),
@@ -199,7 +212,7 @@ def main():
     print(f"_shared_paths: {len(S._shared_paths)} "
           f"({'ПУСТ — кросс-проектные статьи не работают' if not S._shared_paths else 'заполнен'})")
 
-    golden = filter_existing(build_golden(parse_audit(K + "/_audit.log")), K)
+    golden = load_golden(K, S.in_search_scope)
     sample = golden[-take:] if take else golden
     print(f"golden-запросов: {len(golden)} (в выборке {len(sample)})\n")
 
@@ -223,17 +236,17 @@ def main():
     print(f"  воспроизведение выдачи прода:  {sum(r['repro_ok'] for r in rows)}/{n}"
           f"  (расхождения = недетерминированный тай-брейк)")
 
-    print(f"\n  ── AndGroup: требование «все термы» ──")
-    empty = [r for r in rows if r["bm25_and_empty"]]
+    print(f"\n  ── группировка термов (сейчас {S.SEARCH_QUERY_GROUP!r}) ──")
+    empty = [r for r in rows if r["bm25_empty"]]
     print(f"  запросов с ПУСТЫМ каналом BM25: {len(empty)} ({100 * len(empty) / n:.0f}%)")
-    rescued = [r for r in empty if r["bm25_or_hits"] > 0]
-    print(f"  из них OrGroup нашёл бы хоть что-то: {len(rescued)}")
+    rescued = [r for r in empty if r["bm25_alt_hits"] > 0]
+    print(f"  из них другая группировка нашла бы что-то: {len(rescued)}")
     by_words: dict[int, list] = {}
     for r in rows:
         by_words.setdefault(min(r["words"], 6), []).append(r)
     for w in sorted(by_words):
         g = by_words[w]
-        e = sum(x["bm25_and_empty"] for x in g)
+        e = sum(x["bm25_empty"] for x in g)
         print(f"    {w}{'+' if w == 6 else ' '} слов: {len(g):>3} запр., пустой BM25 у {e:>3}"
               f" ({100 * e / len(g):>3.0f}%)")
 
@@ -257,15 +270,15 @@ def main():
     for cat in sorted(cats):
         print(f"  {cat:<30} {cats[cat]:>4}  ({100 * cats[cat] / n:>4.1f}%)")
 
-    headroom = cats.get("4_выпала_на_скоупе", 0) + cats.get("5_есть_в_широком_нет_в_узком", 0)
-    ranking = cats.get("2_в_выдаче_не_первой", 0)
+    headroom = cats.get("5_есть_в_широком_нет_в_узком", 0)
+    ranking = cats.get("2_в_выдаче_не_первой", 0) + cats.get("4_глубоко_в_слиянии", 0)
     cut = cats.get("3_срезана_порогом", 0)
-    print(f"\n  потолок починки ВЫБОРКИ кандидатов (4+5): {headroom} запр. "
+    print(f"\n  потолок починки ВЫБОРКИ кандидатов (5):   {headroom} запр. "
           f"({100 * headroom / n:.1f} п.п. recall)")
     print(f"  потолок починки ОТСЕЧКИ (3):              {cut} запр. "
           f"({100 * cut / n:.1f} п.п. recall)")
-    print(f"  потолок тюнинга РАНЖИРОВАНИЯ (2):         {ranking} запр. "
-          f"(это всё, на что могут влиять бусты полей)")
+    print(f"  потолок тюнинга РАНЖИРОВАНИЯ (2+4):       {ranking} запр. "
+          f"(цель в пуле, вопрос только в порядке)")
     print(f"  недостижимо без работы с представлением:  {cats.get('6_нет_даже_в_широком', 0)} запр.")
     print(f"\nпо-запросный разбор: {out_path}")
 
