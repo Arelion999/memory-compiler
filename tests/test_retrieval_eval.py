@@ -4,7 +4,10 @@
 проверена: ошибка в подсчёте recall/MRR или в сборке golden-набора привела бы к
 неверному выводу «стало лучше/хуже» и к изменению чанкования на ложных основаниях.
 """
+import json
+
 from memory_compiler.retrieval_eval import (
+    filter_reachable, load_golden,
     build_golden, evaluate, filter_existing, build_known_item_set,
 )
 
@@ -205,3 +208,77 @@ def test_evaluate_respects_limit():
 def test_evaluate_empty_golden():
     res = evaluate([], lambda q, p, l: [])
     assert res["n"] == 0 and res["mrr"] == 0.0
+
+
+# ─── Отсев недостижимых ожиданий (v1.32.0) ───────────────────────────────────
+
+def _scope(path, project):
+    """Упрощённый in_search_scope: проект по префиксу пути, shared — везде."""
+    return project == "all" or path.startswith(project + "/") or path.endswith("shared.md")
+
+
+def test_filter_reachable_drops_out_of_scope():
+    """Ожидание в ЧУЖОМ проекте недостижимо: скоуп запроса его исключает.
+
+    Замер на живом логе (2026-07-19): 35 пар из 299 указывали вне скоупа —
+    поиск не мог их вернуть физически, а метрика засчитывала это как промах."""
+    golden = [{"query": "q", "project": "a", "expected": {"a/ok.md", "b/чужая.md"}}]
+    out = filter_reachable(golden, _scope)
+    assert out[0]["expected"] == {"a/ok.md"}
+
+
+def test_filter_reachable_keeps_shared():
+    """Кросс-проектная статья достижима из любого проекта — не отсеивать."""
+    golden = [{"query": "q", "project": "a", "expected": {"b/shared.md"}}]
+    assert filter_reachable(golden, _scope)[0]["expected"] == {"b/shared.md"}
+
+
+def test_filter_reachable_drops_query_without_reachable_expectations():
+    """Если ВСЕ ожидания вне скоупа, запрос выпадает целиком: измерять нечего."""
+    golden = [
+        {"query": "q1", "project": "a", "expected": {"b/x.md", "c/y.md"}},
+        {"query": "q2", "project": "a", "expected": {"a/z.md"}},
+    ]
+    out = filter_reachable(golden, _scope)
+    assert [g["query"] for g in out] == ["q2"]
+
+
+def test_filter_reachable_project_all_keeps_everything():
+    """При project='all' скоупа нет — отсеивать нечего."""
+    golden = [{"query": "q", "project": "all", "expected": {"b/x.md", "c/y.md"}}]
+    assert filter_reachable(golden, _scope)[0]["expected"] == {"b/x.md", "c/y.md"}
+
+
+def test_filter_reachable_does_not_mutate_input():
+    """Отсев возвращает новые записи: исходный набор нужен для сравнения с историей."""
+    golden = [{"query": "q", "project": "a", "expected": {"a/ok.md", "b/чужая.md"}}]
+    filter_reachable(golden, _scope)
+    assert golden[0]["expected"] == {"a/ok.md", "b/чужая.md"}
+
+
+def test_load_golden_applies_both_filters(tmp_path):
+    """load_golden — единая точка сборки: разбор, отсев удалённых, отсев недостижимых."""
+    kd = tmp_path / "knowledge"
+    (kd / "a").mkdir(parents=True)
+    (kd / "b").mkdir(parents=True)
+    (kd / "a" / "ok.md").write_text("# ok", encoding="utf-8")
+    (kd / "b" / "чужая.md").write_text("# чужая", encoding="utf-8")
+    (kd / "_audit.log").write_text(
+        json.dumps({"ts": "2026-01-01T10:00:00", "tool": "search",
+                    "args": {"query": "запрос", "project": "a"}}, ensure_ascii=False) + "\n"
+        + json.dumps({"ts": "2026-01-01T10:01:00", "tool": "read_article",
+                      "args": {"project": "a", "filename": "ok.md"}}, ensure_ascii=False) + "\n"
+        + json.dumps({"ts": "2026-01-01T10:02:00", "tool": "read_article",
+                      "args": {"project": "b", "filename": "чужая.md"}}, ensure_ascii=False) + "\n"
+        + json.dumps({"ts": "2026-01-01T10:03:00", "tool": "read_article",
+                      "args": {"project": "a", "filename": "удалённая.md"}}, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+
+    # Режим совместимости: без предиката недостижимые остаются (историческое поведение).
+    compat = load_golden(kd)
+    assert compat[0]["expected"] == {"a/ok.md", "b/чужая.md"}, \
+        "без in_scope отсев недостижимых включаться не должен"
+
+    clean = load_golden(kd, _scope)
+    assert clean[0]["expected"] == {"a/ok.md"}, \
+        "удалённая должна выпасть по filter_existing, чужая — по filter_reachable"
