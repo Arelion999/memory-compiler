@@ -1047,7 +1047,7 @@ history: []
 
 def test_version_regex_does_not_match_ip_octets():
     """Version regex must NOT capture the first 3 octets of an IPv4 address.
-    `\\d+\\.\\d+\\.\\d+` was greedy enough to match '51.79.124' inside IP
+    `\\d+\\.\\d+\\.\\d+` was greedy enough to match '80.81.82' inside IP
     '80.81.82.83', poisoning auto_update_tracking for version fields."""
     from memory_compiler.storage import _FACT_PATTERNS
     text = "Attacker C2 server at 80.81.82.83 was spotted."

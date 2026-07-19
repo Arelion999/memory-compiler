@@ -2446,7 +2446,7 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
 _FACT_PATTERNS = {
     # Version: \d+.\d+.\d+ but NOT followed by another .\d — that would make it an IP.
     # Previous version w/o this guard captured the first 3 octets of '80.81.82.83' as
-    # version '51.79.124', poisoning auto_update_tracking for every key matching version.
+    # version '80.81.82', poisoning auto_update_tracking for every key matching version.
     "version": re.compile(
         # Lookbehind: not preceded by digit+dot (would mean we're mid-IP)
         # Lookahead:  not followed by dot+digit  (would mean another octet)
