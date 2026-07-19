@@ -7,7 +7,7 @@
 import json
 
 from memory_compiler.retrieval_eval import (
-    filter_reachable, load_golden,
+    filter_reachable, load_golden, compare, per_query_rr, format_comparison,
     build_golden, evaluate, filter_existing, build_known_item_set,
 )
 
@@ -345,3 +345,80 @@ def test_build_golden_does_not_leak_internal_fields():
         _ev("2026-01-01T10:00:05", "read_article", project="p", filename="a.md"),
     ], max_gap_s=60)
     assert "_dt" not in golden[0], f"утекло служебное поле: {golden[0].keys()}"
+
+
+# ─── Сравнение конфигураций: бутстрэп + разбивка по запросам (v1.39.0) ───────
+
+def _ranker(order):
+    """Ретривер, всегда возвращающий фиксированный порядок."""
+    return lambda q, p, l: order
+
+
+def test_compare_identical_configs_shows_no_difference():
+    golden = [{"query": f"q{i}", "project": "all", "expected": {"p/a.md"}} for i in range(20)]
+    r = _ranker(["p/a.md", "p/b.md"])
+    res = compare(golden, r, r, resamples=500)
+    assert res["delta"] == 0.0
+    assert res["better"] == 0 and res["worse"] == 0
+    assert res["significant"] is False, "нулевая разница не может быть значимой"
+
+
+def test_compare_detects_uniform_improvement():
+    """Улучшение во ВСЕХ запросах обязано быть значимым: ДИ не накрывает ноль."""
+    golden = [{"query": f"q{i}", "project": "all", "expected": {"p/target.md"}}
+              for i in range(30)]
+    worse = _ranker(["p/x.md", "p/y.md", "p/target.md"])   # ранг 3
+    better = _ranker(["p/target.md"])                       # ранг 1
+    res = compare(golden, worse, better, resamples=2000)
+    assert res["delta"] > 0 and res["better"] == 30 and res["worse"] == 0
+    assert res["significant"] is True
+    assert res["ci_low"] > 0, f"ДИ должен быть строго положительным: {res}"
+
+
+def test_compare_flags_gain_built_on_more_regressions():
+    """ГЛАВНЫЙ СЛУЧАЙ, ради которого функция и написана.
+
+    Средний MRR растёт, но запросов стало хуже БОЛЬШЕ, чем лучше: прирост держится
+    на нескольких крупных улучшениях. Так выглядело «выбросить семантику» (замер
+    2026-07-19): MRR 0.5212 → 0.5493 при 25 улучшениях против 27 ухудшений."""
+    golden = [{"query": f"q{i}", "project": "all", "expected": {"p/t.md"}} for i in range(10)]
+
+    def base(q, p, l):
+        return ["p/x.md"] * 9 + ["p/t.md"]          # ранг 10 у всех
+
+    def variant(q, p, l):
+        # два запроса взлетают на 1-е место, шесть слегка проседают
+        idx = int(q[1:])
+        if idx < 2:
+            return ["p/t.md"]
+        if idx < 8:
+            return ["p/x.md"] * 10                  # промах
+        return ["p/x.md"] * 9 + ["p/t.md"]
+
+    res = compare(golden, base, variant, resamples=1000)
+    assert res["delta"] > 0, "по среднему вариант выглядит лучше"
+    assert res["worse"] > res["better"], "но ухудшений больше — это и надо увидеть"
+    assert "⚠️" in format_comparison(res), "вывод обязан предупреждать о такой картине"
+
+
+def test_compare_is_deterministic():
+    """Два прогона на одних данных дают одинаковый ДИ: иначе значимость сама шумит."""
+    golden = [{"query": f"q{i}", "project": "all", "expected": {"p/t.md"}} for i in range(15)]
+    a = _ranker(["p/x.md", "p/t.md"])
+    b = _ranker(["p/t.md"])
+    r1 = compare(golden, a, b, resamples=800)
+    r2 = compare(golden, a, b, resamples=800)
+    assert r1 == r2
+
+
+def test_per_query_rr_marks_misses_as_zero():
+    golden = [
+        {"query": "q1", "project": "all", "expected": {"p/a.md"}},
+        {"query": "q2", "project": "all", "expected": {"p/нет.md"}},
+    ]
+    assert per_query_rr(golden, _ranker(["p/a.md", "p/b.md"])) == [1.0, 0.0]
+
+
+def test_compare_handles_empty_golden():
+    res = compare([], _ranker([]), _ranker([]))
+    assert res["n"] == 0 and res["significant"] is False
