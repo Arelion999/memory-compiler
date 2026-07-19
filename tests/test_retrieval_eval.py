@@ -61,18 +61,31 @@ def test_golden_drops_queries_without_opens():
     assert [x["query"] for x in g] == ["с результатом"]
 
 
-def test_golden_ignores_start_task():
-    """start_task ОТВЕРГНУТ как источник (замер 2026-07-19): он закрывал предыдущий
-    запрос и переназначал клик с полноценного поискового запроса на описание задачи —
-    набор становился шумнее. Клик должен остаться за поиском."""
+def test_start_task_is_boundary_not_source():
+    """start_task не источник И не прозрачен — он ГРАНИЦА задачи.
+
+    Две отдельные вещи, обе установлены замером:
+      * как ИСТОЧНИК отвергнут (v1.29.0): становясь «запросом», он переназначал клики
+        с полноценных поисковых фраз на описания задач, и набор становился шумнее;
+      * как ГРАНИЦА принят (v1.40.0): работа сменилась, и открытие после него относится
+        к новой задаче, а не к предыдущему поиску. Раньше клик доставался поиску —
+        теперь отбрасывается, и это осознанное изменение семантики."""
     entries = [
         _q("search", query="бэкап NAS Synology offsite", project="infra"),
         _q("start_task", topic="Доработка макета НИКС_ПФ_MXL", project="infra"),
         _open("infra", "backup.md"),
     ]
-    g = build_golden(entries)
-    assert [x["query"] for x in g] == ["бэкап NAS Synology offsite"], \
-        "start_task перехватил клик у настоящего поискового запроса"
+    assert build_golden(entries) == [], \
+        "открытие после смены задачи не принадлежит предыдущему поиску"
+
+    # А до границы клик по-прежнему за поиском.
+    entries_before = [
+        _q("search", query="бэкап NAS Synology offsite", project="infra"),
+        _open("infra", "backup.md"),
+        _q("start_task", topic="Другая задача", project="infra"),
+    ]
+    g = build_golden(entries_before)
+    assert [x["query"] for x in g] == ["бэкап NAS Synology offsite"]
     assert g[0]["expected"] == {"infra/backup.md"}
 
 
@@ -422,3 +435,70 @@ def test_per_query_rr_marks_misses_as_zero():
 def test_compare_handles_empty_golden():
     res = compare([], _ranker([]), _ranker([]))
     assert res["n"] == 0 and res["significant"] is False
+
+
+# ─── Граница задачи закрывает ожидание (v1.40.0) ─────────────────────────────
+
+def test_boundary_tool_closes_pending_query():
+    """finish_task между запросом и открытием: работа сменилась, клик не за поиском.
+
+    Признак СОБЫТИЙНЫЙ, а не временной, и данные разделяются им резко (455 пар живого
+    лога): без смены работы медиана разрыва 12 с и максимум 552 с, со сменой — медиана
+    13475 с и 78.8% дольше получаса."""
+    g = build_golden([
+        _q("search", query="запрос", project="p"),
+        {"tool": "finish_task", "args": {"topic": "другая задача"}, "ts": "2026-07-18 10:00:30"},
+        _open("p", "после_смены.md"),
+    ])
+    assert g == [], f"открытие после смены работы не должно засчитываться: {g}"
+
+
+def test_boundary_does_not_drop_reads_before_it():
+    """Открытия ДО смены работы остаются за запросом — обрезается только хвост."""
+    g = build_golden([
+        _q("search", query="запрос", project="p"),
+        _open("p", "своя.md"),
+        {"tool": "save_lesson", "args": {"topic": "новое"}, "ts": "2026-07-18 10:01:00"},
+        _open("p", "чужая.md"),
+    ])
+    assert len(g) == 1 and g[0]["expected"] == {"p/своя.md"}
+
+
+def test_browsing_results_is_not_a_boundary():
+    """Другие read_article — это листание выдачи, а не смена работы.
+
+    237 пар, где между запросом и открытием были только другие read_article, имеют
+    медиану 11 с — то же намерение."""
+    g = build_golden([
+        _q("search", query="запрос", project="p"),
+        _open("p", "первая.md"),
+        _open("p", "вторая.md"),
+        _open("p", "третья.md"),
+    ])
+    assert g[0]["expected"] == {"p/первая.md", "p/вторая.md", "p/третья.md"}
+
+
+def test_boundary_tool_is_not_itself_a_query():
+    """Разделитель закрывает ожидание, но САМ запросом не становится.
+
+    Регресс: start_task уже отвергался как источник (v1.29.0) — он переназначал клики
+    с настоящих поисковых запросов на описания задач."""
+    g = build_golden([
+        _q("search", query="настоящий", project="p"),
+        _open("p", "a.md"),
+        {"tool": "start_task", "args": {"topic": "Тема задачи"}, "ts": "2026-07-18 10:01:00"},
+        _open("p", "b.md"),
+    ])
+    assert [x["query"] for x in g] == ["настоящий"]
+    assert g[0]["expected"] == {"p/a.md"}
+
+
+def test_edit_article_boundary_not_load_bearing():
+    """Устойчивость: edit_article — самый спорный разделитель (статью могли поправить
+    и вернуться к той же выдаче). На живом логе его исключение меняет результат на ОДНУ
+    пару из 276. Тест лишь фиксирует, что он в наборе осознанно."""
+    from memory_compiler.retrieval_eval import _BOUNDARY_TOOLS, _QUERY_TOOLS
+    assert "edit_article" in _BOUNDARY_TOOLS
+    assert {"start_task", "finish_task"} <= _BOUNDARY_TOOLS, "ядро разделителей на месте"
+    assert "read_article" not in _BOUNDARY_TOOLS, "листание выдачи — не смена работы"
+    assert not (_BOUNDARY_TOOLS & set(_QUERY_TOOLS)), "источник не может быть разделителем"
