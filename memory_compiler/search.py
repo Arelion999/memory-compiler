@@ -154,6 +154,21 @@ REBUILD_PROGRESS_CHUNK = int(_os_embed.environ.get("REBUILD_PROGRESS_CHUNK", "50
 # and override _splade_search() with a real implementation.
 SPLADE_ENABLED = _os_embed.environ.get("SPLADE_ENABLED", "false").lower() in ("1", "true", "yes")
 
+# ─── Параметры ранжирования ──────────────────────────────────────────────────
+# Применяются на этапе ЗАПРОСА: смена не требует ни пересборки индекса, ни
+# ре-эмбеддинга. Поэтому эксперимент здесь стоит минуту (против ~2 часов у чанкования)
+# — самые дешёвые в проекте. Дефолты = историческое поведение, менять только по замеру
+# (scripts/eval_ranking.py).
+RRF_K = int(_os_embed.environ.get("RRF_K", "60"))          # константа RRF (Cormack et al., 2009)
+# Доля temporal decay в итоговом скоре: score = rrf * 3000 * ((1-w) + w*decay).
+# w=0 — свежесть не влияет вовсе, w=1 — влияет максимально.
+DECAY_WEIGHT = float(_os_embed.environ.get("DECAY_WEIGHT", "0.3"))
+# b-параметры BM25F — нормализация длины поля (НЕ бусты полей, те в SCHEMA: title x5, tags x3).
+# b=0 отключает нормализацию длины, b=1 — максимальная.
+BM25_TITLE_B = float(_os_embed.environ.get("BM25_TITLE_B", "0.75"))
+BM25_TAGS_B = float(_os_embed.environ.get("BM25_TAGS_B", "0.75"))
+BM25_BODY_B = float(_os_embed.environ.get("BM25_BODY_B", "0.75"))
+
 
 def _splade_search(query: str, project: str = "all", limit: int = 20) -> dict[str, float]:
     """Sparse-learned retrieval channel (stub).
@@ -1052,7 +1067,8 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     except Exception:
         q = None
     if q:
-        with ix.searcher(weighting=BM25F(title_B=0.75, tags_B=0.75, body_B=0.75)) as s:
+        with ix.searcher(weighting=BM25F(title_B=BM25_TITLE_B, tags_B=BM25_TAGS_B,
+                                         body_B=BM25_BODY_B)) as s:
             hits = s.search(q, limit=limit * 2)
             max_bm25 = max((h.score for h in hits), default=1.0) or 1.0
             for hit in hits:
@@ -1097,8 +1113,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     # 3. Merge via Reciprocal Rank Fusion (RRF) — industry standard for hybrid retrieval.
     # Formula: score(d) = Σ_q 1 / (k + rank_q(d))
     # Не требует калибровки между BM25 и cosine, устойчив к выбросам.
-    # k=60 — общепринятая константа (Cormack et al., 2009).
-    RRF_K = 60
+    # k=60 — общепринятая константа (Cormack et al., 2009); тюнится env RRF_K.
 
     bm25_ranked = sorted(bm25_scores.keys(),
                          key=lambda p: -bm25_scores[p]["bm25"])
@@ -1140,7 +1155,7 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
         # Scale RRF to a comparable 0..100 range:
         # max possible RRF for two-source merge ≈ 2/(K+1) = 2/61 ≈ 0.0328
         # multiply by 3000 → top result lands around 100, comfortable for thresholds.
-        rrf_scaled = rrf * 3000 * (0.7 + 0.3 * decay)
+        rrf_scaled = rrf * 3000 * ((1.0 - DECAY_WEIGHT) + DECAY_WEIGHT * decay)
         info["score"] = round(rrf_scaled, 1)
         merged.append(info)
 
