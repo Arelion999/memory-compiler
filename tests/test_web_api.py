@@ -111,3 +111,68 @@ def test_streamable_http_mount_additive():
     paths = [getattr(r, "path", None) for r in app.routes]
     assert "/mcp" in paths, f"/mcp не смонтирован: {paths}"
     assert "/sse" in paths, "/sse удалён — транспорт должен быть additive"
+
+
+def test_health_reports_models_ready(knowledge_dir, monkeypatch):
+    """Публичный /api/health отдаёт признак готовности моделей.
+
+    Регресс-риск: поле должно быть именно ПУБЛИЧНЫМ (без auth), иначе состояние
+    прогрева не увидит ни Docker healthcheck, ни человек, у которого «поиск молчит».
+    Без него «модель ещё грузится» неотличимо от «сервер сломан»: health отвечает ok,
+    потому что индекс открыт, а семантический запрос ждёт загрузки под локом."""
+    from memory_compiler.api import web_health
+    import memory_compiler.search as _s
+
+    monkeypatch.setattr(_s, "_embed_model", None)
+    body = _json(asyncio.run(web_health(FakeRequest())))
+    assert body["models_ready"] is False, body
+    assert "status" in body and "version" in body, "поле не должно ломать публичный ответ"
+
+    monkeypatch.setattr(_s, "_embed_model", object())
+    assert _json(asyncio.run(web_health(FakeRequest())))["models_ready"] is True
+
+
+def test_warm_runs_dummy_encode_not_just_construct(monkeypatch):
+    """Прогрев обязан прогнать один текст, а не только сконструировать модель.
+
+    Конструирование и первый forward-pass — разные расходы: без фиктивного encode
+    первый живой запрос платил за инициализацию токенизатора и аллокации, даже когда
+    модель формально «загружена»."""
+    from memory_compiler.api import warm_models
+    import memory_compiler.search as _s
+
+    calls = []
+    monkeypatch.setattr(_s, "get_embed_model", lambda: calls.append("construct"))
+    monkeypatch.setattr(_s, "encode_query", lambda t: calls.append(f"encode:{t}"))
+
+    asyncio.run(warm_models())
+    assert calls[0] == "construct", f"модель не сконструирована: {calls}"
+    assert any(c.startswith("encode:") for c in calls), \
+        f"прогрев не прогнал ни одного текста — первый запрос заплатит за forward-pass: {calls}"
+
+
+def test_warm_survives_model_failure(monkeypatch):
+    """Сбой прогрева не должен ронять старт: модели догрузятся лениво при первом запросе."""
+    from memory_compiler.api import warm_models
+    import memory_compiler.search as _s
+
+    def boom():
+        raise RuntimeError("нет модели в кэше")
+
+    monkeypatch.setattr(_s, "get_embed_model", boom)
+    assert asyncio.run(warm_models()) == 0.0, "сбой прогрева обязан быть проглочен"
+
+
+def test_warm_skips_reranker_when_disabled(monkeypatch):
+    """Выключенный reranker не грузится вовсе: ~0.6 ГБ RSS за модель без пользы."""
+    from memory_compiler import api as _api
+    import memory_compiler.search as _s
+
+    monkeypatch.setattr(_api, "RERANK_ENABLED", False)
+    monkeypatch.setattr(_s, "get_embed_model", lambda: None)
+    monkeypatch.setattr(_s, "encode_query", lambda t: None)
+    loaded = []
+    monkeypatch.setattr(_s, "get_reranker_model", lambda: loaded.append(1))
+
+    asyncio.run(_api.warm_models())
+    assert loaded == [], "reranker загружен несмотря на выключенный флаг"
