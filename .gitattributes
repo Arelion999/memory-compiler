@@ -1,0 +1,10 @@
+# Shell-скрипты исполняются на NAS (Linux) и через Git Bash. Windows-клиент git
+# при выкладке подменяет LF на CRLF, файл уезжает на NAS через SynologyDrive уже
+# с CRLF, и bash падает: "syntax error: unexpected end of file". Ловушка тихая —
+# в самом git блоб остаётся правильным, ломается только рабочее дерево.
+*.sh text eol=lf
+
+# Скрипты sh/py и конфиги держим в LF независимо от платформы разработчика.
+*.py text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
