@@ -112,7 +112,7 @@ async def web_search(request: Request):
     if not q:
         return JSONResponse({"results": []})
     project = request.query_params.get("project", "").strip() or "all"
-    results = whoosh_search(q, project=project, limit=15)
+    results = await asyncio.to_thread(whoosh_search, q, project=project, limit=15)
     # Add snippets: lines from article body that contain query words (with context)
     import re as _re
     query_words = [w.lower() for w in _re.split(r'[\s,;.:]+', q) if len(w) > 2]

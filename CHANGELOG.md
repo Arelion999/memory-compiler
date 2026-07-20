@@ -2,6 +2,35 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.42.1 — 2026-07-20
+
+Тяжёлые синхронные вызовы убраны из event loop: сервер больше не замирает целиком
+на время сохранения статьи.
+
+### Fixed
+
+- **`git_commit` уведён в `asyncio.to_thread` в 13 хендлерах** (`save_lesson`,
+  `edit_article`, `save_decision`, `save_secret`, `save_tracking`, `compile`,
+  `delete_article`, `save_session`, `save_contexts`, `save_runbook`, `add_project`,
+  `remove_project`, `set_project_deps`). Он делает `git add -A` по всей базе знаний —
+  **замер: 5.5 с на 1815 статьях** локально на SSD, на NAS дольше. Всё это время event
+  loop стоял, и сервер не отвечал ни на один запрос, включая `/api/health`.
+- **`whoosh_search` в `web_search` (`api.py`) тоже блокировал loop.** Тот же дефект
+  чинили для MCP-поиска 2026-07-03, но веб-эндпоинт тогда пропустили: поиск из Web UI
+  всё это время подвешивал сервер. Найдено новым гейтом, а не поиском вручную.
+
+### Added
+
+- `tests/test_no_blocking_calls.py` — статический гейт по AST: тяжёлая синхронная
+  операция внутри `async`-функции обязана уходить в `to_thread`. Список расширяемый
+  (`git_commit`, `regenerate_index`, `rebuild_*`, `whoosh_search`, `rerank`). Гейт
+  написан ДО фикса и падал на всех 14 местах — то есть проверено, что он ловит.
+
+### Chore
+
+- Доков не требует: публичный интерфейс и поведение не меняются, чинится только
+  блокировка event loop.
+
 ## v1.42.0 — 2026-07-20
 
 Переключатель языка в Web UI — этап 3 двуязычности, последний. Плюс исправление

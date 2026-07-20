@@ -202,7 +202,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     log_event(project, "save_lesson", f"{topic} → {article_path.name}")
 
     # 12. Git commit
-    git_commit(f"save: {topic} [{project}]")
+    await asyncio.to_thread(git_commit, f"save: {topic} [{project}]")
 
     result = action
     if git_refs:
@@ -528,7 +528,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             log.rename(archive_dir / log.name)
 
         await asyncio.to_thread(regenerate_index)
-        git_commit(f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
+        await asyncio.to_thread(git_commit, f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
         summary = f"\u2705 Скомпилировано: {total_entries} записей \u2014 {updated} обновлено, {created} создано, {len(processed_logs)} логов архивировано" + (f" (пропущено дублей: {skipped})" if skipped else "")
         return [TextContent(type="text", text=summary)]
 
@@ -766,7 +766,7 @@ async def save_session(project: str, summary: str, decisions: str = "", open_que
 {open_questions or '\u2014'}
 """
     session_path.write_text(text, encoding="utf-8")
-    git_commit(f"session: {project}")
+    await asyncio.to_thread(git_commit, f"session: {project}")
     return [TextContent(type="text", text=f"\u2705 Контекст сессии сохранён: {project}/_session.md")]
 
 
@@ -966,7 +966,7 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     save_article_meta()                   # loop: json.dumps итерирует article_meta
     await asyncio.to_thread(_search.delete_document, key)  # точечно, вне event loop
     await asyncio.to_thread(regenerate_index)
-    git_commit(f"delete: {filename} [{project}]")
+    await asyncio.to_thread(git_commit, f"delete: {filename} [{project}]")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
 
 
@@ -1038,7 +1038,7 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     cascaded = mark_dependents(project, filename, ts)
 
     log_event(project, "edit_article", f"{filename}" + (f" (cascade: {cascaded})" if cascaded else ""))
-    git_commit(f"edit: {filename} [{project}]")
+    await asyncio.to_thread(git_commit, f"edit: {filename} [{project}]")
 
     msg = f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}"
     if cascaded:
@@ -1155,7 +1155,7 @@ async def save_contexts(project: str, filename: str, contexts: list) -> list[Tex
     still_missing = [hd for hd in valid if hd not in _article_contexts(new_text)]
 
     log_event(project, "save_contexts", f"{filename} (+{len(accepted)}, skip {len(skipped)})")
-    git_commit(f"contexts: {filename} [{project}]")
+    await asyncio.to_thread(git_commit, f"contexts: {filename} [{project}]")
 
     msg = f"✅ Контексты сохранены: {project}/{filename} (+{len(accepted)}: {list(accepted)})"
     if skipped:
@@ -2043,7 +2043,7 @@ async def add_project(name: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"Проект '{name}' уже существует.")]
     proj_path.mkdir(parents=True, exist_ok=True)
     _cfg.PROJECTS[:] = _discover_projects()
-    git_commit(f"add project: {name}")
+    await asyncio.to_thread(git_commit, f"add project: {name}")
     return [TextContent(type="text", text=f"\u2705 Проект '{name}' создан. Всего проектов: {len(_cfg.PROJECTS)}")]
 
 
@@ -2075,7 +2075,7 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     _cfg.PROJECTS[:] = _discover_projects()
     await asyncio.to_thread(_search.delete_project_documents, name)  # точечно, вне event loop
     await asyncio.to_thread(regenerate_index)
-    git_commit(f"remove project: {name} ({len(articles)} articles)")
+    await asyncio.to_thread(git_commit, f"remove project: {name} ({len(articles)} articles)")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Проект '{name}' удалён ({len(articles)} статей). Осталось проектов: {len(_cfg.PROJECTS)}")]
 
 
@@ -2174,7 +2174,7 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
 
     await _index_embed(article_text, article_path.name, project)
     await asyncio.to_thread(regenerate_index)
-    git_commit(f"runbook: {topic} [{project}]")
+    await asyncio.to_thread(git_commit, f"runbook: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cb Runbook создан: {project}/{article_path.name} ({len(steps)} шагов)")]
 
@@ -2259,7 +2259,7 @@ async def set_project_deps(project: str, depends_on: list) -> list[TextContent]:
             return [TextContent(type="text", text=f"Проект не может зависеть от себя.")]
 
     write_project_deps(project, depends_on)
-    git_commit(f"deps: {project} -> {', '.join(depends_on)}")
+    await asyncio.to_thread(git_commit, f"deps: {project} -> {', '.join(depends_on)}")
     return [TextContent(type="text", text=f"\U0001f517 Зависимости {project}: {', '.join(depends_on) if depends_on else 'нет'}")]
 
 
@@ -2321,7 +2321,7 @@ async def save_decision(title: str, decision: str, reasoning: str, project: str,
     await _index_embed(article_text, article_path.name, project)
     update_active_context(project, f"Decision: {title}", decision)
     await asyncio.to_thread(regenerate_index)
-    git_commit(f"decision: {title} [{project}]")
+    await asyncio.to_thread(git_commit, f"decision: {title} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cc Решение записано: {project}/{article_path.name}")]
 
@@ -2437,7 +2437,7 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
     await asyncio.to_thread(regenerate_index)
     update_active_context(project, f"Secret: {topic}", "[зашифровано]")
     track_access([f"{project}/{article_path.name}"])
-    git_commit(f"secret: {topic} [{project}]")
+    await asyncio.to_thread(git_commit, f"secret: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f512 Секрет сохранён: {project}/{article_path.name}")]
 
@@ -2465,7 +2465,7 @@ async def save_tracking(project: str, entity: str, facts: dict, narrative: str =
         text = fpath.read_text(encoding="utf-8")
         await _index_embed(text, fpath.name, project)
 
-    git_commit(f"tracking: {project}/{entity} {result['action']}")
+    await asyncio.to_thread(git_commit, f"tracking: {project}/{entity} {result['action']}")
     return [TextContent(type="text", text=msg)]
 
 
