@@ -29,6 +29,7 @@ import memory_compiler.search as _search
 from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
     merge_into_article, is_duplicate_entry, make_preview,
+    article_title_tags, parse_meta_value, _parse_frontmatter,
     regenerate_index, git_commit,
     update_active_context, detect_contradictions,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
@@ -259,7 +260,10 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
         selected = [(a, a.read_text(encoding="utf-8")) for a in articles[:5]]
         out = [f"# Контекст: {project}\n"]
         for path, text in selected:
-            preview = "\n".join(text.splitlines()[:8])
+            # make_preview, как в ветке с query выше: срез [:8] по сырому файлу
+            # отдавал YAML-frontmatter — из 24 строк превью контенту принадлежало 0.
+            # Один и тот же инструмент отвечал по-разному с запросом и без него.
+            preview = make_preview(text, n=8)
             out.append(f"---\n### {path.stem}\n{preview}\n")
         return [TextContent(type="text", text="\n".join(out))]
 
@@ -555,7 +559,11 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
             # by design — they are engine-managed. Skip Check 1/2 for them.
             is_service = a.name.startswith("_") or a.name.startswith("tracking_")
             text = a.read_text(encoding="utf-8")
-            lines = text.splitlines()
+            # lines — от ТЕЛА; text остаётся сырым, в него же пишем при fix.
+            # На срезах по сырому файлу lint давал 92 ложных «нет метаданных»,
+            # у 79 статей не отрабатывал Check 3 и у 92 — Check 4. Инструмент
+            # здоровья базы врал именно на самых новых статьях.
+            lines = _parse_frontmatter(text)[1].splitlines()
 
             if not is_service:
                 # Check 1: Empty or minimal
@@ -591,13 +599,22 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
             # Check 4: Tag normalization
             for line in lines[:10]:
                 if line.startswith("**Теги:**"):
-                    tags_str = line.split(":", 1)[1].strip()
+                    # ⚠️ НЕ split(':', 1)[1]: закрывающие звёздочки метки «**Теги:**»
+                    # стоят ПОСЛЕ двоеточия и попадали в значение. Пока его только
+                    # читали — шум; здесь значение ЗАПИСЫВАЕТСЯ обратно, и в файл
+                    # уезжало '**Теги:** ** ftp, mcp'. Так испорчено 126 статей,
+                    # 81 из них секреты (их merge_into_article не самолечит — отказывает
+                    # секретам), а 15 получили двойную порчу '** ** '. Следствие:
+                    # search_by_tag не находил ни одну из 126 по первому тегу.
+                    tags_str = parse_meta_value(line)
                     raw_tags = [t.strip() for t in tags_str.split(",") if t.strip() and t.strip() != "\u2014"]
                     lower_tags = [t.lower() for t in raw_tags]
                     if raw_tags != lower_tags and raw_tags:
                         if fix:
                             new_line = f"**Теги:** {', '.join(lower_tags)}"
-                            text = text.replace(line, new_line)
+                            # count=1: replace шёл по ВСЕМУ документу и правил строки
+                            # тегов внутри записей тоже (у daily-агрегатов их десятки).
+                            text = text.replace(line, new_line, 1)
                             a.write_text(text, encoding="utf-8")
                             fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 теги нормализованы")
                         else:
@@ -817,19 +834,10 @@ async def get_summary(project: str) -> list[TextContent]:
     for a in articles[:20]:
         text = a.read_text(encoding="utf-8")
         file_lines = text.splitlines()
-        # Заголовок: первый H1 (# ...), пропуская YAML-frontmatter (---) и пустые строки
-        title = a.stem
-        for fl in file_lines[:15]:
-            s = fl.strip()
-            if s.startswith("# "):
-                title = s.lstrip("# ").strip()
-                break
-        tags = ""
-        for fl in file_lines[:10]:
-            if fl.lower().startswith("**теги:**"):
-                # split по первому ':' оставляет закрывающие ** от '**Теги:**' — срезаем
-                tags = fl.split(":", 1)[1].strip().lstrip("*").strip()
-                break
+        # Срез [:15] не «пропускал frontmatter», а надеялся, что тот короче: медиана
+        # 13 строк, p90 40, максимум 275. У 12 статей из 12 теги терялись, у 4 из 12
+        # заголовком становилось имя файла.
+        title, tags = article_title_tags(text, fallback=a.stem)
         # Первые 2 строки тела (после метаданных)
         body_lines = []
         body_started = False
@@ -851,6 +859,7 @@ async def get_summary(project: str) -> list[TextContent]:
 
 
 ASK_TOP_K = 5  # ответу нужна горстка точных источников, а не широкая выдача как у search
+ASK_HEAD_LINES = 200  # потолок строк шапки; у статей без '### '-секций там лежит всё тело
 
 
 def ask_fragment(text: str, question: str, limit: int = 300) -> str:
@@ -858,12 +867,25 @@ def ask_fragment(text: str, question: str, limit: int = 300) -> str:
 
     Секции — по '### ' (запись статьи). Скор секции — сколько РАЗНЫХ значимых слов
     вопроса в ней встретилось. Пустая строка, если не совпало ничего: вызывающий
-    подставит preview."""
+    подставит preview.
+
+    ⚠️ Шапка статьи в кандидаты НЕ идёт: это метаданные, а не ответ. Раньше шла —
+    нулевым куском split'а оказывался YAML-frontmatter + заголовок + **Дата/Проект/
+    Теги** + '## Записи'. С появлением contexts:-frontmatter (v1.28.0, ИИ-пересказ
+    КАЖДОЙ секции) эта шапка стала матчить почти любой релевантный вопрос и
+    выигрывать скор — на живой базе 5 фрагментов из 5 не содержали ни строчки
+    контента: сырой YAML либо меташапка. Фильтруем ПОСТРОЧНО (article_body_lines),
+    а не выбрасываем нулевой кусок целиком: у ~15% статей (ingest/импорт) нет ни
+    одной '### '-секции, и всё тело лежит именно там."""
     q_words = {w.lower() for w in question.split() if len(w) > 2}
     if not q_words:
         return ""
+    from memory_compiler.search import _strip_frontmatter
+    from memory_compiler.storage import article_body_lines
+    sections = _strip_frontmatter(text).split("\n### ")
+    sections[0] = "\n".join(article_body_lines(sections[0], limit=ASK_HEAD_LINES))
     best_score, best_sec = 0, ""
-    for sec in text.split("\n### "):
+    for sec in sections:
         low = sec.lower()
         score = sum(1 for w in q_words if w in low)
         if score > best_score:
@@ -893,14 +915,19 @@ async def ask_sources(question: str, project: str = "all") -> tuple:
 
     sources = []
     for r in results:
-        # Секретные статьи не цитируем: ask читал сырой файл с диска в обход этой
-        # проверки, которая у search есть, — во фрагмент попадали ENC-строки.
-        secret = bool(is_secret_article(r.get("preview", ""), r.get("file", "")))
+        # Секретные статьи не цитируем. ⚠️ Проверять по ФАЙЛУ, а не по preview:
+        # _index_safe_text САМ вырезает строку '**Секрет:** да', собирая плейсхолдер
+        # из титула и тегов, — в preview признак не выживает, и от проверки оставался
+        # только префикс имени 'secret_'. Пока у всех секретов базы префикс есть, это
+        # не стреляло, но это ровно тот баг, который чинили в v1.25.0, подключённый
+        # к неверному источнику истины: статья с флагом, но без префикса, утекла бы.
+        fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
+        raw = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
+        secret = bool(is_secret_article(raw or r.get("preview", ""), r.get("file", "")))
         fragment = ""
         if not secret:
-            fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
-            if fpath.exists():
-                fragment = ask_fragment(fpath.read_text(encoding="utf-8"), question)
+            if raw:
+                fragment = ask_fragment(raw, question)
             if not fragment:
                 fragment = "\n".join(r["preview"].splitlines()[:5])
         sources.append({
@@ -2181,10 +2208,22 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
 
 async def get_runbook(project: str, filename: str) -> list[TextContent]:
     """Read runbook and parse step statuses."""
-    fpath = KNOWLEDGE_DIR / project / filename
+    # safe_article_path: без него путь собирался конкатенацией, и '../../file' читал
+    # файл ВНЕ базы. Инвариант в проекте давно есть — read_article/edit_article/
+    # delete_article закрыты, — а get_runbook остался единственным хендлером мимо него.
+    try:
+        fpath = safe_article_path(project, filename)
+    except ValueError:
+        return [TextContent(type="text", text=f"Runbook не найден: {project}/{filename}")]
     if not fpath.exists():
         return [TextContent(type="text", text=f"Runbook не найден: {project}/{filename}")]
     text = fpath.read_text(encoding="utf-8")
+    # Гейт секретов: хендлер отдавал сырой файл целиком без единой проверки — для
+    # настоящих секретов наружу уходил ENC-шифртекст, для флаговых — plaintext.
+    if is_secret_article(text, fpath.name):
+        return [TextContent(type="text", text=(
+            f"Runbook {project}/{filename} — секретная статья.\n"
+            f"[зашифровано — используй read_article для просмотра]"))]
     track_access([f"{project}/{filename}"])
 
     total = text.count("- [ ]") + text.count("- [x]")

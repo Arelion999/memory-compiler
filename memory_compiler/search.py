@@ -909,6 +909,21 @@ def load_shared_paths(ix) -> int:
     return len(found)
 
 
+# Мост между тем, КАК спрашивают, и тем, ЧТО индексируется у секрета. Тело секрета
+# зашифровано и в индекс не идёт — searchable остаются только заголовок и теги. А
+# заголовки у них звучат как «Полные доступы …», «SSH/SFTP креды …»: слова «пароль»
+# там нет ни разу. Поэтому вопрос «какой пароль у сайта X» цеплялся за секрет ровно
+# одним словом (именем сайта) и проигрывал обычным статьям, у которых совпадений
+# больше. Замер: на «полные доступы zarina-khv» секрет выходил первым со score 98.4,
+# на «какой пароль у сайта zarina-khv.ru» не входил в топ-5 вообще.
+# Строка добавляется на ИНДЕКСАЦИИ, не в файл: покрывает разом все существующие
+# секреты при reindex и ничего не меняет на диске.
+SECRET_INTENT_WORDS = (
+    "пароль пароли password credentials креды учётные данные учетные данные "
+    "логин login доступ доступы ключ key токен token секрет secret"
+)
+
+
 def _index_safe_text(raw_text: str, filename: str) -> str:
     """Для секретных статей вернуть плейсхолдер (титул + теги) вместо тела — чтобы
     ЛЮБАЯ индексация (полный reindex, rebuild_embeddings, прямой index_document)
@@ -922,7 +937,7 @@ def _index_safe_text(raw_text: str, filename: str) -> str:
     title = lines[0].lstrip("# ").strip() if lines else filename
     tags_line = next((l for l in lines[:12] if l.lower().startswith("**теги:**")),
                      "**Теги:** secret")
-    return f"# {title}\n\n{tags_line}\n\n[зашифрованная статья]"
+    return f"# {title}\n\n{tags_line}\n\n{SECRET_INTENT_WORDS}\n\n[зашифрованная статья]"
 
 
 def _parse_article(text: str, filename: str, project: str) -> dict:

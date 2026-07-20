@@ -11,7 +11,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from memory_compiler import config
 from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
-from memory_compiler.storage import regenerate_index, audit_log
+from memory_compiler.storage import regenerate_index, audit_log, _parse_frontmatter
 from memory_compiler import handlers
 from memory_compiler import obs
 from memory_compiler.i18n import localize_tools, localize_prompts
@@ -691,6 +691,10 @@ def _is_meta_file(name: str) -> bool:
 
 
 def _resource_title(text: str, filename: str) -> str:
+    # От ТЕЛА: '---' не вызывал break, а следующая строка 'contexts:' вызывала —
+    # до '# Заголовка' цикл не доходил, и у 125 статей заголовком ресурса
+    # становилось имя файла.
+    text = _parse_frontmatter(text)[1]
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("# "):
@@ -701,6 +705,10 @@ def _resource_title(text: str, filename: str) -> str:
 
 
 def _resource_description(text: str) -> str:
+    # От ТЕЛА: иначе первой подходящей строкой оказывался литерал 'contexts:' —
+    # именно он и уезжал в описание 125 MCP-ресурсов, то есть в пассивный
+    # контекст модели.
+    text = _parse_frontmatter(text)[1]
     for line in text.splitlines():
         s = line.strip()
         if s and not s.startswith("#") and not s.startswith("---") and not s.startswith("**"):

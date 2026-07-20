@@ -292,6 +292,52 @@ def make_preview(text: str, n: int = 8) -> str:
     return "\n".join(lines[:1] + article_body_lines(body, limit=n))
 
 
+def article_title_tags(text: str, fallback: str = "") -> tuple:
+    """(заголовок, строка тегов) статьи — ВСЕГДА от ТЕЛА, после YAML-frontmatter.
+
+    Раньше это делалось на месте, срезами вида `lines[0]` и `lines[:10]` по СЫРОМУ
+    файлу, в восьми независимых местах. С появлением contexts:-frontmatter (v1.28.0;
+    медиана 13 строк, p90 40, максимум 275) срез перестал доставать до шапки:
+    заголовком становился литерал '---', теги терялись молча — исключения нет,
+    статья просто не находится. Следы на проде: 127 записей вида '- [---](…) —' в
+    knowledge/index.md, 92 статьи невидимы для навигации по тегам, у 125 статей
+    описание MCP-ресурса — литерал 'contexts:'.
+
+    ⚠️ Хелпер для ОТОБРАЖЕНИЯ (индекс, граф, экспорт, ресурсы, сводки). Точки
+    индексации (search._parse_article, _chunk_article) сюда НЕ переводить без
+    бампа CONTEXT_FORMAT_VERSION: у них смена текста тегов меняет тексты чанков
+    и требует переэмбеддинга всей базы.
+
+    Держит tests/test_frontmatter_blind.py."""
+    body = _parse_frontmatter(text)[1]
+    lines = body.splitlines()
+    title = lines[0].lstrip("# ").strip() if lines else ""
+    tags = ""
+    for line in lines[:12]:
+        if line.lower().startswith("**теги:**"):
+            tags = parse_meta_value(line)
+            break
+    return (title or fallback), tags
+
+
+# Закрывающие звёздочки метки «**Теги:**» стоят ПОСЛЕ двоеточия, поэтому
+# split(':', 1)[1] отдаёт '** ftp, docker'. Пока значение только читали — это был шум;
+# как только его записали обратно, в файл уехало '**Теги:** ** ftp, docker'. Так lint
+# с fix=True испортил 126 статей, 81 из них секреты. Снимаем ЛЮБОЙ префикс из звёздочек
+# и пробелов, а не один слой: у 15 файлов порча двойная ('** ** ftp') — merge_into_article,
+# единственный код, вычищавший '*', секретам отказывает, и они не самолечатся.
+_META_PREFIX_RE = re.compile(r"^[\s*]+")
+
+
+def parse_meta_value(line: str) -> str:
+    """Значение строки метаданных «**Метка:** …» — без метки и без мусорных звёздочек.
+
+    Годится для любой метки шапки (Теги, Дата, Проект, Обновлено). Использовать ВЕЗДЕ
+    вместо split(':', 1)[1]: тот же дефект дал и '### ** 2026-04-16' в 44 статьях —
+    merge_into_article строил заголовок секции из значения «**Дата:**»."""
+    return _META_PREFIX_RE.sub("", line.split(":", 1)[1] if ":" in line else line).strip()
+
+
 # ─── Article merging ─────────────────────────────────────────────────────────
 
 
@@ -344,23 +390,27 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
 
     # Update tags — merge old and new
     new_tag_set = set(new_tags) if new_tags else set()
+    # Есть ли «**Обновлено:**» где-либо в ШАПКЕ — решаем один раз, до цикла.
+    # Раньше ветка «**Дата:**» смотрела только на СЛЕДУЮЩУЮ строку: если Обновлено
+    # стояло в шапке ниже, она вставляла второе, а первое обновляла своя ветка —
+    # в файле оставались две строки «**Обновлено:**» (6 статей на проде). Плюс
+    # lines.index(line) искал по СОДЕРЖИМОМУ и врал на повторяющихся строках.
+    # Граница шапки нужна, чтобы не считать «Обновлено» из тела daily-агрегатов.
+    header_end = next((i for i, l in enumerate(lines)
+                       if l.startswith("## Записи") or l.startswith("### ")), len(lines))
+    has_updated = any(l.startswith("**Обновлено:**") for l in lines[:header_end])
     updated_lines = []
     for line in lines:
         if line.startswith("**Теги:**"):
-            old_tags_str = line.split(":", 1)[1].strip().strip("*").strip()
+            old_tags_str = parse_meta_value(line)
             old_tags = {t.strip().strip("*").strip() for t in old_tags_str.split(",") if t.strip().strip("*").strip() and t.strip() != "—"}
             merged_tags = sorted(old_tags | new_tag_set)
             updated_lines.append(f"**Теги:** {', '.join(merged_tags) if merged_tags else '—'}")
         elif line.startswith("**Обновлено:**"):
             updated_lines.append(f"**Обновлено:** {ts}")
         elif line.startswith("**Дата:**"):
-            # Keep original date, add/update Обновлено after it
             updated_lines.append(line)
-            # Check if next line is Обновлено — if not, insert it
-            idx = lines.index(line)
-            if idx + 1 < len(lines) and lines[idx + 1].startswith("**Обновлено:**"):
-                pass  # will be updated in the loop
-            else:
+            if not has_updated:
                 updated_lines.append(f"**Обновлено:** {ts}")
         else:
             updated_lines.append(line)
@@ -383,7 +433,13 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
         orig_date = ts
         for line in updated_lines:
             if line.startswith("**Дата:**"):
-                orig_date = line.split(":", 1)[1].strip()
+                # parse_meta_value, не split(':',1)[1]: закрывающие звёздочки метки
+                # уезжали в значение, и заголовок секции получался '### ** 2026-04-16'.
+                # Так испорчены 44 статьи — их перестал распознавать _is_log_heading
+                # (regex ждёт дату с начала строки), и они навсегда застряли в
+                # выдаче context_gaps; заодно is_duplicate_entry перестал ловить
+                # повторы, отсюда продублированные записи.
+                orig_date = parse_meta_value(line)
                 break
         # Rebuild with sections
         header = "\n".join(updated_lines[:body_start])
@@ -479,14 +535,10 @@ def regenerate_index():
             continue
         items = []
         for a in articles:
-            text = a.read_text(encoding="utf-8")
-            lines = text.splitlines()
-            title = lines[0].lstrip("# ").strip() if lines else a.stem
-            tags = ""
-            for line in lines[:10]:
-                if line.lower().startswith("**теги:**"):
-                    tags = line.split(":", 1)[1].strip()
-                    break
+            # article_title_tags: заголовок и теги берутся от ТЕЛА, после frontmatter.
+            # Срез lines[0]/lines[:10] по сырому файлу давал '---' и пустые теги —
+            # в проде так выглядели 127 записей index.md из 1726.
+            title, tags = article_title_tags(a.read_text(encoding="utf-8"), fallback=a.stem)
             items.append(f"- [{title}](./{proj}/{a.name}) — {tags}")
         total += len(articles)
         sections.append(f"### {proj} ({len(articles)} ст.)\n" + "\n".join(items))

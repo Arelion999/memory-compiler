@@ -15,13 +15,20 @@ def _text(resp):
     return resp[0].text
 
 
-def _write(kd, project, name, title, body, tags="test", secret=False):
+def _write(kd, project, name, title, body, tags="test", secret=False, contexts=None):
+    """contexts=[(заголовок, ИИ-контекст), ...] добавляет YAML-frontmatter, как его
+    пишет генератор контекста (v1.28.0). Фикстуры без него не воспроизводили реальный
+    формат базы — из-за этого баг с цитированием шапки жил незамеченным."""
     p = kd / project
     p.mkdir(exist_ok=True)
     head = f"# {title}\n\n**Дата:** 2026-01-01 10:00\n**Проект:** {project}\n**Теги:** {tags}\n"
     if secret:
         head += "**Секрет:** да\n"
-    (p / name).write_text(f"{head}\n## Записи\n\n### 2026-01-01 10:00\n{body}\n", encoding="utf-8")
+    fm = ""
+    if contexts:
+        fm = "---\ncontexts:\n" + "".join(
+            f"  - heading: {h}\n    context: \"{c}\"\n" for h, c in contexts) + "---\n"
+    (p / name).write_text(f"{fm}{head}\n## Записи\n\n### 2026-01-01 10:00\n{body}\n", encoding="utf-8")
 
 
 # ─── ask_fragment (чистая функция) ───────────────────────────────────────────
@@ -48,6 +55,57 @@ def test_fragment_ignores_short_words_and_empty_question():
     """Слова ≤2 символов не значимы; пустой вопрос не должен матчить всё подряд."""
     assert ask_fragment("# T\n\n### 2026\nтекст\n", "и в на") == ""
     assert ask_fragment("# T\n\n### 2026\nтекст\n", "") == ""
+
+
+def test_fragment_never_quotes_yaml_frontmatter():
+    """Регресс: contexts:-frontmatter (v1.28.0) — это ИИ-пересказ ВСЕХ секций статьи,
+    поэтому он матчит почти любой релевантный вопрос. Как нулевая «секция» он побеждал
+    при равном скоре (первый максимум), и в UI уезжал сырой YAML вместо текста."""
+    text = ("---\n"
+            "contexts:\n"
+            "  - heading: Доступы\n"
+            '    context: "Раздел про запуск сайта example.ru: багфиксы и вёрстка."\n'
+            "---\n"
+            "# Запуск сайта example.ru\n"
+            "\n"
+            "**Дата:** 2026-01-01 10:00\n"
+            "**Теги:** deploy\n"
+            "\n"
+            "## Записи\n"
+            "\n"
+            "### Доступы\n"
+            "пароль администратора example.ru хранится в vault\n")
+    frag = ask_fragment(text, "какой пароль у сайта example.ru")
+    assert "contexts:" not in frag and "heading:" not in frag, "во фрагмент утёк YAML-frontmatter"
+    assert "vault" in frag
+
+
+def test_fragment_never_quotes_article_header():
+    """Шапка статьи — метаданные, а не ответ. Заголовок и **Дата:**/**Теги:** матчат
+    слова вопроса не хуже тела (а часто лучше — там название сущности), но цитировать
+    их бессмысленно. Второй вариант той же поломки, уже без frontmatter."""
+    text = ("# Настройка nginx на example.ru\n"
+            "\n"
+            "**Дата:** 2026-01-01 10:00\n"
+            "**Проект:** testproj\n"
+            "**Теги:** nginx\n"
+            "\n"
+            "## Записи\n"
+            "\n"
+            "### 2026-01-01 10:00\n"
+            "проксирование nginx на порт 8080\n")
+    frag = ask_fragment(text, "настройка nginx example.ru")
+    assert "**Дата:**" not in frag and "**Теги:**" not in frag, "во фрагмент утекла меташапка"
+    assert "8080" in frag
+
+
+def test_fragment_still_works_without_sections():
+    """Статьи без '### '-секций (ingest/импорт — около 15% базы) держат тело сразу
+    после заголовка. Шапку нельзя выбрасывать целиком: у них там весь контент."""
+    text = ("# Импортированная заметка\n"
+            "\n"
+            "Проксирование nginx настроено на порт 8080.\n")
+    assert "8080" in ask_fragment(text, "nginx проксирование")
 
 
 # ─── ask (хендлер) ───────────────────────────────────────────────────────────
@@ -94,6 +152,35 @@ def test_ask_does_not_quote_secret_articles(knowledge_dir):
     if "secret_vpn.md" in out:
         assert "суперсекрет123" not in out, "секретное тело утекло во фрагмент ask"
         assert "зашифровано" in out
+
+
+def test_secret_findable_by_credential_intent(knowledge_dir):
+    """Тело секрета не индексируется, а заголовки у них звучат как «Полные доступы …»
+    или «SSH/SFTP креды …» — слова «пароль» там нет ни разу. Поэтому вопрос «какой
+    пароль у X» цеплялся за секрет ровно одним словом (именем сущности) и проигрывал
+    обычным статьям. Синонимы интента подставляются НА ИНДЕКСАЦИИ (_index_safe_text),
+    файл на диске не меняется, и это разом покрывает все существующие секреты."""
+    from memory_compiler.search import rebuild_index
+    _write(knowledge_dir, "testproj", "secret_dostupy.md", "Полные доступы квакозябра",
+           "тело секрета", tags="secret", secret=True)
+    rebuild_index()
+    out = _text(asyncio.run(ask("какой пароль у квакозябра", project="testproj")))
+    assert "secret_dostupy.md" in out, "секрет не находится по слову «пароль»"
+    assert "зашифровано" in out, "и при этом он обязан остаться замаскированным"
+
+
+def test_ask_answers_carry_content_not_metadata(knowledge_dir):
+    """Сквозная проверка: в выдаче ask не должно быть ни YAML-frontmatter, ни меташапки.
+    На живой базе так выглядели 5 фрагментов из 5 — ответ не содержал ни строчки контента."""
+    from memory_compiler.search import rebuild_index
+    _write(knowledge_dir, "testproj", "launch.md", "Запуск сайта квакозябра",
+           "пароль администратора квакозябра лежит в vault", tags="deploy",
+           contexts=[("Записи", "Раздел про запуск сайта квакозябра: багфиксы и вёрстка.")])
+    rebuild_index()
+    out = _text(asyncio.run(ask("какой пароль у сайта квакозябра", project="testproj")))
+    assert "contexts:" not in out and "heading:" not in out
+    assert "**Дата:**" not in out and "**Теги:**" not in out
+    assert "vault" in out, "ответ не содержит ни строчки контента статьи"
 
 
 # ─── /api/ask ────────────────────────────────────────────────────────────────

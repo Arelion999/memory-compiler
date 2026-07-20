@@ -357,12 +357,17 @@ def build_known_item_set(knowledge_dir: str | Path, skip_prefixes=("_",)) -> lis
             if any(md.name.startswith(pref) for pref in skip_prefixes):
                 continue
             try:
-                first = md.read_text(encoding="utf-8", errors="replace").lstrip().splitlines()[:1]
+                raw = md.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
-            if not first:
-                continue
-            title = first[0].lstrip("# ").strip()
+            # ⚠️ Заголовок — от ТЕЛА. Раньше брали первую строку файла: у статьи с
+            # frontmatter это '---', длина 3 < 8, и статья молча выпадала из набора.
+            # Так из known-item набора исчезли 125 статей (7.6% корпуса) — причём
+            # ровно те, что на новейшем формате, где регрессия вероятнее всего.
+            # Это дефект ИЗМЕРЕНИЯ: страховочная сеть была слепа там, где нужнее.
+            # Смена набора = новая версия харнесса, baseline надо переснять.
+            from memory_compiler.storage import article_title_tags
+            title, _ = article_title_tags(raw)
             if len(title) < 8:      # слишком короткий заголовок — запрос бессмысленный
                 continue
             items.append({

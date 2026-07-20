@@ -46,6 +46,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.search as search_mod
     import memory_compiler.handlers as handlers_mod
     import memory_compiler.api as api_mod
+    import memory_compiler.maintenance as maintenance_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -61,6 +62,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     monkeypatch.setattr(search_mod, "EMBEDDINGS_PATH", knowledge_dir / ".embeddings.pkl")
     monkeypatch.setattr(handlers_mod, "KNOWLEDGE_DIR", knowledge_dir)
     monkeypatch.setattr(api_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    # ⚠️ maintenance тоже держит СВОЙ модульный KNOWLEDGE_DIR (from config import ...).
+    # Без этой строки тест maintenance уходит работать по БОЕВОЙ базе — а функции там
+    # пишущие, разовые проходы по всем статьям. Поймано ровно так: тест сообщил
+    # «статей 0», потому что проекта testproj в проде нет. Повезло.
+    monkeypatch.setattr(maintenance_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(maintenance_mod, "PROJECTS", ["testproj", "general"])
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)

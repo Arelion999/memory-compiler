@@ -28,6 +28,7 @@ from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, read_audit_log,
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
     make_preview, tracking_timeline, _parse_frontmatter,
+    article_title_tags, parse_meta_value,
 )
 from memory_compiler.handlers import (
     compile as _compile, save_lesson, delete_article, lint as _lint, ask_sources,
@@ -255,8 +256,9 @@ async def web_article(request: Request):
     if not fpath.exists() or fpath.suffix != ".md":
         return JSONResponse({"error": "not found"}, status_code=404)
     text = _maybe_decrypt_secret_lines(fpath.read_text(encoding="utf-8"))
-    lines = text.splitlines()
-    title = lines[0].lstrip("# ").strip() if lines else filename
+    # Заголовок — от ТЕЛА: срез lines[0] по сырому файлу упирался в открывающий
+    # '---' frontmatter, и страница статьи показывала заголовок '---'.
+    title, _ = article_title_tags(text, fallback=filename)
     return JSONResponse({
         "title": title, "project": project, "file": filename,
         "content": text, "content_html": render_markdown(text),
@@ -395,15 +397,9 @@ async def web_graph(request: Request):
             if md.name.startswith("_"):
                 continue
             key = f"{proj}/{md.name}"
-            text = md.read_text(encoding="utf-8")
-            lines = text.splitlines()
-            title = lines[0].lstrip("# ").strip() if lines else md.stem
-            # Extract tags
-            tags = ""
-            for line in lines[:10]:
-                if line.startswith("**Теги:**"):
-                    tags = line.replace("**Теги:**", "").strip()
-                    break
+            # Заголовок и теги — от ТЕЛА статьи: на срезах по сырому файлу узлы графа
+            # с frontmatter вырождались в безымянные точки с title='---'.
+            title, tags = article_title_tags(md.read_text(encoding="utf-8"), fallback=md.stem)
             meta = article_meta.get(key, {})
             all_keys.append(key)
             nodes.append({
@@ -531,8 +527,7 @@ async def web_export(request: Request):
         if md.name.startswith("_") or md.name.startswith("secret_"):
             continue
         text = md.read_text(encoding="utf-8")
-        lines = text.splitlines()
-        title = lines[0].lstrip("# ").strip() if lines else md.stem
+        title, _ = article_title_tags(text, fallback=md.stem)
         articles.append({"filename": md.name, "title": title, "content": text})
     return JSONResponse({
         "project": project,
@@ -557,10 +552,12 @@ async def web_delete_article(request: Request):
 
 def _article_tags(md) -> list[str]:
     """\u0418\u0437\u0432\u043b\u0435\u0447\u044c \u043d\u043e\u0440\u043c\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u043d\u043d\u044b\u0435 \u0442\u0435\u0433\u0438 \u0438\u0437 \u0441\u0442\u0440\u043e\u043a\u0438 `**\u0422\u0435\u0433\u0438:**` \u0441\u0442\u0430\u0442\u044c\u0438 (\u043f\u0435\u0440\u0432\u044b\u0435 10 \u0441\u0442\u0440\u043e\u043a)."""
-    text = md.read_text(encoding="utf-8")
-    for line in text.splitlines()[:10]:
+    # От ТЕЛА статьи: у 92 статей строка тегов уезжала за срез [:10] из-за
+    # frontmatter, и они становились невидимы для облака тегов и фильтра по тегу.
+    text = _parse_frontmatter(md.read_text(encoding="utf-8"))[1]
+    for line in text.splitlines()[:12]:
         if line.lower().startswith("**\u0442\u0435\u0433\u0438:**"):
-            tags_str = line.split(":", 1)[1].strip()
+            tags_str = parse_meta_value(line)
             tags = []
             for t in tags_str.split(","):
                 t = t.strip().lower().strip("*").strip()
@@ -816,7 +813,16 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
                 print(f"Auto-compile error: {e}")
 
     async def auto_lint_loop():
-        """Run lint weekly on Sunday at 3 AM."""
+        """Отчёт lint еженедельно, воскресенье 03:00. БЕЗ fix — только диагностика.
+
+        ⚠️ Раньше здесь стоял fix=True, и это оказалось худшим сочетанием: правка
+        всей базы (1800 статей) раз в неделю, автоматически, и БЕЗ следа в аудите —
+        audit_log пишется только на MCP-пути (tools.py). Дефект разбора в Check 4
+        (закрывающие '**' метки уезжали в значение тегов) успел испортить 126 статей,
+        81 из них секреты, и обнаружился только через год. Ни одной записи в логе не
+        осталось — восстанавливать причину пришлось по срезу «в каких статьях исчезли
+        заглавные буквы». Фоновая задача не должна молча писать в базу: fix остаётся
+        доступен явным вызовом lint(fix=True), где у правки есть автор и след."""
         from datetime import datetime, timedelta
         while True:
             now = datetime.now()
@@ -828,8 +834,8 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             wait = (target - now).total_seconds()
             await asyncio.sleep(wait)
             try:
-                result = await _lint(project="all", fix=True)
-                print(f"Auto-lint: {result[0].text[:500]}")
+                result = await _lint(project="all", fix=False)
+                print(f"Auto-lint (отчёт, без правок): {result[0].text[:500]}")
             except Exception as e:
                 print(f"Auto-lint error: {e}")
 
