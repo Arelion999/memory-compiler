@@ -4,8 +4,12 @@
 структурой, и читатель на другом языке видит другой документ. Тест держит пары
 структурно идентичными и ловит битые ссылки, пока они ещё не уехали в паблик.
 
-Раскладка B: README.md — английский (GitHub рендерит его на морде), README.ru.md —
-русский; в docs/ базовое имя остаётся русским, английский получает суффикс `.en.md`.
+Раскладка B, правило одно: **базовое имя занимает тот язык, который платформа
+открывает САМА**. README.md — английский, потому что GitHub рендерит его на морде.
+docs/security.md — английский, потому что GitHub подхватывает его как Security policy
+и показывает по кнопке Security. А docs/claude-desktop-setup.md остаётся русским:
+туда приходят только по ссылке, дефолтного входа у него нет. Второй язык получает
+суффикс (`.ru.md` или `.en.md`) — какой именно, диктует то же правило.
 """
 import re
 from pathlib import Path
@@ -18,7 +22,7 @@ REPO = Path(__file__).resolve().parent.parent
 PAIRS = [
     ("README.ru.md", "README.md"),
     ("docs/claude-desktop-setup.md", "docs/claude-desktop-setup.en.md"),
-    ("docs/security.md", "docs/security.en.md"),
+    ("docs/security.ru.md", "docs/security.md"),
 ]
 
 FENCE = re.compile(r"^\s*(```|~~~)")

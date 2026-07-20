@@ -272,7 +272,7 @@ Three layers of protection, each enabled by an env variable:
 | Encryption | `MC_ENCRYPT_KEY` | AES-256 for secret articles (save_secret) |
 | Audit | automatic | A log of every MCP call, "Audit" tab in the Web UI |
 
-With no variables set, access is open (backwards compatibility). More detail: [docs/security.en.md](docs/security.en.md)
+With no variables set, access is open (backwards compatibility). More detail: [docs/security.md](docs/security.md)
 
 ## Backups
 

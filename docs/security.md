@@ -1,53 +1,53 @@
-# Безопасность memory-compiler
+# memory-compiler security
 
-[English](security.en.md) · **Русский**
+**English** · [Русский](security.ru.md)
 
-## Как сообщить об уязвимости
+## Reporting a vulnerability
 
-Не открывайте публичную issue. Используйте приватный канал GitHub:
-вкладка **Security** репозитория → **Report a vulnerability**.
+Please do not open a public issue. Use GitHub's private channel:
+the repository's **Security** tab → **Report a vulnerability**.
 
-Переписка видна только вам и мейнтейнеру; после исправления
-из неё публикуется advisory.
+The thread is visible only to you and the maintainer; once fixed,
+an advisory is published from it.
 
-## Архитектура
+## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  Claude Desktop  │     │   Телефон/ПК     │     │  Docker      │
-│  (MCP tools)     │     │   (Web UI)       │     │  healthcheck │
-└────────┬────────┘     └────────┬─────────┘     └──────┬──────┘
-         │                       │                       │
-    ?key=xxx              cookie mc_token          без ключа
-         │                       │                       │
-         ▼                       ▼                       ▼
+┌──────────────────┐     ┌──────────────────┐     ┌───────────────┐
+│  Claude Desktop  │     │    Phone / PC    │     │    Docker     │
+│  (MCP tools)     │     │    (Web UI)      │     │  healthcheck  │
+└────────┬─────────┘     └────────┬─────────┘     └──────┬────────┘
+         │                        │                      │
+     ?key=xxx             cookie mc_token             no key
+         │                        │                      │
+         ▼                        ▼                      ▼
 ┌────────────────────────────────────────────────────────────┐
-│                    AuthMiddleware (ASGI)                    │
+│                    AuthMiddleware (ASGI)                   │
 │                                                            │
-│  /api/health          → пропустить (публичный)             │
-│  /login               → пропустить (логин-страница)        │
+│  /api/health          → allow through (public)             │
+│  /login               → allow through (login page)         │
 │  /.well-known/*       → 404 (OAuth discovery)              │
-│  /sse, /messages/*    → проверить ?key= в URL              │
-│  всё остальное        → проверить Bearer / cookie / ?key=  │
+│  /sse, /messages/*    → check ?key= in the URL             │
+│  everything else      → check Bearer / cookie / ?key=      │
 │                                                            │
-│  Нет ключа → 401 (API) или redirect /login (браузер)       │
+│  No key → 401 (API) or redirect to /login (browser)        │
 └────────────────────────────────────────────────────────────┘
 ```
 
-## Уровень 1: Авторизация
+## Layer 1: Authorisation
 
-Единый ключ задаётся через переменную окружения `MC_API_KEY`.
+A single key, supplied through the `MC_API_KEY` environment variable.
 
-| Клиент | Как передаёт ключ |
-|--------|-------------------|
-| Claude Desktop (MCP) | `?key=` в URL SSE подключения (один раз в конфиге) |
-| Браузер (ПК/телефон) | Логин-страница → cookie `mc_token` на 30 дней |
-| REST API (curl) | `Authorization: Bearer xxx` или `?key=xxx` |
-| Docker healthcheck | Без ключа — `/api/health` публичный |
+| Client | How it passes the key |
+|--------|-----------------------|
+| Claude Desktop (MCP) | `?key=` in the SSE connection URL (set once in the config) |
+| Browser (PC/phone) | Login page → `mc_token` cookie for 30 days |
+| REST API (curl) | `Authorization: Bearer xxx` or `?key=xxx` |
+| Docker healthcheck | No key — `/api/health` is public |
 
-Если `MC_API_KEY` не задан — сервер работает без авторизации (обратная совместимость).
+If `MC_API_KEY` is unset, the server runs without authorisation (backwards compatibility).
 
-### Настройка Claude Desktop
+### Configuring Claude Desktop
 
 ```json
 {
@@ -56,7 +56,7 @@
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "http://<NAS_IP>:8765/sse?key=<ваш-ключ>",
+        "http://<NAS_IP>:8765/sse?key=<your-key>",
         "--allow-http",
         "--transport", "sse-only"
       ]
@@ -65,124 +65,127 @@
 }
 ```
 
-Если в ключе есть спецсимволы (`$`, `&`, `#`), используйте URL-encoding (`$` → `%24`).
+If the key contains special characters (`$`, `&`, `#`), URL-encode them (`$` → `%24`).
 
-### Настройка Docker
+### Configuring Docker
 
-Создайте `.env` рядом с `docker-compose.yml`:
+Create a `.env` next to `docker-compose.yml`:
 
 ```env
-MC_API_KEY=ваш-секретный-ключ
-MC_ENCRYPT_KEY=ваш-ключ-шифрования
+MC_API_KEY=your-secret-key
+MC_ENCRYPT_KEY=your-encryption-key
 ```
 
-`docker-compose.yml` автоматически подхватывает `.env`.
+`docker-compose.yml` picks up `.env` automatically.
 
-### Web UI (телефон/ПК)
+### Web UI (phone/PC)
 
-1. Откройте `http://<NAS_IP>:8765`
-2. Появится форма ввода ключа
-3. Введите `MC_API_KEY`
-4. Cookie сохранится на 30 дней — повторный ввод не нужен
+1. Open `http://<NAS_IP>:8765`
+2. A key entry form appears
+3. Enter `MC_API_KEY`
+4. The cookie is stored for 30 days — no need to enter it again
 
-## Уровень 2: Шифрование секретов
+## Layer 2: Secret encryption
 
-Задаётся через `MC_ENCRYPT_KEY`. Используется для шифрования чувствительных статей (пароли, ключи, credentials).
+Configured through `MC_ENCRYPT_KEY`. Used to encrypt sensitive articles (passwords, keys, credentials).
 
-### Как работает
+### How it works
 
 ```
-save_secret("Пароль от сервера", "root:P@ss123", project="infra")
+save_secret("Server password", "root:P@ss123", project="infra")
                     │
                     ▼
-           PBKDF2 (100000 итераций) → Fernet (AES-256)
+        PBKDF2 (100000 iterations) → Fernet (AES-256)
                     │
                     ▼
-        Файл на диске: ENC:gAAAAABn...  (нечитаемый)
-        Индекс поиска: заголовок + теги (без контента)
+        File on disk:   ENC:gAAAAABn...  (unreadable)
+        Search index:   title + tags (no content)
                     │
                     ▼
-read_article() → расшифровка → "root:P@ss123"
-search()       → "[зашифровано — используй read_article]"
+read_article() → decryption → "root:P@ss123"
+search()       → "[зашифровано — используй read_article для просмотра]"
 ```
 
-### Что шифруется
+The placeholder above is emitted verbatim by the server and is currently Russian-only
+("encrypted — use read_article to view"); it is a runtime string, not documentation.
 
-- Только статьи созданные через `save_secret`
-- Обычные статьи (`save_lesson`) хранятся в plain text
-- В поисковом индексе секретных статей — только заголовок и теги, контент не индексируется
-- В git history секреты зашифрованы
+### What gets encrypted
 
-### Находимость секретов (v1.7.29)
+- Only articles created through `save_secret`
+- Ordinary articles (`save_lesson`) are stored in plain text
+- The search index holds only the title and tags of secret articles; the content is not indexed
+- Secrets are encrypted in the git history
 
-Так как тело секрета не индексируется, секрет ищется только по заголовку и тегам.
-Чтобы его можно было найти по имени сущности (логин, хост, IP), `save_secret`
-через `extract_secret_identifiers` авто-заносит в теги **несекретные идентификаторы**:
-логины (только те, что стоят после логин-слов: `логин/login/user/пользователь/…`)
-и IP-адреса. **Значения паролей/токенов/ключей в теги не попадают:** захват идёт
-только после логин-слов (никогда после `пароль/password/token/ключ/key/secret`),
-строгий шаблон идентификатора отсекает пароль-подобные строки, стоп-лист убирает
-общие токены (`root/admin/ssh`). Так `search("<логин>")` находит секрет по его
-логину, но пароль остаётся вне индекса.
+### Findability of secrets (v1.7.29)
 
-### Без MC_ENCRYPT_KEY
+Since a secret's body is not indexed, a secret can only be found by its title and tags.
+To make it findable by entity name (login, host, IP), `save_secret` uses
+`extract_secret_identifiers` to auto-add **non-secret identifiers** to the tags:
+logins (only those following a login keyword: `логин/login/user/пользователь/…`)
+and IP addresses. **Password, token and key values never reach the tags:** capture happens
+only after login keywords (never after `пароль/password/token/ключ/key/secret`),
+a strict identifier pattern rejects password-like strings, and a stop-list removes
+generic tokens (`root/admin/ssh`). So `search("<login>")` finds the secret by its
+login while the password stays out of the index.
 
-- `save_secret` вернёт ошибку
-- Обычные `save_lesson` работают как раньше
+### Without MC_ENCRYPT_KEY
 
-## Уровень 3: Аудит
+- `save_secret` returns an error
+- Ordinary `save_lesson` calls work as before
 
-Автоматический лог всех обращений к MCP tools.
+## Layer 3: Audit
 
-### Формат записи
+An automatic log of every call to the MCP tools.
+
+### Record format
 
 ```json
 {"ts": "2026-04-13 22:31:15", "tool": "search", "args": {"query": "docker", "project": "all"}, "size": 1500}
 {"ts": "2026-04-13 22:31:20", "tool": "save_lesson", "args": {"topic": "Nginx", "content": "[850 chars]"}, "size": 200}
 ```
 
-### Маскировка
+### Masking
 
-Чувствительные поля автоматически маскируются в логе:
+Sensitive fields are masked in the log automatically:
 - `content` → `[N chars]`
 - `error_text` → `[N chars]`
 - `steps` → `[N chars]`
 - `password`, `key` → `***`
 
-### Доступ к аудиту
+### Accessing the audit log
 
-- Web UI → вкладка "Аудит" (последние 100 записей)
+- Web UI → "Audit" tab (last 100 records)
 - REST API → `GET /api/audit`
-- Файл → `knowledge/_audit.log` (JSON lines)
+- File → `knowledge/_audit.log` (JSON lines)
 
-## Матрица защиты
+## Protection matrix
 
-| Что | Защита | Примечание |
-|-----|--------|------------|
-| Web UI | Логин + cookie 30 дней | Redirect на /login без cookie |
-| REST API | Bearer / cookie / ?key= | 401 без ключа |
-| MCP SSE | ?key= в URL | Настраивается один раз в конфиге |
-| /api/health | Публичный | Для Docker healthcheck |
-| Секретные статьи | AES-256 на диске | Только через save_secret |
-| Обычные статьи | Plain text | Не шифруются |
-| Git history | Секреты зашифрованы | Обычные статьи в plain text |
-| Аудит | Автоматический | content маскируется |
-| HTTP трафик | **Не шифруется** | Только для локальной сети |
+| What | Protection | Note |
+|------|------------|------|
+| Web UI | Login + 30-day cookie | Redirects to /login without a cookie |
+| REST API | Bearer / cookie / ?key= | 401 without a key |
+| MCP SSE | ?key= in the URL | Configured once in the config file |
+| /api/health | Public | For the Docker healthcheck |
+| Secret articles | AES-256 on disk | Only via save_secret |
+| Ordinary articles | Plain text | Not encrypted |
+| Git history | Secrets encrypted | Ordinary articles in plain text |
+| Audit | Automatic | `content` is masked |
+| HTTP traffic | **Not encrypted** | Local network only |
 
-## Технические детали
+## Technical details
 
-### Почему pure ASGI middleware
+### Why pure ASGI middleware
 
-Starlette `BaseHTTPMiddleware` несовместим с SSE — вызывает `TypeError: 'NoneType' object is not callable` при disconnect. AuthMiddleware реализован как чистый ASGI middleware.
+Starlette's `BaseHTTPMiddleware` is incompatible with SSE — it raises `TypeError: 'NoneType' object is not callable` on disconnect. AuthMiddleware is implemented as pure ASGI middleware instead.
 
-### Почему ?key= в URL а не в заголовке
+### Why ?key= in the URL rather than a header
 
-`mcp-remote` (прокси для MCP через SSE) не поддерживает кастомные заголовки (`--header` флаг отсутствует). Единственный способ передать ключ — через URL query parameter.
+`mcp-remote` (the proxy for MCP over SSE) does not support custom headers (there is no `--header` flag). The only way to pass the key is a URL query parameter.
 
-### Почему --transport sse-only
+### Why --transport sse-only
 
-Без этого флага `mcp-remote` сначала пробует HTTP POST на `/sse` → получает 405 → fallback на SSE. С `--transport sse-only` подключается сразу.
+Without this flag `mcp-remote` first tries an HTTP POST to `/sse` → gets a 405 → falls back to SSE. With `--transport sse-only` it connects directly.
 
-### Почему /.well-known/ возвращает 404
+### Why /.well-known/ returns 404
 
-`mcp-remote` при старте пробует OAuth discovery на `/.well-known/oauth-authorization-server`. Если middleware возвращает 401, `mcp-remote` считает это ошибкой авторизации. 404 — корректный ответ "OAuth не поддерживается".
+On start-up `mcp-remote` attempts OAuth discovery against `/.well-known/oauth-authorization-server`. If the middleware returns 401, `mcp-remote` treats it as an authorisation failure. A 404 is the correct "OAuth is not supported" answer.
