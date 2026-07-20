@@ -731,7 +731,7 @@ async def web_login(request: Request):
     # constant-time сравнение (как в middleware) — не давать тайминг-сайдканал на подбор
     if MC_API_KEY and hmac.compare_digest((data.get("key") or "").encode(), MC_API_KEY.encode()):
         response = JSONResponse({"ok": True})
-        # secure=True только при HTTPS: на HTTP-развёртывании в LAN (см. security.md)
+        # secure=True только при HTTPS: на HTTP-развёртывании в LAN (см. docs/security.ru.md)
         # флаг сломал бы установку cookie. За обратным прокси с TLS scheme может быть
         # http — тогда включить через X-Forwarded-Proto/env при необходимости.
         secure = request.url.scheme == "https"
