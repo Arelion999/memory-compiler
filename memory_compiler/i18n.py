@@ -378,7 +378,39 @@ TOOLS_EN: dict[str, dict] = {
 }
 
 # {имя промпта: {"title": str, "description": str, "args": {имя аргумента: str}}}
-PROMPTS_EN: dict[str, dict] = {}
+PROMPTS_EN: dict[str, dict] = {
+    'load-context': {
+        # RU title: Загрузить контекст проекта
+        'title': 'Load project context',
+        # RU: Поднять рабочий контекст проекта из базы знаний (активный контекст, решения, открытые вопросы).
+        'description': 'Pull the working context of a project from the knowledge base (active context, decisions, open questions).',
+        'args': {'project': 'Project name'},
+    },
+    'save-session': {
+        # RU title: Сохранить сессию
+        'title': 'Save session',
+        # RU: Сохранить итог текущей сессии по проекту (что сделано, решения, что осталось).
+        'description': 'Save the outcome of the current session for a project (what was done, decisions, what is left).',
+        'args': {'project': 'Project name'},
+    },
+    'save-lesson': {
+        # RU title: Сохранить урок
+        'title': 'Save lesson',
+        # RU: Сформулировать и сохранить урок (проблема → причина → решение → факты) в проект.
+        'description': 'Formulate and save a lesson (problem → cause → solution → facts) to a project.',
+        'args': {
+            'project': 'Project name',
+            'topic': 'Lesson topic (optional)',
+        },
+    },
+    'weekly-review': {
+        # RU title: Еженедельный обзор
+        'title': 'Weekly review',
+        # RU: Свести из базы знаний последние решения, изменения статусов, открытые вопросы и knowledge gaps.
+        'description': 'Pull together the latest decisions, status changes, open questions, and knowledge gaps from the knowledge base.',
+        'args': {'project': 'Project name (optional; otherwise all)'},
+    },
+}
 
 
 def localize_tools(tools):
