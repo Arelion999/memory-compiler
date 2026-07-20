@@ -78,3 +78,62 @@ def test_placeholder_present():
 
     assert "/*MC_LANG*/" in WEB_HTML, "нет /*MC_LANG*/ в WEB_HTML"
     assert "/*MC_LANG*/" in LOGIN_HTML, "нет /*MC_LANG*/ в LOGIN_HTML"
+
+
+# ─── Проверки ОТРЕНДЕРЕННОЙ страницы ────────────────────────────────────────
+# Всё выше разбирает ui.py как исходник. Этого мало: страница уезжает клиенту ПОСЛЕ
+# подстановок в api.py, и сломаться она может именно там. Так и произошло — комментарий
+# в JS упоминал имя плейсхолдера буквально, str.replace подставил на это место
+# многострочный CSS, тот влился в однострочный //-комментарий, и весь скрипт умер с
+# «Unexpected token '{'». Исходник при этом был синтаксически безупречен.
+
+PLACEHOLDERS = {
+    # плейсхолдер: сколько раз он ДОЛЖЕН встречаться во всём ui.py
+    "/*PYGMENTS_CSS*/": 1,   # одно место подстановки, в <style> главной страницы
+    "/*MC_LANG*/": 2,        # два: WEB_HTML и LOGIN_HTML
+}
+
+
+@pytest.mark.parametrize("placeholder,expected", sorted(PLACEHOLDERS.items()))
+def test_placeholder_not_mentioned_anywhere_else(placeholder, expected):
+    """Имя плейсхолдера встречается РОВНО в местах подстановки — и нигде больше.
+
+    Подстановка делается str.replace по всему документу, поэтому любое упоминание
+    (хоть в комментарии, хоть в тексте подписи) станет точкой вставки. Описывай
+    механизм словами, не литералом.
+    """
+    found = SRC.count(placeholder)
+    assert found == expected, (
+        f"{placeholder}: найдено {found}, ожидалось {expected}. "
+        f"Лишнее упоминание станет точкой подстановки и сломает страницу."
+    )
+
+
+def rendered_js(template, lang="ru"):
+    """JS страницы в том виде, в каком его получает браузер — после всех подстановок."""
+    from memory_compiler.markdown_render import pygments_css
+
+    html = template.replace("/*PYGMENTS_CSS*/", pygments_css()).replace("/*MC_LANG*/", lang)
+    return "".join(re.findall(r"<script[^>]*>(.*?)</script>", html, re.S))
+
+
+@pytest.mark.parametrize("page", ["WEB_HTML", "LOGIN_HTML"])
+def test_rendered_js_is_valid_syntax(page, tmp_path):
+    """JS отрендеренной страницы синтаксически валиден.
+
+    Проверяем ПОСЛЕ подстановок: исходник может быть корректным, а результат — нет.
+    Требует node; без него пропускаем, чтобы тест не падал на машине без него.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node не установлен — проверка синтаксиса отрендеренного JS пропущена")
+
+    from memory_compiler import ui
+
+    js_file = tmp_path / f"{page}.js"
+    js_file.write_text(rendered_js(getattr(ui, page)), encoding="utf-8")
+    done = subprocess.run([node, "--check", str(js_file)], capture_output=True, text=True)
+    assert done.returncode == 0, f"{page}: JS отрендеренной страницы невалиден:\n{done.stderr}"
