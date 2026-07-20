@@ -14,6 +14,7 @@ from memory_compiler.search import rebuild_index, rebuild_embeddings, start_back
 from memory_compiler.storage import regenerate_index, audit_log
 from memory_compiler import handlers
 from memory_compiler import obs
+from memory_compiler.i18n import localize_tools, localize_prompts
 
 app = Server("memory-compiler")
 
@@ -667,7 +668,7 @@ async def list_tools() -> list[Tool]:
     ]
     for t in tools:
         t.annotations = _annotations_for(t.name)
-    return tools
+    return localize_tools(tools)
 
 
 # --- Resources (P1): статьи базы как memory://<проект>/<файл> ----------------
@@ -828,7 +829,7 @@ def _user_msg(text: str) -> PromptMessage:
 
 @app.list_prompts()
 async def list_prompts() -> list[Prompt]:
-    return _PROMPTS
+    return localize_prompts(_PROMPTS)
 
 
 @app.get_prompt()
