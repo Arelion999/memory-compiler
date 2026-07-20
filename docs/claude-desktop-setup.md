@@ -1,5 +1,7 @@
 # Настройка memory-compiler в Claude Code Desktop
 
+[English](claude-desktop-setup.en.md) · **Русский**
+
 Интеграция через MCP + скил memory-autopilot. Рассчитано на Windows (пути через `C:\Users\<user>`), но работает и на macOS/Linux (замените пути).
 
 ## Содержание

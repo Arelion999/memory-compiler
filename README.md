@@ -1,12 +1,14 @@
 # memory-compiler
 
-Персональная база знаний для AI-ассистентов. MCP-сервер с гибридным поиском, автокомпиляцией и веб-интерфейсом.
+**English** · [Русский](README.ru.md)
 
-## Зачем
+A personal knowledge base for AI assistants. An MCP server with hybrid search, auto-compilation and a web interface.
 
-AI-ассистенты не помнят контекст между сессиями. memory-compiler решает эту проблему: решения, баги, конфигурации сохраняются в markdown-статьях, индексируются и доступны через MCP или HTTP API. Ассистент ищет похожие кейсы перед задачей и записывает новые решения после.
+## Why
 
-## Быстрый старт
+AI assistants don't remember context between sessions. memory-compiler fixes that: decisions, bugs and configurations are stored as markdown articles, indexed, and served over MCP or an HTTP API. The assistant looks up similar cases before a task and records new solutions afterwards.
+
+## Quick start
 
 ```bash
 pip install -r requirements.txt
@@ -14,13 +16,13 @@ mkdir -p knowledge
 PROJECTS=my-project,infra,general python server.py
 ```
 
-Сервер запустится на `http://localhost:8765`. Или через Docker:
+The server starts on `http://localhost:8765`. Or via Docker:
 
 ```bash
 docker-compose up -d --build
 ```
 
-### Подключение к Claude Code
+### Connecting to Claude Code
 
 ```json
 {
@@ -33,329 +35,329 @@ docker-compose up -d --build
 }
 ```
 
-### Подключение к Claude Code Desktop
+### Connecting to Claude Code Desktop
 
-Полная инструкция: [docs/claude-desktop-setup.md](docs/claude-desktop-setup.md) — MCP, скил memory-autopilot, hooks, настройка зависимостей.
+Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en.md) — MCP, the memory-autopilot skill, hooks, dependency setup.
 
-## Возможности
+## Features
 
-### 46 MCP-инструмента
+### 46 MCP tools
 
-**Поиск и чтение:**
+**Search and read:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `search(query, project)` | Гибридный поиск BM25F + semantic с temporal decay |
-| `ask(question, project)` | Q&A — ответ с цитатами из статей |
-| `search_by_tag(tag, project)` | Все статьи с указанным тегом |
-| `search_snippets(query, lang, project)` | Поиск по кодовым блокам |
-| `search_error(error_text, project)` | Поиск по трейсбекам и кодам ошибок |
-| `search_decisions(query, project)` | Поиск по журналу решений |
-| `read_article(project, filename)` | Полный текст статьи |
-| `get_context(project, query)` | Топ релевантных статей перед задачей |
-| `get_summary(project)` | Сжатая сводка проекта (~200 токенов) |
+| Tool | Description |
+|------|-------------|
+| `search(query, project)` | Hybrid BM25F + semantic search with temporal decay |
+| `ask(question, project)` | Q&A — an answer with quotes from articles |
+| `search_by_tag(tag, project)` | Every article carrying a given tag |
+| `search_snippets(query, lang, project)` | Search across code blocks |
+| `search_error(error_text, project)` | Search across tracebacks and error codes |
+| `search_decisions(query, project)` | Search the decision log |
+| `read_article(project, filename)` | Full article text |
+| `get_context(project, query)` | Top relevant articles ahead of a task |
+| `get_summary(project)` | Condensed project summary (~200 tokens) |
 
-**Запись и редактирование:**
+**Write and edit:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `save_lesson(topic, content, project, tags)` | Сохранить с diff-отчётом, автомержем, автотегами, детекцией противоречий |
-| `save_decision(title, decision, alternatives, reasoning, project)` | Записать архитектурное решение |
-| `save_runbook(topic, steps, project)` | Создать пошаговую инструкцию с чекбоксами |
-| `save_from_template(template, fields, project)` | Создать статью по шаблону (bug, setup, 1c, deploy, integration) |
-| `save_secret(topic, content, project)` | Сохранить зашифрованную статью (пароли, ключи) |
-| `edit_article(project, filename, content, append)` | Заменить или дописать |
-| `delete_article(project, filename)` | Удалить статью |
-| `get_runbook(project, filename)` | Получить runbook с прогрессом |
-| `list_templates()` | Список доступных шаблонов |
+| Tool | Description |
+|------|-------------|
+| `save_lesson(topic, content, project, tags)` | Save with a diff report, auto-merge, auto-tagging and contradiction detection |
+| `save_decision(title, decision, alternatives, reasoning, project)` | Record an architectural decision |
+| `save_runbook(topic, steps, project)` | Create a step-by-step runbook with checkboxes |
+| `save_from_template(template, fields, project)` | Create an article from a template (bug, setup, 1c, deploy, integration) |
+| `save_secret(topic, content, project)` | Save an encrypted article (passwords, keys) |
+| `edit_article(project, filename, content, append)` | Replace or append |
+| `delete_article(project, filename)` | Delete an article |
+| `get_runbook(project, filename)` | Fetch a runbook with its progress |
+| `list_templates()` | List available templates |
 
-**Сессии:**
+**Sessions:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `save_session(project, summary, ...)` | Сохранить контекст для следующей сессии |
-| `load_session(project)` | Загрузить контекст + уведомления об устаревших статьях |
-| `get_active_context(project)` | Лента последних 10 действий |
+| Tool | Description |
+|------|-------------|
+| `save_session(project, summary, ...)` | Save context for the next session |
+| `load_session(project)` | Load context plus notifications about stale articles |
+| `get_active_context(project)` | Feed of the last 10 actions |
 
 **Temporal state:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `save_tracking(project, entity, facts)` | Bi-temporal снимок: текущее состояние + история (версии, деплои, конфиги) |
-| `get_current(project, entity)` | Получить текущий статус из tracking-статьи |
+| Tool | Description |
+|------|-------------|
+| `save_tracking(project, entity, facts)` | Bi-temporal snapshot: current state plus history (versions, deploys, configs) |
+| `get_current(project, entity)` | Read the current status out of a tracking article |
 
-**Комбинированные:**
+**Combined:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `start_task(topic, project)` | Начать задачу: поиск + сессия + контекст + решения + runbooks |
-| `finish_task(topic, content, project)` | Завершить задачу: сохранить урок + сессию |
+| Tool | Description |
+|------|-------------|
+| `start_task(topic, project)` | Begin a task: search + session + context + decisions + runbooks |
+| `finish_task(topic, content, project)` | Close a task: save the lesson and the session |
 
-**Управление проектами:**
+**Project management:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `add_project(name)` | Создать новый проект |
-| `remove_project(name)` | Удалить проект со всеми статьями |
-| `list_projects()` | Список проектов с количеством статей |
-| `set_project_deps(project, depends_on)` | Установить зависимости между проектами |
-| `get_project_deps(project)` | Получить зависимости проекта |
+| Tool | Description |
+|------|-------------|
+| `add_project(name)` | Create a new project |
+| `remove_project(name)` | Delete a project along with all its articles |
+| `list_projects()` | List projects with article counts |
+| `set_project_deps(project, depends_on)` | Declare dependencies between projects |
+| `get_project_deps(project)` | Read a project's dependencies |
 
-**Обслуживание:**
+**Maintenance:**
 
-| Инструмент | Описание |
-|------------|----------|
-| `ingest(url, project, ...)` | Загрузка знаний из URL (HTML→markdown) или raw_text (PDF/документы) |
-| `import_obsidian(vault_path, project, folder_mapping, dry_run)` | Импорт заметок из Obsidian vault (frontmatter, теги, wiki-ссылки) |
-| `git_capture(repo_path, project, ...)` | Автосбор знаний из git-коммитов (repo_path или git_log_raw) |
-| `knowledge_gap(repo_path, project, days)` | Найти темы в git-коммитах, которых нет в базе знаний |
-| `compile(dry_run, project, since)` | Компиляция дневных логов в wiki-статьи |
-| `lint(project, fix)` | Проверка: дубли, устаревшее, теги |
-| `reindex()` | Переиндексация |
-| `article_history(project, filename)` | Git-история статьи |
+| Tool | Description |
+|------|-------------|
+| `ingest(url, project, ...)` | Pull knowledge from a URL (HTML→markdown) or from raw_text (PDF/documents) |
+| `import_obsidian(vault_path, project, folder_mapping, dry_run)` | Import notes from an Obsidian vault (frontmatter, tags, wiki links) |
+| `git_capture(repo_path, project, ...)` | Harvest knowledge from git commits (repo_path or git_log_raw) |
+| `knowledge_gap(repo_path, project, days)` | Find topics present in git commits but missing from the knowledge base |
+| `compile(dry_run, project, since)` | Compile daily logs into wiki articles |
+| `lint(project, fix)` | Check for duplicates, staleness and tags |
+| `reindex()` | Rebuild the index |
+| `article_history(project, filename)` | Git history of an article |
 
-**Контекстная генерация (contextual retrieval):**
+**Contextual generation (contextual retrieval):**
 
-| Инструмент | Описание |
-|------------|----------|
-| `context_gaps(project, limit)` | Выдать статьи, которым нужен ИИ-контекст секций (для бэкфилла) |
-| `save_contexts(project, filename, contexts)` | Записать ИИ-контекст секций во frontmatter и ре-эмбеддить статью |
+| Tool | Description |
+|------|-------------|
+| `context_gaps(project, limit)` | List articles that still need AI section context (for backfill) |
+| `save_contexts(project, filename, contexts)` | Write AI section context into frontmatter and re-embed the article |
 
-### Гибридный поиск + reranking
+### Hybrid search + reranking
 
-Три уровня релевантности:
+Three layers of relevance:
 
-- **BM25F** (Whoosh) — полнотекстовый с весами полей (title x5, tags x3, body x1)
-- **Semantic** — bi-encoder embeddings (дефолт `paraphrase-multilingual-MiniLM-L12-v2`; через env `EMBED_MODEL` переключается на `BAAI/bge-m3` 1024d или `Alibaba-NLP/gte-multilingual-base`, кэш авто-инвалидируется при смене)
-- **Cross-encoder reranking** — `BAAI/bge-reranker-v2-m3`, **по умолчанию ВЫКЛЮЧЕН** (`RERANK_ENABLED=1` включает). Замер на 132 реальных запросах (`scripts/eval_retrieval.py`) показал, что на этом корпусе он не даёт прироста при цене ×32 по времени — подробности ниже. Опционально SPLADE 3-way через `SPLADE_ENABLED=true`
+- **BM25F** (Whoosh) — full-text with field weights (title x5, tags x3, body x1)
+- **Semantic** — bi-encoder embeddings (default `paraphrase-multilingual-MiniLM-L12-v2`; the `EMBED_MODEL` env var switches to `BAAI/bge-m3` 1024d or `Alibaba-NLP/gte-multilingual-base`, and the cache invalidates itself on a model change)
+- **Cross-encoder reranking** — `BAAI/bge-reranker-v2-m3`, **disabled by default** (`RERANK_ENABLED=1` turns it on). Measured over 132 real queries (`scripts/eval_retrieval.py`), it delivers no gain on this corpus at ×32 the latency — details below. SPLADE 3-way is optionally available via `SPLADE_ENABLED=true`
 
-Слияние каналов — **RRF** (Reciprocal Rank Fusion), не взвешенная сумма: не требует калибровки между BM25 и cosine-сходством.
+Channels are merged with **RRF** (Reciprocal Rank Fusion) rather than a weighted sum: it needs no calibration between BM25 and cosine similarity.
 
 ```
 rrf(doc) = Σ_channel 1 / (RRF_K + rank_channel(doc))     # BM25 + semantic (+ SPLADE)
 scaled   = rrf × 3000 × (0.7 + 0.3 × decay_factor)
-final    = top_k (search: 8, get_context: 5)   # + cross_encoder.rerank, если RERANK_ENABLED=1
+final    = top_k (search: 8, get_context: 5)   # + cross_encoder.rerank if RERANK_ENABLED=1
 ```
 
-Temporal decay — свежие и часто используемые статьи выше в результатах.
+Temporal decay pushes fresh and frequently used articles higher.
 
-**Отбор кандидатов** (`SEARCH_QUERY_GROUP`, `SEARCH_POOL`, `SEARCH_SCOPE_AWARE`) — то, ЧТО попадает в слияние. Диагностика (`scripts/diag_retrieval.py`) на 140 реальных запросах показала, что именно здесь, а не в весах, была основная потеря:
+**Candidate selection** (`SEARCH_QUERY_GROUP`, `SEARCH_POOL`, `SEARCH_SCOPE_AWARE`) governs WHAT reaches the merge step. Diagnostics (`scripts/diag_retrieval.py`) over 140 real queries showed the main loss lived here, not in the weights:
 
-| Ручка | Дефолт | Что было раньше | Замер |
+| Knob | Default | What it used to be | Measurement |
 |---|---|---|---|
-| `SEARCH_QUERY_GROUP` | `or` | `and` — документ обязан содержать ВСЕ термы; канал BM25 был **пуст на 48.6% запросов**, на запросах от 6 слов — на 75% | MRR +0.046, recall@1 +8 запросов из 140 |
-| `SEARCH_SCOPE_AWARE` | `true` | скоуп проекта применялся ПОСЛЕ выборки топ-20 по всей базе: при 43 проектах оставалось ~2 кандидата у BM25 и ~9.7 у семантики | recall@10 +9 запросов |
-| `SEARCH_POOL` | `100` | `limit*2` (=20): на 12.9% запросов цель лежала в широком пуле, но не в узком | входит в строку выше |
+| `SEARCH_QUERY_GROUP` | `or` | `and` — a document had to contain EVERY term; the BM25 channel was **empty on 48.6% of queries**, and on queries of 6+ words on 75% | MRR +0.046, recall@1 +8 queries out of 140 |
+| `SEARCH_SCOPE_AWARE` | `true` | the project scope was applied AFTER taking the global top-20: across 43 projects that left ~2 BM25 candidates and ~9.7 semantic ones | recall@10 +9 queries |
+| `SEARCH_POOL` | `100` | `limit*2` (=20): on 12.9% of queries the target sat in the wide pool but not the narrow one | folded into the row above |
 
-Итог на 140 запросах (`scripts/eval_pipeline.py`): **MRR 0.4242 → 0.4914, recall@1 0.3071 → 0.3714, recall@5 0.5857 → 0.6714, recall@10 0.65 → 0.7286.** Откат — `SEARCH_QUERY_GROUP=and SEARCH_POOL=20 SEARCH_SCOPE_AWARE=false`, воспроизводит прежние цифры точно.
+Result over 140 queries (`scripts/eval_pipeline.py`): **MRR 0.4242 → 0.4914, recall@1 0.3071 → 0.3714, recall@5 0.5857 → 0.6714, recall@10 0.65 → 0.7286.** To roll back: `SEARCH_QUERY_GROUP=and SEARCH_POOL=20 SEARCH_SCOPE_AWARE=false` reproduces the old numbers exactly.
 
-⚠️ **Цифры выше сняты харнессом до v1.32.0.** На очищенном наборе (`load_golden` с отсевом недостижимых, n=132) тот же код даёт **MRR 0.5212, recall@1 0.3939, recall@10 0.7727**, а прежний конвейер — 0.4499. Поведение поиска не менялось; занижал харнесс, а не код. Сравнивать версии между собой можно только при одинаковой версии харнесса.
+⚠️ **The figures above were taken with a pre-v1.32.0 harness.** On the cleaned set (`load_golden` with unreachable targets filtered out, n=132) the same code yields **MRR 0.5212, recall@1 0.3939, recall@10 0.7727**, while the old pipeline yields 0.4499. Search behaviour did not change; the harness was under-reporting, not the code. Versions may only be compared against each other under an identical harness version.
 
-**Актуальный baseline (харнесс v1.40.0, n=110): MRR 0.6013, recall@1 0.4818, recall@10 0.8364.** Последний сдвиг — снова харнесс, а не поиск: открытие статьи после СМЕНЫ РАБОТЫ (между запросом и открытием случился `finish_task`, `save_lesson`, `edit_article`…) больше не приписывается предыдущему запросу. Признак событийный, а не временной, и разделяет данные резко: без смены работы медиана разрыва 12 с и ни одной пары дольше 10 минут, со сменой — медиана 3.7 часа. Порог по времени поэтому не понадобился. На одном снимке: без границ n=131 / MRR 0.5514, с границами n=110 / MRR 0.6013.
+**Current baseline (harness v1.40.0, n=110): MRR 0.6013, recall@1 0.4818, recall@10 0.8364.** The latest shift is again the harness, not search: opening an article after a CHANGE OF WORK (a `finish_task`, `save_lesson`, `edit_article`… happened between the query and the open) is no longer credited to the preceding query. The signal is event-based rather than time-based, and it splits the data sharply: without a change of work the median gap is 12 s and no pair exceeds 10 minutes, whereas with one the median is 3.7 hours. That is why no time threshold was needed. On a single snapshot: without boundaries n=131 / MRR 0.5514, with boundaries n=110 / MRR 0.6013.
 
-Предыдущий baseline (харнесс v1.36.0, n=129): MRR 0.5512, recall@1 0.4419, recall@10 0.7597. Изменение снова харнессное: из источников набора убран `search_by_tag`, потому что он не ранжирует вообще — перебирает файлы, сверяет тег и отдаёт совпадения в порядке обхода каталога. Его клики меряли не тот конвейер. Набор ужался всего на 3 запроса, а MRR вырос на 0.03: теговые «запросы» закрывали настоящие поисковые и **забирали их открытия себе**. Заодно исправлен критерий отбора источников — было «на замере набор становится лучше» (отбор по метрике), стало «источник вызывает измеряемый конвейер» (проверяется по коду).
+Previous baseline (harness v1.36.0, n=129): MRR 0.5512, recall@1 0.4419, recall@10 0.7597. That change was also harness-side: `search_by_tag` was dropped as a source because it does not rank at all — it walks files, matches the tag and returns hits in directory-traversal order. Its clicks were measuring the wrong pipeline. The set shrank by just 3 queries while MRR rose by 0.03: tag "queries" were shadowing genuine search queries and **claiming their opens**. The source-selection criterion was fixed at the same time — it used to be "the set scores better with it" (selection on the metric), and is now "the source exercises the pipeline under measurement" (verified against the code).
 
-**Что осталось после v1.31.0** (разбор `scripts/diag_retrieval.py`, n=132): цель первой у 39.4%, в выдаче но не первой у 37.9%, ниже десятого места в пуле у 18.9%, добор кандидатов не сработал у 0.8%, не найдена ни одним каналом у 3.0%. То есть **отбор кандидатов закрыт, отсечка не виновата ни разу, и весь остаток (56.8%) — это ранжирование**: цель в пуле, вопрос только в порядке. Оставшиеся 3.0% — не дефект поиска, а мусор в ground truth: открытие приписано запросу, сделанному часами раньше.
+**What remains after v1.31.0** (breakdown from `scripts/diag_retrieval.py`, n=132): target ranked first for 39.4%, present but not first for 37.9%, below tenth place in the pool for 18.9%, candidate top-up failed for 0.8%, not found by any channel for 3.0%. In other words **candidate selection is closed, the cut-off was never at fault, and the entire remainder (56.8%) is ranking**: the target is in the pool, only the order is wrong. The remaining 3.0% is not a search defect but noise in the ground truth: an open attributed to a query made hours earlier.
 
-**Тюнинг ранжирования** (`RRF_K`, `DECAY_WEIGHT`, `BM25_TITLE_B`/`BM25_TAGS_B`/`BM25_BODY_B`, `RRF_WEIGHT_BM25`/`RRF_WEIGHT_SEMANTIC`) — веса ВНУТРИ отобранного пула. Применяются на этапе запроса, эксперимент ≈ минута. Сетка: `scripts/eval_ranking.py`.
+**Ranking tuning** (`RRF_K`, `DECAY_WEIGHT`, `BM25_TITLE_B`/`BM25_TAGS_B`/`BM25_BODY_B`, `RRF_WEIGHT_BM25`/`RRF_WEIGHT_SEMANTIC`) covers the weights INSIDE the selected pool. They apply at query time, so an experiment takes about a minute. Grid: `scripts/eval_ranking.py`.
 
-Веса каналов и бусты полей проверены на очищенном наборе (n=132) — **улучшений нет, дефолты сохранены**. Бусты полей: `title x3 tags x2` даёт MRR 0.5382 против 0.5212, то есть 3 запроса из 132 — шум; `title x8` уже хуже базы. Веса каналов: отключение семантики поднимает MRR до 0.5493 и recall@1 до 0.4470, но бутстрэп даёт ДИ [−0.0158, +0.0738] (ноль внутри), а по запросам **хуже становится 27, лучше 25** — выигрыш держится на нескольких крупных улучшениях и в работе обернулся бы ухудшением. ⚠️ При n=132 различимы сдвиги от ~0.024 MRR при доступном потолке 0.31 — дальше упирается не в идеи, а в размер набора.
+Channel weights and field boosts were validated on the cleaned set (n=132) — **no improvements, defaults kept**. Field boosts: `title x3 tags x2` gives MRR 0.5382 against 0.5212, i.e. 3 queries out of 132 — noise; `title x8` is already worse than the baseline. Channel weights: disabling semantics lifts MRR to 0.5493 and recall@1 to 0.4470, but the bootstrap CI is [−0.0158, +0.0738] (zero inside), and per query **27 get worse against 25 better** — the win rests on a handful of large improvements and would have been a regression in practice. ⚠️ At n=132 only shifts from ~0.024 MRR are distinguishable against an available ceiling of 0.31 — beyond that the limit is the size of the set, not the supply of ideas.
 
-Прогон сетки на 137 реальных запросах (2026-07-19) улучшений не нашёл — **дефолты оставлены**: `b=1.0` выигрывает один запрос из 137, то есть шум. «Плоская зона» `RRF_K` 10/20/60 оказалась не свойством данных, а **тождеством**: отсечка `max(top×0.5, 32)` при двухканальном топе равна ровно скору одноканального документа ранга 1 (`3000/(K+1)`), поэтому набор выживших не зависит от `K`. Ломается это на `K=120`, где одноканальный документ физически не достаёт абсолютного пола 32 (`3000/121 = 24.8`) — отсюда падение recall@10 до 0.49. ⚠️ Меняя `RRF_K`, помните про эту сцепку с константой 32.
+A grid run over 137 real queries (2026-07-19) found no improvements — **defaults left alone**: `b=1.0` wins a single query out of 137, i.e. noise. The "flat zone" of `RRF_K` at 10/20/60 turned out not to be a property of the data but an **identity**: with a two-channel top, the cut-off `max(top×0.5, 32)` equals exactly the score of a single-channel rank-1 document (`3000/(K+1)`), so the surviving set does not depend on `K`. It breaks at `K=120`, where a single-channel document physically cannot reach the absolute floor of 32 (`3000/121 = 24.8`) — hence recall@10 dropping to 0.49. ⚠️ When changing `RRF_K`, keep this coupling with the constant 32 in mind.
 
-⚠️ **Шумовой пол замера — до 4 запросов из 140 по recall@1.** Порядок документов с равным скором раньше брался из обхода `set()`, то есть из рандомизации хэшей строк: один и тот же код на разных `PYTHONHASHSEED` давал MRR от 0.4847 до 0.4970. С v1.31.0 порядок детерминирован (сырой скор, при равенстве — путь), прогоны совпадают побайтово. Разницу меньше этого пола за улучшение принимать нельзя.
+⚠️ **The measurement noise floor is up to 4 queries out of 140 on recall@1.** The order of equally scored documents used to come from iterating a `set()`, i.e. from string-hash randomisation: the same code under different `PYTHONHASHSEED` values produced MRR between 0.4847 and 0.4970. Since v1.31.0 the order is deterministic (raw score, ties broken by path) and runs match byte for byte. Anything smaller than this floor must not be accepted as an improvement.
 
-⚠️ **Temporal decay этим харнессом измерить нельзя** — ограничение метода, а не дефект. `track_access` обновляет `last_accessed` при каждой выдаче, а golden-набор по построению состоит из статей, которые открывали, — поэтому все цели замера сидят в зоне decay≈1.0 и множитель для них одинаков (меняются абсолютные скоры, но не порядок). Настраивать `DECAY_WEIGHT` по этим цифрам нельзя: они к нему нечувствительны.
+⚠️ **Temporal decay cannot be measured with this harness** — a limitation of the method, not a defect. `track_access` updates `last_accessed` on every result, and the golden set is by construction made of articles that were opened, so every target sits in the decay≈1.0 zone and shares the same multiplier (absolute scores move, ordering does not). `DECAY_WEIGHT` must not be tuned against these numbers: they are insensitive to it.
 
-**Почему reranker выключен.** Измерено `scripts/eval_retrieval.py` на 132 реальных запросах из аудит-лога (ground truth — статьи, которые действительно открыли после поиска):
+**Why the reranker is off.** Measured by `scripts/eval_retrieval.py` over 132 real queries from the audit log (ground truth being the articles actually opened after a search):
 
-| Конфигурация | MRR | recall@1 | recall@5 | recall@10 | время/запрос |
+| Configuration | MRR | recall@1 | recall@5 | recall@10 | time/query |
 |---|---|---|---|---|---|
-| hybrid | **0.4634** | **0.3636** | **0.5833** | 0.6515 | **0.45 с** |
-| hybrid + rerank | 0.4535 | 0.3561 | 0.5758 | 0.6515 | 14.5 с |
+| hybrid | **0.4634** | **0.3636** | **0.5833** | 0.6515 | **0.45 s** |
+| hybrid + rerank | 0.4535 | 0.3561 | 0.5758 | 0.6515 | 14.5 s |
 
-Прироста нет (сдвиг — по одному запросу на уровень, то есть шум) при 32-кратной цене. `recall@10` совпал структурно: пул кандидатов равен 10, поэтому reranker лишь переставляет те же 10 документов.
+There is no gain (the shift is one query per level, i.e. noise) at 32× the cost. `recall@10` matched structurally: the candidate pool equals 10, so the reranker merely permutes the same 10 documents.
 
-**Переоткрыто и закрыто повторно (v1.35.0).** Оговорка выше — «включать имеет смысл вместе с бо́льшим пулом» — после v1.31.0 стала выполнимой: пул вырос до 100. Замер повторён на очищенном наборе (n=132): без реранка MRR **0.5151** / recall@1 **0.3939**; реранк топ-20 по превью — 0.4769 / 0.3485 (**хуже базы на 0.038 MRR**, вдвое выше порога различимости) при 8.0 с/запрос; реранк топ-20 по полному телу — 0.5073 / 0.3939, то есть в пределах шума и с точным совпадением recall@1, при 22.2 с/запрос. Счёт по запросам +27/−28 — идеальный ноль. Обрезанное превью объясняет ВРЕД, но не отсутствие пользы. Вывод усилился: прироста нет и на том пуле, ради которого реранкер предлагали вернуть — и это на 20 ядрах, а не на NAS.
+**Reopened and closed again (v1.35.0).** The caveat above — "worth enabling together with a larger pool" — became testable after v1.31.0, when the pool grew to 100. The measurement was repeated on the cleaned set (n=132): without rerank MRR **0.5151** / recall@1 **0.3939**; reranking the top-20 by preview gives 0.4769 / 0.3485 (**0.038 MRR worse than baseline**, twice the distinguishability threshold) at 8.0 s/query; reranking the top-20 by full body gives 0.5073 / 0.3939, i.e. within noise and with an exact recall@1 match, at 22.2 s/query. The per-query tally is +27/−28 — a perfect zero. A truncated preview explains the HARM but not the absence of benefit. The conclusion got stronger: there is no gain even on the pool for which the reranker was proposed to return — and that is on 20 cores, not on the NAS.
 
 ### Contextual Retrieval
 
-Перед эмбеддингом к каждому чанку добавляется контекст-заголовок, ситуирующий кусок в документе (метод Anthropic) — запрос находит нужную секцию, даже если ключевых слов нет в её теле.
+Before embedding, every chunk is prefixed with a context header that situates the fragment inside its document (Anthropic's method) — a query finds the right section even when its body contains none of the keywords.
 
-- **Фаза 1 (метаданные):** контекст-заголовок `[проект · заголовок · секция · теги]` автоматически, для всех статей.
-- **Фаза 2 (ИИ-контекст):** для многосекционных статей секции получают ИИ-сгенерированную фразу-контекст (одна строка на секцию), хранится в YAML-frontmatter (`contexts:`) и берётся вместо метаданных. Наполняется через два инструмента:
-  - `context_gaps(project, limit)` — выдаёт статьи, которым нужен контекст (многосекционные, не-секретные, без `contexts:`), с секциями, телом и инструкцией. Append-log `### {дата}`-записи игнорируются.
-  - `save_contexts(project, filename, contexts)` — валидирует заголовки, пишет `contexts:` во frontmatter, инкрементально ре-эмбеддит статью.
+- **Phase 1 (metadata):** a context header `[project · title · section · tags]`, automatic, for every article.
+- **Phase 2 (AI context):** in multi-section articles each section gets an AI-generated context phrase (one line per section), stored in the YAML frontmatter (`contexts:`) and used in place of the metadata. It is populated through two tools:
+  - `context_gaps(project, limit)` — returns articles that need context (multi-section, non-secret, no `contexts:`), together with their sections, body and instructions. Append-log `### {date}` entries are ignored.
+  - `save_contexts(project, filename, contexts)` — validates the headings, writes `contexts:` into the frontmatter and incrementally re-embeds the article.
 
-Формат строки эмбеддинга версионируется (`context_format_version` в `.embeddings.pkl`) — при несовпадении кэш пересобирается полностью.
+The embedding line format is versioned (`context_format_version` in `.embeddings.pkl`) — on a mismatch the cache is rebuilt from scratch.
 
-### Адаптивная нарезка
+### Adaptive chunking
 
-Размер окна **подбирается под длину секции**, чтобы она уместилась в бюджет чанков целиком, а не обрезалась по фиксированному потолку.
+The window size is **fitted to the length of the section**, so that the section fits into the chunk budget whole instead of being cut off at a fixed ceiling.
 
-Это не косметика: до v1.28.0 действовал жёсткий потолок `600 × 4 = 2400` символов на секцию, и всё сверх него **молча отбрасывалось**. Замер: **26.3% текста базы** (1 252 908 символов) не попадало в эмбеддинги вообще, при этом 70.7% реальных запросов вели на обрезанную статью.
+This is not cosmetic: before v1.28.0 a hard ceiling of `600 × 4 = 2400` characters per section applied, and everything beyond it was **silently discarded**. Measured: **26.3% of the text in the base** (1,252,908 characters) never reached the embeddings at all, while 70.7% of real queries led to a truncated article.
 
-Три конфигурации на 133 реальных запросах (`scripts/eval_chunking.py`):
+Three configurations over 133 real queries (`scripts/eval_chunking.py`):
 
-| Нарезка | MRR | recall@5 | recall@10 | Чанков | Покрытие |
+| Chunking | MRR | recall@5 | recall@10 | Chunks | Coverage |
 |---|---|---|---|---|---|
-| фиксированная 600×4 (до v1.28.0) | 0.4599 | 0.5865 | 0.6541 | 8034 | ~72% |
-| адаптивная, бюджет 4 | 0.4580 | 0.6165 | 0.6842 | 6771 | ~85% |
-| **адаптивная, бюджет 16** (текущая) | **0.4626** | **0.6165** | **0.6842** | **7219** | **~93%** |
+| fixed 600×4 (pre-v1.28.0) | 0.4599 | 0.5865 | 0.6541 | 8034 | ~72% |
+| adaptive, budget 4 | 0.4580 | 0.6165 | 0.6842 | 6771 | ~85% |
+| **adaptive, budget 16** (current) | **0.4626** | **0.6165** | **0.6842** | **7219** | **~93%** |
 
-Адаптивный режим даёт **меньше** чанков при **большем** покрытии: широкое окно закрывает секцию за меньшее число окон и заодно достаёт хвост. Прирост честно скромный — +4 запроса из 133 в топ-5/топ-10, MRR не двигается: чинится «не нашлось вообще», а не «нашлось не первым».
+Adaptive mode produces **fewer** chunks at **greater** coverage: a wide window covers a section in fewer windows and picks up the tail along the way. The gain is honestly modest — +4 queries out of 133 into the top-5/top-10, with MRR unmoved: what gets fixed is "not found at all", not "not found first".
 
-Тюнинг: `CHUNK_ADAPTIVE` (дефолт `true`), `CHUNK_WINDOW_MAX` (1200 — предел входа e5-base, ~512 токенов), `CHUNK_SUBCHUNKS_CAP` (16). Смена любого меняет тексты чанков и инвалидирует `.embeddings.pkl` → полная пересборка.
+Tuning: `CHUNK_ADAPTIVE` (default `true`), `CHUNK_WINDOW_MAX` (1200 — the e5-base input limit, ~512 tokens), `CHUNK_SUBCHUNKS_CAP` (16). Changing any of them changes the chunk texts and invalidates `.embeddings.pkl` → a full rebuild.
 
-### Бэкфилл ИИ-контекста
+### Backfilling AI context
 
-ИИ-контекст (фаза 2) наслаивается постепенно и не требуется для работы поиска — статья без него использует метаданные фазы 1. Чтобы наполнить существующую базу, попросите ассистента запустить бэкфилл — это цикл «tool-dance», который ассистент выполняет сам:
+AI context (phase 2) is layered in gradually and is not required for search to work — an article without it falls back to phase 1 metadata. To populate an existing base, ask your assistant to run the backfill; it is a "tool dance" loop the assistant performs on its own:
 
 ```
-Пока context_gaps(project) возвращает статьи:
-  1. context_gaps(project, limit=5)      — получить батч статей-пробелов
-  2. для каждой секции — написать одну фразу (≤25 слов), ситуирующую её в документе
+While context_gaps(project) returns articles:
+  1. context_gaps(project, limit=5)      — fetch a batch of gap articles
+  2. for each section — write one phrase (≤25 words) situating it in the document
   3. save_contexts(project, filename, [{heading, context}, …])
-  4. повторять, пока remaining == 0
+  4. repeat until remaining == 0
 ```
 
-Бэкфилл прерываемый и возобновляемый (состояние = сам frontmatter): новые статьи подхватятся при следующем проходе. Для большой базы распараллеливается по проектам (разные файлы — без конфликтов). Пример запроса ассистенту: «запусти бэкфилл ИИ-контекста по проекту infra» или «по всем проектам».
+The backfill is interruptible and resumable (the state is the frontmatter itself): new articles are picked up on the next pass. For a large base it parallelises across projects (distinct files, no conflicts). Example request to an assistant: "run the AI context backfill for the infra project" or "for every project".
 
-### Умное сохранение
+### Smart saving
 
-При `save_lesson` автоматически:
+`save_lesson` automatically performs:
 
-1. Запись в дневной лог (аудит-трейл)
-2. Автотегирование (14 regex-правил)
-3. Поиск существующей статьи по смыслу — мерж вместо дубля
-4. Обнаружение противоречий (IP, версии, URL, порты) — role-aware: разные роли IP (private vs public) и well-known DNS (8.8.8.8, 1.1.1.1, …) не дают FP; CIDR-нотация не сравнивается как host
-5. Cross-references в связанных статьях
-6. Обновление ленты активного контекста
-7. Извлечение git-ссылок (коммиты, issues, теги)
-8. Git commit
+1. A write into the daily log (audit trail)
+2. Auto-tagging (14 regex rules)
+3. A semantic lookup for an existing article — merge instead of duplicate
+4. Contradiction detection (IPs, versions, URLs, ports) — role-aware: distinct IP roles (private vs public) and well-known DNS (8.8.8.8, 1.1.1.1, …) produce no false positives; CIDR notation is not compared as a host
+5. Cross-references in related articles
+6. An update to the active-context feed
+7. Extraction of git references (commits, issues, tags)
+8. A git commit
 
-### Веб-интерфейс
+### Web interface
 
-Встроенный мобильный UI на `http://localhost:8765`. Тёмная/светлая тема.
+A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
 
-- **Поиск** — snippets с подсветкой совпадений (жёлтый), фильтр по проекту, кликабельные теги, markdown-рендеринг, breadcrumbs, auto-scroll к первому match
-- **Ответы** — вопрос по базе: тот же конвейер, что у tool `ask` (широкий пул кандидатов → фолбэк на все проекты; cross-encoder реранк — опционально, см. выше), выдача — релевантные фрагменты с указанием статьи-источника. Генерации нет: LLM на сервере отсутствует, это retrieval с источниками, а не сочинённый ответ
-- **Командная палитра** — `Ctrl+K` (и `Cmd+K`) из любой вкладки: поиск с дебаунсом, `↑`/`↓` — навигация, `Enter` — открыть развёрнутой, `Esc` — закрыть
-- **Похожие** — сайдбар семантически близких статей рядом с раскрытой: оценка близости, клик — переход, кнопка «следит/заморожен» фиксирует список при навигации
-- **Таймлайн версий** — у tracking-статей слайдер по bi-temporal снимкам: прокрутка истории факта с интервалами действия и подсветкой изменившихся полей
-- **Добавить** — форма записи
-- **Граф** — Obsidian-style анимированный граф: drag, zoom, pan, фильтр по проектам, hover-подсветка связей
-- **Компиляция** — превью и запуск
-- **Аналитика** — топ по обращениям, неиспользуемые статьи
-- **Аудит** — лог всех MCP-обращений
+- **Search** — snippets with match highlighting (yellow), a project filter, clickable tags, markdown rendering, breadcrumbs, auto-scroll to the first match
+- **Answers** — a question against the base: the same pipeline as the `ask` tool (wide candidate pool → fallback across all projects; cross-encoder rerank optional, see above), returning relevant fragments annotated with their source article. There is no generation: the server hosts no LLM, so this is retrieval with sources rather than an invented answer
+- **Command palette** — `Ctrl+K` (and `Cmd+K`) from any tab: debounced search, `↑`/`↓` to navigate, `Enter` to open expanded, `Esc` to close
+- **Similar** — a sidebar of semantically close articles next to an expanded one: a proximity score, click to jump, and a "follow/frozen" button that pins the list while navigating
+- **Version timeline** — tracking articles get a slider over their bi-temporal snapshots: scroll a fact's history with validity intervals and changed fields highlighted
+- **Add** — an entry form
+- **Graph** — an Obsidian-style animated graph: drag, zoom, pan, project filter, hover highlighting of links
+- **Compilation** — preview and run
+- **Analytics** — most accessed, never used
+- **Audit** — a log of every MCP call
 
 ### REST API
 
-20 REST endpoints (`/api/*`): health, версия, логин/auth, поиск, ответы по базе (retrieval с источниками), семантически похожие статьи, таймлайн версий факта, сохранение, CRUD статей, проекты, граф знаний, аналитика, теги, компиляция (превью/запуск), экспорт, аудит, логи. Плюс `/` (Web UI), `/login`, `/sse` (MCP-транспорт).
+20 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
 
-### Автоматизация
+### Automation
 
-- Автокомпиляция дневных логов в 02:00
-- Git-версионирование всех изменений
-- Кэш embeddings для быстрого старта
-- Уведомления об устаревших статьях
+- Daily logs auto-compiled at 02:00
+- Git versioning of every change
+- An embeddings cache for a fast start
+- Notifications about stale articles
 
-## Безопасность
+## Security
 
-Три уровня защиты, каждый включается через env переменную:
+Three layers of protection, each enabled by an env variable:
 
-| Уровень | Переменная | Что делает |
-|---------|-----------|------------|
-| Авторизация | `MC_API_KEY` | Логин-страница + cookie 30 дней, Bearer token, ?key= в URL |
-| Шифрование | `MC_ENCRYPT_KEY` | AES-256 для секретных статей (save_secret) |
-| Аудит | автоматически | Лог всех MCP-вызовов, вкладка "Аудит" в Web UI |
+| Layer | Variable | What it does |
+|-------|----------|--------------|
+| Authorisation | `MC_API_KEY` | Login page + 30-day cookie, Bearer token, `?key=` in the URL |
+| Encryption | `MC_ENCRYPT_KEY` | AES-256 for secret articles (save_secret) |
+| Audit | automatic | A log of every MCP call, "Audit" tab in the Web UI |
 
-Без переменных — открытый доступ (обратная совместимость). Подробнее: [docs/security.md](docs/security.md)
+With no variables set, access is open (backwards compatibility). More detail: [docs/security.en.md](docs/security.en.md)
 
-## Резервное копирование
+## Backups
 
-Двухзвенная схема (NAS → ПК), звенья независимы:
+A two-link scheme (NAS → PC) whose links are independent:
 
-- **NAS** — ежедневный `tar` каталога `knowledge/` (`scripts/mc-backup.sh`, cron 04:00, ротация 7 дней). Архивы кладутся в `backups/`.
-- **ПК** — независимая копия архивов + снимок `.env` (`scripts/mc-backup-pull.ps1`, задача Task Scheduler «memory-compiler backup pull», 05:00). Ретенция 30 дней для ежедневных + месячные срезы (`-01`) хранятся бессрочно. Restore-drill проверяет целостность свежего архива (`scripts/mc-backup-verify.ps1`).
+- **NAS** — a daily `tar` of the `knowledge/` directory (`scripts/mc-backup.sh`, cron 04:00, 7-day rotation). Archives land in `backups/`.
+- **PC** — an independent copy of the archives plus a snapshot of `.env` (`scripts/mc-backup-pull.ps1`, Task Scheduler job "memory-compiler backup pull", 05:00). Retention is 30 days for dailies, with monthly slices (`-01`) kept indefinitely. A restore drill verifies the integrity of the newest archive (`scripts/mc-backup-verify.ps1`).
 
-### Установка (Windows, звено ПК)
+### Installation (Windows, the PC link)
 
-Пути `Source`/`EnvFile` по умолчанию выводятся из расположения скрипта (`<repo>/scripts/`), так что параметры можно не задавать. Регистрация ежедневной задачи (замени `<repo>` на путь к своему клону):
+The `Source`/`EnvFile` paths default to values derived from the script's own location (`<repo>/scripts/`), so the parameters can be omitted. Registering the daily job (replace `<repo>` with the path to your clone):
 
 ```powershell
 schtasks /Create /TN "memory-compiler backup pull" /SC DAILY /ST 05:00 /F `
   /TR "pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `"<repo>\scripts\mc-backup-pull.ps1`" -Verify"
 ```
 
-Разовый прогон и проверка: `pwsh -File scripts\mc-backup-pull.ps1 -Verify` (лог — `C:\Backups\memory-compiler\pull.log`). Восстановление: распаковать нужный `archives\knowledge-*.tar.gz` в каталог memory-compiler, вернуть соответствующий `secrets\.env-*` (в нём `MC_ENCRYPT_KEY`), поднять контейнер.
+A one-off run and check: `pwsh -File scripts\mc-backup-pull.ps1 -Verify` (log at `C:\Backups\memory-compiler\pull.log`). To restore: unpack the desired `archives\knowledge-*.tar.gz` into the memory-compiler directory, put back the matching `secrets\.env-*` (it holds `MC_ENCRYPT_KEY`), and bring the container up.
 
-## Структура проекта
+## Project layout
 
 ```
 memory-compiler/
-├── server.py                  # Entry point (11 строк)
+├── server.py                  # Entry point (11 lines)
 ├── memory_compiler/
 │   ├── __init__.py
-│   ├── config.py              # Константы, метаданные, shared state
+│   ├── config.py              # Constants, metadata, shared state
 │   ├── search.py              # Whoosh BM25F + semantic + reranking + contextual retrieval
-│   ├── storage.py             # Статьи, git, утилиты, автотегирование
-│   ├── handlers.py            # Реализация MCP-инструментов
-│   ├── tools.py               # Регистрация MCP tools, диспетчер, resources, prompts
+│   ├── storage.py             # Articles, git, utilities, auto-tagging
+│   ├── handlers.py            # MCP tool implementations
+│   ├── tools.py               # MCP tool registration, dispatcher, resources, prompts
 │   ├── api.py                 # REST endpoints, Starlette app
-│   ├── ui.py                  # Web UI HTML шаблон
-│   ├── markdown_render.py     # Серверный рендер MD статей (markdown-it-py + Pygments + nh3)
-│   ├── obs.py                 # Observability: structured logging, request_id, счётчики ошибок
-│   ├── retrieval_eval.py      # Оценка поиска: поведенческий golden-набор + known-item, recall@k/MRR
-│   └── maintenance.py         # Одноразовые проходы обслуживания
-├── tests/                     # pytest (офлайн: HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1)
-│   ├── conftest.py            # Фикстуры (tmp knowledge dir)
+│   ├── ui.py                  # Web UI HTML template
+│   ├── markdown_render.py     # Server-side MD rendering (markdown-it-py + Pygments + nh3)
+│   ├── obs.py                 # Observability: structured logging, request_id, error counters
+│   ├── retrieval_eval.py      # Search evaluation: behavioural golden set + known-item, recall@k/MRR
+│   └── maintenance.py         # One-off maintenance passes
+├── tests/                     # pytest (offline: HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1)
+│   ├── conftest.py            # Fixtures (tmp knowledge dir)
 │   └── test_*.py              # search, storage, handlers, contextual retrieval, web, concurrency …
 ├── skills/
 │   └── memory-autopilot/
-│       └── SKILL.md           # Скил автоуправления памятью для Claude Code
+│       └── SKILL.md           # The memory autopilot skill for Claude Code
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
 ```
 
-## Тесты
+## Tests
 
 ```bash
 pip install pytest pytest-asyncio
 pytest tests/ -v
 ```
 
-## Стек
+## Stack
 
-| Компонент | Технология |
-|-----------|-----------|
-| Сервер | Python 3.12, MCP SDK, Starlette, Uvicorn |
-| Полнотекстовый поиск | Whoosh (BM25F) |
-| Семантический поиск | sentence-transformers |
-| Хранилище | Markdown + Git |
+| Component | Technology |
+|-----------|------------|
+| Server | Python 3.12, MCP SDK, Starlette, Uvicorn |
+| Full-text search | Whoosh (BM25F) |
+| Semantic search | sentence-transformers |
+| Storage | Markdown + Git |
 
-## Рабочий процесс
+## Workflow
 
-### С memory-autopilot (рекомендуется)
+### With memory-autopilot (recommended)
 
-Скил `memory-autopilot` автоматизирует весь цикл — ищет контекст, выбирает tool, сохраняет результат. Пользователь просто работает, память управляется невидимо.
+The `memory-autopilot` skill automates the whole cycle — it looks up context, picks the tool and saves the result. The user simply works while memory is managed invisibly.
 
-Установка: скопируйте `skills/memory-autopilot/SKILL.md` в `~/.claude/skills/memory-autopilot/SKILL.md`.
+Installation: copy `skills/memory-autopilot/SKILL.md` to `~/.claude/skills/memory-autopilot/SKILL.md`.
 
-### Ручной режим
+### Manual mode
 
 ```
-1. Начало задачи    → start_task("тема")       ← поиск + сессия + контекст
-2. В процессе       → ask("как настроить X?")
-3. Решение найдено  → finish_task(...)          ← урок + сессия
+1. Task begins     → start_task("topic")        ← search + session + context
+2. In progress     → ask("how do I configure X?")
+3. Solution found  → finish_task(...)           ← lesson + session
 ```
 
-## Конфигурация
+## Configuration
 
-Проекты создаются динамически через `add_project()` или автоматически при `save_lesson()`. Каждый проект — отдельная директория в `knowledge/` с markdown-статьями.
+Projects are created dynamically through `add_project()`, or automatically on `save_lesson()`. Each project is its own directory under `knowledge/`, holding markdown articles.
 
-Опционально можно задать начальные проекты через переменную окружения:
+Initial projects can optionally be declared through an environment variable:
 
 ```bash
 PROJECTS=backend,infra,general python server.py
@@ -363,9 +365,9 @@ PROJECTS=backend,infra,general python server.py
 
 ### Git Capture
 
-Два режима автосбора знаний из git:
+Two modes for harvesting knowledge from git:
 
-**Режим 1 — repo_path** (сервер читает git напрямую):
+**Mode 1 — repo_path** (the server reads git directly):
 ```bash
 # .env
 GIT_REPOS_PATH=/path/to/your/repos
@@ -375,15 +377,15 @@ GIT_REPOS_PATH=/path/to/your/repos
 git_capture(repo_path="/repos/my-project", project="myapp", auto_save=true)
 ```
 
-**Режим 2 — git_log_raw** (клиент передаёт вывод git log):
+**Mode 2 — git_log_raw** (the client passes the output of git log):
 ```bash
-# Claude запускает локально:
+# Claude runs locally:
 git log --format="%H|%s|%an|%aI" --numstat --since="7 days ago"
-# и передаёт вывод в git_log_raw параметр
+# and passes the output in the git_log_raw parameter
 ```
 
-Повторные вызовы с `repo_path` автоматически обрабатывают только новые коммиты.
+Repeat calls with `repo_path` automatically process only new commits.
 
-## Лицензия
+## License
 
 [MIT](LICENSE)
