@@ -1030,7 +1030,7 @@ button:hover{background:#2563eb}
 </head>
 <body>
 <div class="card">
-<h1 id="formTitle">Memory Compiler</h1>
+<h1>Memory Compiler</h1>
 <input type="password" id="key" placeholder="API Key" autofocus>
 <button id="loginBtn" onclick="doLogin()">Войти</button>
 <div class="error" id="err"></div>
@@ -1042,7 +1042,6 @@ var L={ru:{title:"Вход",btn:"Войти",err:"Ошибка"},
        en:{title:"Sign in",btn:"Sign in",err:"Error"}}[LANG];
 /* /i18n-dict */
 document.title="Memory Compiler — "+L.title;
-document.getElementById("formTitle").textContent="Memory Compiler — "+L.title;
 document.getElementById("loginBtn").textContent=L.btn;
 async function doLogin(){
   const key=document.getElementById("key").value.trim();
