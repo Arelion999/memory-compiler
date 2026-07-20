@@ -250,6 +250,7 @@ A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
 - **Compilation** — preview and run
 - **Analytics** — most accessed, never used
 - **Audit** — a log of every MCP call
+- **Language** — an RU/EN toggle next to the theme switch. The default comes from `MC_LANG`, the choice is remembered in the browser. Interface labels are translated; content (article titles, snippets, audit entries, error texts) comes from the server and stays in Russian
 
 ### REST API
 
