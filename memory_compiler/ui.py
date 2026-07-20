@@ -141,6 +141,7 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div class="header">
 <h1>Memory Compiler <span id="version-badge" style="font-size:0.55em;color:var(--text2);font-weight:400;margin-left:6px"></span></h1>
 <button class="theme-toggle" onclick="toggleTheme()">&#9728;/&#9790;</button>
+<button class="theme-toggle" onclick="toggleLang()" title="RU / EN">RU/EN</button>
 </div>
 <div class="tab-bar">
 <a href="#" class="active" onclick="showTab('search');return false" id="tab-search">Поиск</a>
@@ -219,6 +220,35 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div class="related-list" id="related-list"></div>
 </div>
 <script>
+// ─── i18n ───────────────────────────────────────────────────────────────
+// Язык с сервера (MC_LANG) — дефолт; выбор пользователя в localStorage его перебивает.
+// Плейсхолдер подставляет api.py тем же приёмом, что и /*PYGMENTS_CSS*/.
+var SERVER_LANG="/*MC_LANG*/";
+/* i18n-dict */
+var I18N={ru:{},en:{}};
+/* /i18n-dict */
+var LANG=localStorage.getItem("lang")||SERVER_LANG||"ru";
+if(!I18N[LANG])LANG="ru";
+
+// Нет перевода — отдаём русский, а не пустоту: UI не должен ломаться от опечатки в ключе.
+function t(k){return (I18N[LANG]&&I18N[LANG][k])||I18N.ru[k]||k;}
+
+// Три атрибута, потому что подпись бывает текстом, плейсхолдером и подсказкой.
+function applyI18N(){
+  document.querySelectorAll("[data-i18n]").forEach(function(el){el.textContent=t(el.getAttribute("data-i18n"));});
+  document.querySelectorAll("[data-i18n-ph]").forEach(function(el){el.placeholder=t(el.getAttribute("data-i18n-ph"));});
+  document.querySelectorAll("[data-i18n-title]").forEach(function(el){el.title=t(el.getAttribute("data-i18n-title"));});
+  document.documentElement.setAttribute("lang",LANG);
+}
+
+// Reload, а не перерисовка: половина подписей живёт внутри уже отрисованных карточек,
+// графа и таймлайна — перерисовывать их выборочно значит продублировать логику вкладок.
+function toggleLang(){
+  LANG=LANG==="en"?"ru":"en";
+  localStorage.setItem("lang",LANG);
+  location.reload();
+}
+
 let PROJECTS=[];
 fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
 if(d.version){$("version-badge").textContent="v"+d.version;}
@@ -383,6 +413,7 @@ function toggleTheme(){
   localStorage.setItem("theme",next);
 }
 (function(){const t=localStorage.getItem("theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
+document.addEventListener("DOMContentLoaded",applyI18N);
 
 // Tags bar
 async function loadTags(){

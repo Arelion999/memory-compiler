@@ -35,6 +35,7 @@ from memory_compiler.handlers import (
 )
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
+from memory_compiler.i18n import MC_LANG
 import time as _time
 
 from memory_compiler import obs
@@ -102,7 +103,8 @@ def _safe_proj_path(project: str):
 
 async def web_index(request: Request):
     # CSS подсветки Pygments генерится на сервере и вставляется в шаблон
-    return HTMLResponse(WEB_HTML.replace("/*PYGMENTS_CSS*/", pygments_css()))
+    html = WEB_HTML.replace("/*PYGMENTS_CSS*/", pygments_css())
+    return HTMLResponse(html.replace("/*MC_LANG*/", MC_LANG))
 
 
 async def web_search(request: Request):
