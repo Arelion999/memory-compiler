@@ -10,8 +10,13 @@ docs/security.md — английский, потому что GitHub подхв
 и показывает по кнопке Security. А docs/claude-desktop-setup.md остаётся русским:
 туда приходят только по ссылке, дефолтного входа у него нет. Второй язык получает
 суффикс (`.ru.md` или `.en.md`) — какой именно, диктует то же правило.
+
+Второй сторож — соответствие ЯЗЫКА. Ссылка бывает рабочей и при этом ведёт в чужой
+текст: файл существует, битой ссылки нет, а русский читатель попадает в английский
+документ. Проверяется и между доками, и в указателях из комментариев кода.
 """
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +29,23 @@ PAIRS = [
     ("docs/claude-desktop-setup.md", "docs/claude-desktop-setup.en.md"),
     ("docs/security.ru.md", "docs/security.md"),
 ]
+
+# Язык файла и его напарник выводятся из PAIRS, отдельного списка нет:
+# заводишь новую пару — обе языковые проверки подхватывают её сами.
+LANG = {}
+PAIR_OF = {}
+for _ru, _en in PAIRS:
+    LANG[_ru], LANG[_en] = "ru", "en"
+    PAIR_OF[_ru], PAIR_OF[_en] = _en, _ru
+
+CYRILLIC = re.compile(r"[а-яёА-ЯЁ]")
+CODE_GLOBS = ("*.py", "*.sh", "*.ps1")
+
+# Указатель «иди читать туда» — только он и проверяется на язык. Комментарий, который
+# РАССКАЗЫВАЕТ про файл («docs/security.md GitHub рендерит по двум адресам»), говорит
+# о нём, а не отсылает в него, и на языке цели быть не обязан. Без этого разделения
+# проверка падала на собственных комментариях этого файла.
+REFERRAL = re.compile(r"(?:см\.|смотри|подробнее|see|details)\s*:?\s*", re.IGNORECASE)
 
 # Переключатель обычно ссылается на пару относительно — но docs/security.md GitHub
 # рендерит по ДВУМ адресам: /blob/master/docs/security.md (база — docs/) и
@@ -69,16 +91,21 @@ def slug(text: str) -> str:
     return re.sub(r"\s+", "-", s)
 
 
-def links(path: Path):
-    """Ссылки файла, блоки кода пропускаются."""
+def links_with_lines(path: Path):
+    """Ссылки файла как [(номер строки, url)], блоки кода пропускаются."""
     out, in_fence = [], False
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if FENCE.match(line):
             in_fence = not in_fence
             continue
         if not in_fence:
-            out.extend(MD_LINK.findall(line))
+            out.extend((lineno, url) for url in MD_LINK.findall(line))
     return out
+
+
+def links(path: Path):
+    """Ссылки файла, блоки кода пропускаются."""
+    return [url for _, url in links_with_lines(path)]
 
 
 @pytest.mark.parametrize("ru,en", PAIRS)
@@ -155,3 +182,87 @@ def test_relative_md_links_resolve(doc):
         and not (path.parent / link).is_file()
     ]
     assert not broken, f"{doc}: битые ссылки на файлы {broken}"
+
+
+@pytest.mark.parametrize("doc", sorted(LANG))
+def test_cross_doc_links_keep_language(doc):
+    """Ссылка на ДРУГОЙ док ведёт на версию своего языка.
+
+    Существование ссылки сторожит test_relative_md_links_resolve. Здесь важен язык:
+    ссылка бывает рабочей и при этом ведёт в чужой текст — так README.ru.md чуть не
+    остался с указателем на английский docs/security.md после перестановки пары.
+
+    Ссылка на СВОЮ пару пропускается: это переключатель языка, ему и положено вести
+    в другой язык. Исключение выводится из PAIR_OF, списка имён нет.
+    """
+    path = REPO / doc
+    bad = []
+    for lineno, url in links_with_lines(path):
+        # Якорь отрезаем: ссылка вида docs/security.md#раздел ведёт в тот же файл,
+        # и без обрезки путь просто не разрешился бы, молча пройдя мимо проверки.
+        target_url = url.split("#", 1)[0]
+        if not target_url:
+            continue  # чистый якорь внутри своего файла
+        blob = BLOB_URL.match(target_url)
+        if blob:
+            # Абсолютный переключатель (docs/security.md) — путь уже от корня репо.
+            # Без этой ветки https-ссылка отсекалась бы и язык не проверялся вовсе.
+            target = blob.group(1)
+        elif target_url.startswith(("http://", "https://")):
+            continue  # внешняя ссылка, не наш док
+        else:
+            try:
+                target = (path.parent / target_url).resolve().relative_to(REPO).as_posix()
+            except ValueError:
+                continue
+        if target not in LANG or target == PAIR_OF[doc]:
+            continue
+        if LANG[target] != LANG[doc]:
+            bad.append(f"{doc}:{lineno} ({LANG[doc]}) → {target} ({LANG[target]})")
+    assert not bad, "ссылка ведёт в чужой язык:\n  " + "\n  ".join(bad)
+
+
+def code_files():
+    """Отслеживаемые файлы кода. git ls-files, а не rglob — чтобы не зацепить
+    venv, node_modules и прочее неотслеживаемое."""
+    done = subprocess.run(
+        ["git", "ls-files", *CODE_GLOBS],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    )
+    return [line for line in done.stdout.splitlines() if line]
+
+
+def test_code_comments_link_to_own_language():
+    """Комментарий в коде ссылается на док своего языка.
+
+    Две отсечки, обе без списка исключений по именам файлов:
+
+    1. Только цельные комментарии (первый непробельный символ — #). Так строка с
+       README.md внутри git-лога в tests/test_storage.py остаётся данными, а не ссылкой.
+    2. Только после маркера отсылки (REFERRAL). Комментарий, объясняющий устройство
+       файла, упоминает его имя, но никуда не отсылает — язык там не при чём.
+
+    Язык комментария — по кириллице во ВСЕЙ строке, а не в хвосте: хвост часто и есть
+    голый путь («см. docs/security.ru.md»), в нём кириллицы нет и язык определился бы
+    неверно. Язык цели — карта LANG.
+    """
+    bad = []
+    for rel in code_files():
+        for lineno, line in enumerate(
+            (REPO / rel).read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not line.lstrip().startswith("#"):
+                continue
+            referral = REFERRAL.search(line)
+            if not referral:
+                continue
+            tail = line[referral.end():]
+            lang = "ru" if CYRILLIC.search(line) else "en"
+            for doc, doc_lang in LANG.items():
+                if doc not in tail and doc.rsplit("/", 1)[-1] not in tail:
+                    continue
+                if doc_lang != lang:
+                    bad.append(
+                        f"{rel}:{lineno} (комментарий {lang}) → {doc} ({doc_lang})"
+                    )
+    assert not bad, "комментарий ведёт на док чужого языка:\n  " + "\n  ".join(bad)
