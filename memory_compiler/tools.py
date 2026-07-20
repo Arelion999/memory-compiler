@@ -109,7 +109,7 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "uri": {"type": "string", "description": "memory://<проект>/<файл>"},
+                                "uri": {"type": "string", "description": "memory://<project>/<file>"},
                                 "name": {"type": "string"},
                                 "title": {"type": "string"},
                                 "score": {"type": "string"}
