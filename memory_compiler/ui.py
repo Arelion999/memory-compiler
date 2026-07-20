@@ -256,7 +256,47 @@ var I18N={
     "cmdk.open":"открыть",
     "cmdk.nav":"навигация",
     "cmdk.esc":"Esc закрыть",
-    "ask.note":"Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет."
+    "ask.note":"Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет.",
+    "msg.notFound":"Ничего не найдено",
+    "msg.loading":"Загрузка...",
+    "msg.error":"Ошибка",
+    "msg.loadError":"Ошибка загрузки",
+    "msg.deleteError":"Ошибка удаления",
+    "msg.fillRequired":"Заполните тему и содержание",
+    "msg.noEntries":"Нет записей",
+    "msg.compiling":"Компиляция...",
+    "msg.matches":"совпадений",
+    "card.expand":"Развернуть",
+    "card.collapse":"Свернуть",
+    "card.delete":"Удалить",
+    "confirm.delete":"Удалить",
+    "confirm.compile":"Применить компиляцию?",
+    "graph.articles":"статей",
+    "graph.links":"связей",
+    "graph.orphans":"без связей",
+    "analytics.stats":"Статистика",
+    "analytics.totalArticles":"Всего статей",
+    "analytics.tracked":"Отслеживается",
+    "analytics.neverAccessed":"Никогда не открывались",
+    "analytics.topAccessed":"Топ по обращениям",
+    "analytics.hits":"обр.",
+    "audit.recent":"Аудит (последние",
+    "cmdk.startTyping":"Начните вводить запрос…",
+    "lbl.frozen":"заморожен",
+    "related.loading":"Загрузка…",
+    "related.empty":"Похожих не нашлось",
+    "related.cosine":"косинус",
+    "related.barExplain":"— полоска отсчитывается от порога шума модели",
+    "timeline.versions":"Версии факта",
+    "timeline.current":"текущая",
+    "timeline.effectiveFrom":"действует с",
+    "timeline.noDate":"дата не указана",
+    "timeline.to":"по",
+    "timeline.toPresent":"— по сейчас",
+    "ask.searching":"Ищу…",
+    "ask.fallbackAll":"В выбранном проекте ничего не нашлось — показаны результаты по всем проектам.",
+    "ask.secretFragment":"[зашифровано — откройте статью для просмотра]",
+    "ask.queryError":"Ошибка запроса"
   },
   en:{
     "tab.search":"Search",
@@ -288,7 +328,47 @@ var I18N={
     "cmdk.open":"open",
     "cmdk.nav":"navigate",
     "cmdk.esc":"Esc to close",
-    "ask.note":"The answer is assembled from retrieved fragments — this is search with sources, not generated text: there is no LLM on the server."
+    "ask.note":"The answer is assembled from retrieved fragments — this is search with sources, not generated text: there is no LLM on the server.",
+    "msg.notFound":"Nothing found",
+    "msg.loading":"Loading...",
+    "msg.error":"Error",
+    "msg.loadError":"Loading error",
+    "msg.deleteError":"Deletion error",
+    "msg.fillRequired":"Fill in the topic and content",
+    "msg.noEntries":"No entries",
+    "msg.compiling":"Compiling...",
+    "msg.matches":"matches",
+    "card.expand":"Expand",
+    "card.collapse":"Collapse",
+    "card.delete":"Delete",
+    "confirm.delete":"Delete",
+    "confirm.compile":"Apply compilation?",
+    "graph.articles":"articles",
+    "graph.links":"links",
+    "graph.orphans":"orphaned",
+    "analytics.stats":"Statistics",
+    "analytics.totalArticles":"Total articles",
+    "analytics.tracked":"Tracked",
+    "analytics.neverAccessed":"Never accessed",
+    "analytics.topAccessed":"Top accessed",
+    "analytics.hits":"hits",
+    "audit.recent":"Audit (last",
+    "cmdk.startTyping":"Start typing a query…",
+    "lbl.frozen":"frozen",
+    "related.loading":"Loading…",
+    "related.empty":"No related notes found",
+    "related.cosine":"cosine",
+    "related.barExplain":"— the bar is scaled from the model's noise threshold",
+    "timeline.versions":"Fact versions",
+    "timeline.current":"current",
+    "timeline.effectiveFrom":"in effect from",
+    "timeline.noDate":"date not specified",
+    "timeline.to":"to",
+    "timeline.toPresent":"— to present",
+    "ask.searching":"Searching…",
+    "ask.fallbackAll":"Nothing found in the selected project — showing results from all projects.",
+    "ask.secretFragment":"[encrypted — open the article to view]",
+    "ask.queryError":"Query error"
   }
 };
 /* /i18n-dict */
@@ -319,7 +399,7 @@ fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECT
 if(d.version){$("version-badge").textContent="v"+d.version;}
 $("f-project").innerHTML=PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
 $("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
-$("ask-project").innerHTML='<option value="">Все проекты</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
+$("ask-project").innerHTML='<option value="">'+t("lbl.allProjects")+'</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");});
 const $=id=>document.getElementById(id);
 let current=null;
 let activeTag=null;
@@ -402,7 +482,7 @@ async function loadProject(p){
 
 async function expandCard(proj,file,el){
   const card=el.closest(".card");
-  if(card.classList.contains("expanded")){card.classList.remove("expanded");el.textContent="Развернуть";return;}
+  if(card.classList.contains("expanded")){card.classList.remove("expanded");el.textContent=t("card.expand");return;}
   const r=await fetch("/api/article/"+proj+"/"+file);
   const d=await r.json();
   // Replace snippets/preview with full body, keep highlight
@@ -416,10 +496,10 @@ async function expandCard(proj,file,el){
     highlightDom(bodyEl);
   }else{
     bodyEl.className="body";
-    bodyEl.innerHTML=highlight(md2html(d.content||"Ошибка загрузки"));
+    bodyEl.innerHTML=highlight(md2html(d.content||t("msg.loadError")));
   }
   card.classList.add("expanded");
-  el.textContent="Свернуть";
+  el.textContent=t("card.collapse");
   loadRelated(proj,file);   // «Похожие» следуют за раскрытой статьёй (если не заморожены)
   loadTimeline(proj,file,card);   // слайдер версий — только у tracking-статей
   // Scroll to first match
@@ -427,11 +507,11 @@ async function expandCard(proj,file,el){
   if(firstMark){setTimeout(()=>firstMark.scrollIntoView({behavior:"smooth",block:"center"}),100);}
 }
 async function deleteArticle(proj,file,el){
-  if(!confirm("Удалить "+proj+"/"+file+"?"))return;
+  if(!confirm(t("confirm.delete")+" "+proj+"/"+file+"?"))return;
   const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project:proj,filename:file})});
   const d=await r.json();
   if(d.result){el.closest(".card").remove();}
-  else{alert(d.error||"Ошибка удаления");}
+  else{alert(d.error||t("msg.deleteError"));}
 }
 
 function md2html(s){
@@ -443,7 +523,7 @@ function md2html(s){
     .replace(/^- (.+)$/gm,'&bull; $1');
 }
 function renderResults(items){
-  if(!items||!items.length){$("results").innerHTML='<div class="empty">Ничего не найдено</div>';return;}
+  if(!items||!items.length){$("results").innerHTML='<div class="empty">'+t("msg.notFound")+'</div>';return;}
   $("results").innerHTML=items.map(i=>{
     const bc=`<div class="breadcrumb"><a href="#" onclick="loadProject('${esc(i.project)}');return false">${esc(i.project)}</a> &rsaquo; ${esc(i.file)}</div>`;
     let snippetHtml="";
@@ -452,7 +532,7 @@ function renderResults(items){
     }else{
       snippetHtml='<div class="body">'+highlight(md2html(i.preview))+'</div>';
     }
-    return `<div class="card">${bc}<h3>${highlight(esc(i.title))}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}${i.snippets&&i.snippets.length?' &middot; '+i.snippets.length+' совпадений':''}</div><div class="timeline-holder"></div>${snippetHtml}<div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">Развернуть</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">Удалить</button></div></div>`;
+    return `<div class="card">${bc}<h3>${highlight(esc(i.title))}</h3><div class="meta">${esc(i.project||"")} &middot; ${esc(i.file)}${i.score?' &middot; score: '+i.score:''}${i.snippets&&i.snippets.length?' &middot; '+i.snippets.length+' '+t("msg.matches"):''}</div><div class="timeline-holder"></div>${snippetHtml}<div class="actions"><span class="expand" onclick="expandCard('${esc(i.project)}','${esc(i.file)}',this)">${t("card.expand")}</span><button class="btn-del" onclick="deleteArticle('${esc(i.project)}','${esc(i.file)}',this)">${t("card.delete")}</button></div></div>`;
   }).join("");
 }
 
@@ -461,11 +541,11 @@ async function doSave(){
   const content=$("f-content").value.trim();
   const project=$("f-project").value;
   const tags=$("f-tags").value.trim();
-  if(!topic||!content){$("save-msg").innerHTML='<div class="msg err">Заполните тему и содержание</div>';return;}
+  if(!topic||!content){$("save-msg").innerHTML='<div class="msg err">'+t("msg.fillRequired")+'</div>';return;}
   const r=await fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic,content,project,tags})});
   const d=await r.json();
   if(d.result){$("save-msg").innerHTML=`<div class="msg ok">${esc(d.result)}</div>`;$("f-topic").value="";$("f-content").value="";$("f-tags").value="";}
-  else{$("save-msg").innerHTML=`<div class="msg err">${esc(d.error||"Ошибка")}</div>`;}
+  else{$("save-msg").innerHTML=`<div class="msg err">${esc(d.error||t("msg.error"))}</div>`;}
 }
 
 function esc(s){return s?s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"):""}
@@ -517,13 +597,13 @@ let graphRaw=null,graphNodes=[],graphEdges=[],graphNmap={},graphAnim=null;
 let gZoom=1,gPanX=0,gPanY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
 let gFilterProject="";
 async function loadGraph(){
-  $("graph-info").textContent="Загрузка...";
+  $("graph-info").textContent=t("msg.loading");
   const r=await fetch("/api/graph");
   graphRaw=await r.json();
   // Populate project filter
   const sel=$("graph-project");
   const projs=[...new Set(graphRaw.nodes.map(n=>n.project))].sort();
-  sel.innerHTML='<option value="">Все проекты</option>'+projs.map(p=>'<option value="'+p+'">'+p+'</option>').join("");
+  sel.innerHTML='<option value="">'+t("lbl.allProjects")+'</option>'+projs.map(p=>'<option value="'+p+'">'+p+'</option>').join("");
   filterGraph();
 }
 function filterGraph(){
@@ -545,7 +625,7 @@ function filterGraph(){
   graphNmap={};graphNodes.forEach(n=>graphNmap[n.id]=n);
   gZoom=1;gPanX=0;gPanY=0;
   const orphans=graphNodes.filter(n=>n.orphan).length;
-  $("graph-info").textContent=graphNodes.length+" статей, "+graphEdges.length+" связей"+(orphans?" · "+orphans+" без связей":"");
+  $("graph-info").textContent=graphNodes.length+" "+t("graph.articles")+", "+graphEdges.length+" "+t("graph.links")+(orphans?" · "+orphans+" "+t("graph.orphans"):"");
   if(graphAnim)cancelAnimationFrame(graphAnim);
   tickGraph();
   setupGraphEvents();
@@ -710,7 +790,7 @@ function setupGraphEvents(){
 
 // Compile
 async function doCompilePreview(){
-  $("compile-msg").innerHTML='<div class="msg ok">Загрузка...</div>';
+  $("compile-msg").innerHTML='<div class="msg ok">'+t("msg.loading")+'</div>';
   const r=await fetch("/api/compile/preview");
   const d=await r.json();
   $("compile-preview").style.display="block";
@@ -718,8 +798,8 @@ async function doCompilePreview(){
   $("compile-msg").innerHTML="";
 }
 async function doCompileRun(){
-  if(!confirm("Применить компиляцию?"))return;
-  $("compile-msg").innerHTML='<div class="msg ok">Компиляция...</div>';
+  if(!confirm(t("confirm.compile")))return;
+  $("compile-msg").innerHTML='<div class="msg ok">'+t("msg.compiling")+'</div>';
   const r=await fetch("/api/compile/run",{method:"POST"});
   const d=await r.json();
   $("compile-msg").innerHTML=`<div class="msg ok">${esc(d.result)}</div>`;
@@ -728,29 +808,29 @@ async function doCompileRun(){
 
 // Analytics
 async function loadAnalytics(){
-  $("analytics-content").innerHTML='<div class="empty">Загрузка...</div>';
+  $("analytics-content").innerHTML='<div class="empty">'+t("msg.loading")+'</div>';
   const r=await fetch("/api/analytics");
   const d=await r.json();
-  let h=`<div class="card"><h3>Статистика</h3><pre>Всего статей: ${d.total_articles}\nОтслеживается: ${d.total_tracked}\nНикогда не открывались: ${d.never_accessed.length}</pre></div>`;
+  let h=`<div class="card"><h3>${t("analytics.stats")}</h3><pre>${t("analytics.totalArticles")}: ${d.total_articles}\n${t("analytics.tracked")}: ${d.total_tracked}\n${t("analytics.neverAccessed")}: ${d.never_accessed.length}</pre></div>`;
   if(d.top_accessed.length){
-    h+=`<div class="card"><h3>Топ по обращениям</h3>`;
+    h+=`<div class="card"><h3>${t("analytics.topAccessed")}</h3>`;
     d.top_accessed.forEach(i=>{
-      h+=`<div style="padding:4px 0;border-bottom:1px solid #21262d"><span style="color:#58a6ff">${esc(i.title)}</span> <span style="color:#8b949e">${i.project} &middot; ${i.access_count} обр.</span></div>`;
+      h+=`<div style="padding:4px 0;border-bottom:1px solid #21262d"><span style="color:#58a6ff">${esc(i.title)}</span> <span style="color:#8b949e">${i.project} &middot; ${i.access_count} ${t("analytics.hits")}</span></div>`;
     });
     h+=`</div>`;
   }
   if(d.never_accessed.length){
-    h+=`<div class="card"><h3>Никогда не открывались</h3><pre>${d.never_accessed.join("\\n")}</pre></div>`;
+    h+=`<div class="card"><h3>${t("analytics.neverAccessed")}</h3><pre>${d.never_accessed.join("\\n")}</pre></div>`;
   }
   $("analytics-content").innerHTML=h;
 }
 
 async function loadAudit(){
-  $("audit-content").innerHTML='<div class="empty">Загрузка...</div>';
+  $("audit-content").innerHTML='<div class="empty">'+t("msg.loading")+'</div>';
   const r=await fetch("/api/audit");
   const d=await r.json();
-  if(!d.entries||!d.entries.length){$("audit-content").innerHTML='<div class="empty">Нет записей</div>';return;}
-  let h='<div class="card"><h3>Аудит (последние '+d.entries.length+')</h3>';
+  if(!d.entries||!d.entries.length){$("audit-content").innerHTML='<div class="empty">'+t("msg.noEntries")+'</div>';return;}
+  let h='<div class="card"><h3>'+t("audit.recent")+' '+d.entries.length+')</h3>';
   d.entries.reverse().forEach(e=>{
     const args=Object.entries(e.args||{}).map(([k,v])=>k+'='+JSON.stringify(v)).join(', ');
     h+='<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:0.8em">';
@@ -770,7 +850,7 @@ function openCmdk(){$("cmdk").classList.add("open");const i=$("cmdk-input");i.va
 function closeCmdk(){$("cmdk").classList.remove("open");}
 function renderCmdk(){
   const box=$("cmdk-results");
-  if(!cmdkItems.length){box.innerHTML='<div class="cmdk-empty">'+($("cmdk-input").value.trim()?"Ничего не найдено":"Начните вводить запрос…")+'</div>';return;}
+  if(!cmdkItems.length){box.innerHTML='<div class="cmdk-empty">'+($("cmdk-input").value.trim()?t("msg.notFound"):t("cmdk.startTyping"))+'</div>';return;}
   box.innerHTML=cmdkItems.map((it,idx)=>
     '<div class="cmdk-item'+(idx===cmdkSel?' sel':'')+'" onmouseenter="cmdkSel='+idx+';cmdkMark()" onclick="cmdkOpen('+idx+')">'
     +'<div class="t">'+esc(it.title)+'</div>'
@@ -823,7 +903,7 @@ function closeRelated(){$("related").classList.remove("open");}
 function toggleRelatedPause(){
   relatedPaused=!relatedPaused;
   const b=$("related-play");
-  b.textContent=relatedPaused?"заморожен":"следит";
+  b.textContent=relatedPaused?t("lbl.frozen"):t("lbl.watching");
   b.classList.toggle("on",relatedPaused);
   // разморозка => подхватить статью, открытую СЕЙЧАС, а не ту, на которой заморозились
   if(!relatedPaused&&relatedViewing)loadRelated(relatedViewing.project,relatedViewing.file,true);
@@ -834,24 +914,24 @@ async function loadRelated(proj,file,force){
   if(relatedPaused&&!force)return;           // «заморожен»: список не трогаем
   const seq=++relatedSeq;
   $("related").classList.add("open");
-  $("related-list").innerHTML='<div class="related-empty">Загрузка…</div>';
+  $("related-list").innerHTML='<div class="related-empty">'+t("related.loading")+'</div>';
   try{
     const r=await fetch("/api/related?project="+encodeURIComponent(proj)+"&file="+encodeURIComponent(file));
     const d=await r.json();
     if(seq!==relatedSeq)return;      // отбросить устаревший ответ
     relatedItems=d.related||[];
-    if(!relatedItems.length){$("related-list").innerHTML='<div class="related-empty">Похожих не нашлось</div>';return;}
+    if(!relatedItems.length){$("related-list").innerHTML='<div class="related-empty">'+t("related.empty")+'</div>';return;}
     $("related-list").innerHTML=relatedItems.map((i,idx)=>{
       // полоска — по rel (шкала от порога шума модели), число — сырой косинус:
       // рисовать полоску по сырому значению значило бы завышать связь (см. RELATED_SCORE_FLOOR)
       const rel=(typeof i.rel==="number")?i.rel:i.score;
-      return '<div class="related-item" onclick="relatedOpen('+idx+')" title="косинус '+i.score.toFixed(3)+' — полоска отсчитывается от порога шума модели">'
+      return '<div class="related-item" onclick="relatedOpen('+idx+')" title="'+t("related.cosine")+' '+i.score.toFixed(3)+' '+t("related.barExplain")+'">'
       +'<div class="t">'+esc(i.title)+'</div>'
       +'<div class="m"><span>'+esc(i.project)+'</span><span>'+i.score.toFixed(2)+'</span></div>'
       +'<div class="related-bar"><i style="width:'+Math.round(Math.max(0,Math.min(1,rel))*100)+'%"></i></div>'
       +'</div>';
     }).join("");
-  }catch(e){$("related-list").innerHTML='<div class="related-empty">Ошибка загрузки</div>';}
+  }catch(e){$("related-list").innerHTML='<div class="related-empty">'+t("msg.loadError")+'</div>';}
 }
 function openArticle(proj,file,title){
   showTab("search");
@@ -874,7 +954,7 @@ async function loadTimeline(proj,file,card){
     tlData=d;
     const last=d.snapshots.length-1;
     holder.innerHTML='<div class="timeline">'
-      +'<div class="tl-head"><span>Версии факта'+(d.entity?" &middot; "+esc(d.entity):"")+'</span><span class="tl-pos"></span></div>'
+      +'<div class="tl-head"><span>'+t("timeline.versions")+(d.entity?" &middot; "+esc(d.entity):"")+'</span><span class="tl-pos"></span></div>'
       +'<input type="range" class="tl-range" min="0" max="'+last+'" value="'+last+'" oninput="renderTimeline(this.value)">'
       +'<div class="tl-when"></div><div class="tl-facts"></div></div>';
     tlRoot=holder.querySelector(".timeline");
@@ -885,9 +965,9 @@ function renderTimeline(idx){
   if(!tlData||!tlRoot)return;
   idx=+idx;
   const s=tlData.snapshots[idx],prev=idx>0?tlData.snapshots[idx-1]:null;
-  tlRoot.querySelector(".tl-pos").textContent=(idx+1)+" / "+tlData.snapshots.length+(s.current?" · текущая":"");
+  tlRoot.querySelector(".tl-pos").textContent=(idx+1)+" / "+tlData.snapshots.length+(s.current?" · "+t("timeline.current"):"");
   tlRoot.querySelector(".tl-when").textContent=
-    (s.from?"действует с "+s.from:"дата не указана")+(s.to?" по "+s.to:(s.current?" — по сейчас":""));
+    (s.from?t("timeline.effectiveFrom")+" "+s.from:t("timeline.noDate"))+(s.to?" "+t("timeline.to")+" "+s.to:(s.current?" "+t("timeline.toPresent"):""));
   tlRoot.querySelector(".tl-facts").innerHTML=tlData.fields.map(f=>{
     const v=s.facts[f],p=prev?prev.facts[f]:undefined;
     if(v===undefined&&p===undefined)return "";
@@ -904,23 +984,23 @@ async function doAsk(){
   const q=$("ask-q").value.trim();
   if(!q)return;
   const p=$("ask-project").value;
-  $("ask-results").innerHTML='<div class="empty">Ищу…</div>';
+  $("ask-results").innerHTML='<div class="empty">'+t("ask.searching")+'</div>';
   try{
     const r=await fetch("/api/ask?q="+encodeURIComponent(q)+(p?"&project="+encodeURIComponent(p):""));
     const d=await r.json();
     askItems=d.answers||[];
-    if(!askItems.length){$("ask-results").innerHTML='<div class="empty">Ничего не найдено</div>';return;}
-    let h=d.fallback_all?'<div class="ask-fallback">В выбранном проекте ничего не нашлось — показаны результаты по всем проектам.</div>':"";
+    if(!askItems.length){$("ask-results").innerHTML='<div class="empty">'+t("msg.notFound")+'</div>';return;}
+    let h=d.fallback_all?'<div class="ask-fallback">'+t("ask.fallbackAll")+'</div>':"";
     h+=askItems.map((i,idx)=>{
       const sc="score "+i.score+((i.rerank!==null&&i.rerank!==undefined)?" · rerank "+i.rerank:"");
-      const frag=i.secret?"[зашифровано — откройте статью для просмотра]":esc(i.fragment);
+      const frag=i.secret?t("ask.secretFragment"):esc(i.fragment);
       return '<div class="ask-src"><div class="h"><span class="t" onclick="askOpen('+idx+')">'+esc(i.title)+'</span>'
         +'<span class="s">'+sc+'</span></div>'
         +'<div class="frag">'+frag+'</div>'
         +'<div class="src">'+esc(i.project)+' / '+esc(i.file)+'</div></div>';
     }).join("");
     $("ask-results").innerHTML=h;
-  }catch(e){$("ask-results").innerHTML='<div class="empty">Ошибка запроса</div>';}
+  }catch(e){$("ask-results").innerHTML='<div class="empty">'+t("ask.queryError")+'</div>';}
 }
 $("ask-q").addEventListener("keydown",e=>{if(e.key==="Enter")doAsk()});
 
