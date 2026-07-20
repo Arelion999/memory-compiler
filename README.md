@@ -363,6 +363,12 @@ Initial projects can optionally be declared through an environment variable:
 PROJECTS=backend,infra,general python server.py
 ```
 
+### Description language
+
+`MC_LANG=en` switches tool and prompt descriptions to English — the text an MCP client shows the model when it picks a call. Defaults to `ru`; any unknown value also yields Russian.
+
+⚠️ Server responses stay in Russian: only the descriptions are translated. This is a deliberate half-step — descriptions are what the model reads when choosing a tool, and they matter more.
+
 ### Git Capture
 
 Two modes for harvesting knowledge from git:
