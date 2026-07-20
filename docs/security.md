@@ -1,6 +1,11 @@
 # memory-compiler security
 
-**English** · [Русский](security.ru.md)
+<!-- Ссылка АБСОЛЮТНАЯ намеренно, не «забыли сократить». GitHub рендерит этот файл
+     по двум адресам: /blob/master/docs/security.md (база — docs/) и /security/policy
+     (база — КОРЕНЬ репо). Относительная `security.ru.md` во втором случае разрешается
+     в /blob/master/security.ru.md и даёт 404. Одной относительной ссылки, работающей
+     в обеих, не существует. Стережёт tests/test_docs_i18n.py::ABSOLUTE_SWITCHER. -->
+**English** · [Русский](https://github.com/Arelion999/memory-compiler/blob/master/docs/security.ru.md)
 
 ## Reporting a vulnerability
 

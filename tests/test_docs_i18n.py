@@ -25,6 +25,18 @@ PAIRS = [
     ("docs/security.ru.md", "docs/security.md"),
 ]
 
+# Переключатель обычно ссылается на пару относительно — но docs/security.md GitHub
+# рендерит по ДВУМ адресам: /blob/master/docs/security.md (база — docs/) и
+# /security/policy (база — КОРЕНЬ репо). Относительная `security.ru.md` во втором случае
+# разрешается в /blob/master/security.ru.md и даёт 404 — проверено вживую 2026-07-20.
+# Относительной ссылки, работающей в обеих, не существует, поэтому только абсолютный URL.
+# Ключ — файл, СОДЕРЖАЩИЙ ссылку.
+ABSOLUTE_SWITCHER = {
+    "docs/security.md": "https://github.com/Arelion999/memory-compiler/blob/master/docs/security.ru.md",
+}
+
+BLOB_URL = re.compile(r"^https://github\.com/[^/]+/[^/]+/blob/[^/]+/(.+)$")
+
 FENCE = re.compile(r"^\s*(```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
@@ -99,12 +111,25 @@ def test_language_switcher(ru, en):
     """В каждом файле есть переключатель языка, ведущий на пару."""
     ru_body = (REPO / ru).read_text(encoding="utf-8")
     en_body = (REPO / en).read_text(encoding="utf-8")
-    ru_target = Path(en).name if Path(ru).parent == Path(en).parent else en
-    en_target = Path(ru).name if Path(ru).parent == Path(en).parent else ru
+    same_dir = Path(ru).parent == Path(en).parent
+    ru_target = ABSOLUTE_SWITCHER.get(ru, Path(en).name if same_dir else en)
+    en_target = ABSOLUTE_SWITCHER.get(en, Path(ru).name if same_dir else ru)
     assert f"[English]({ru_target})" in ru_body, f"{ru}: нет ссылки на [English]({ru_target})"
     assert "**Русский**" in ru_body, f"{ru}: текущий язык не помечен жирным"
     assert f"[Русский]({en_target})" in en_body, f"{en}: нет ссылки на [Русский]({en_target})"
     assert "**English**" in en_body, f"{en}: текущий язык не помечен жирным"
+
+
+@pytest.mark.parametrize("doc,url", sorted(ABSOLUTE_SWITCHER.items()))
+def test_absolute_switcher_points_at_real_file(doc, url):
+    """Абсолютный переключатель ведёт на файл, который в репо есть.
+
+    test_relative_md_links_resolve пропускает http(s)-ссылки, поэтому без этой
+    проверки абсолютный URL молча обходил бы сторож.
+    """
+    m = BLOB_URL.match(url)
+    assert m, f"{doc}: не разобрал абсолютный URL {url}"
+    assert (REPO / m.group(1)).is_file(), f"{doc}: {url} → в репо нет {m.group(1)}"
 
 
 @pytest.mark.parametrize("doc", [f for pair in PAIRS for f in pair])
