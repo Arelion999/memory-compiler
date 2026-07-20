@@ -2274,9 +2274,16 @@ async def get_project_deps(project: str) -> list[TextContent]:
 # ─── Decisions ─────────────────────────────────────────────────────────────
 
 
-async def save_decision(title: str, decision: str, alternatives: str, reasoning: str,
-                        project: str, tags: list = None) -> list[TextContent]:
-    """Save an architectural/technical decision."""
+async def save_decision(title: str, decision: str, reasoning: str, project: str,
+                        alternatives: str = "", tags: list = None) -> list[TextContent]:
+    """Save an architectural/technical decision.
+
+    ⚠️ alternatives НЕОБЯЗАТЕЛЕН, и порядок параметров поэтому не совпадает с
+    порядком полей в статье. MCP-клиент срезает `required` у строковых параметров
+    (см. tests/test_tool_schemas.py) — обязательности модель не видит и молча поле
+    опускает, а решение без альтернатив и так законный случай. Диспетчер зовёт
+    через **arguments, так что перестановка вызовам не видна.
+    """
     tags = tags or []
     auto = auto_tags(f"{decision} {reasoning}", title)
     existing_lower = {t.lower() for t in tags}
@@ -2286,6 +2293,9 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     slug = make_slug(title)
+    # Пустая секция читалась бы как «забыли заполнить». Отсутствие выбора —
+    # сам по себе факт о решении, и он должен быть различим в статье.
+    alternatives_text = (alternatives or "").strip() or "не рассматривались"
 
     article_text = f"""# {title}
 
@@ -2298,7 +2308,7 @@ async def save_decision(title: str, decision: str, alternatives: str, reasoning:
 {decision}
 
 ## Альтернативы
-{alternatives}
+{alternatives_text}
 
 ## Обоснование
 {reasoning}

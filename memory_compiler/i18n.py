@@ -39,6 +39,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Найти похожие кейсы и решения в базе знаний.
         'description': 'Find similar cases and solutions in the knowledge base.',
         'params': {
+            'query': 'Search query',
             'project': "Project name, or 'all'",
         },
     },
@@ -220,11 +221,16 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'topic': 'Runbook title',
             'steps': 'List of steps',
+            'project': 'Project name',
         },
     },
     'get_runbook': {
         # RU: Получить runbook с прогрессом выполнения.
         'description': 'Get a runbook with its completion progress.',
+        'params': {
+            'project': 'Project name',
+            'filename': 'Runbook filename',
+        },
     },
     'search_error': {
         # RU: Поиск похожих ошибок в базе знаний. Принимает трейсбек или текст ошибки.
@@ -237,12 +243,16 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Установить зависимости проекта. При start_task контекст подтягивается из зависимых проектов.
         'description': "Set a project's dependencies. During start_task, context is pulled in from dependent projects.",
         'params': {
+            'project': 'Project name',
             'depends_on': 'List of dependency projects',
         },
     },
     'get_project_deps': {
         # RU: Получить зависимости проекта.
         'description': "Get a project's dependencies.",
+        'params': {
+            'project': 'Project name',
+        },
     },
     'save_decision': {
         # RU: Записать архитектурное/техническое решение с обоснованием.
@@ -250,13 +260,17 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'title': 'Decision title',
             'decision': 'What was decided',
-            'alternatives': 'What alternatives existed',
+            'alternatives': 'What alternatives existed (optional; empty = none were considered)',
             'reasoning': 'Why this was chosen',
+            'project': 'Project name',
         },
     },
     'search_decisions': {
         # RU: Поиск по журналу решений.
         'description': 'Search the decision log.',
+        'params': {
+            'query': 'Search query',
+        },
     },
     'save_from_template': {
         # RU: Создать статью по шаблону (bug, setup, 1c, deploy, integration).
@@ -264,6 +278,7 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'template': 'Template name: bug, setup, 1c, deploy, integration',
             'fields': 'Template fields (depend on the type)',
+            'project': 'Project name',
         },
     },
     'list_templates': {
@@ -274,6 +289,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Создать или обновить tracking-статью (снимок текущего состояния). Старое значение → history[], новое → current. Используй для 'текущая версия', 'текущий деплой' и т.д.
         'description': "Create or update a tracking article (a snapshot of the current state). The old value goes to history[], the new one becomes current. Use it for things like 'current version', 'current deployment', etc.",
         'params': {
+            'project': 'Project name',
             'entity': 'Entity name: release, deployment, config',
             'facts': "Facts: {version: '1.3.50', url: ...}",
             'narrative': 'Optional description (auto-generated otherwise)',
@@ -282,6 +298,10 @@ TOOLS_EN: dict[str, dict] = {
     'get_current': {
         # RU: Получить текущее состояние из tracking-статьи.
         'description': 'Get the current state from a tracking article.',
+        'params': {
+            'project': 'Project name',
+            'entity': 'Entity name: release, deployment, config',
+        },
     },
     'consolidate': {
         # RU: Найти дубли/похожие статьи: near-exact детектор РЕАЛЬНЫХ дублей (точный/containment матч по тексту) + похожие темы по embeddings. НЕ мержит автоматически.
@@ -294,6 +314,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Сохранить summary при сжатии контекста (PostCompact event). Записывает в _compact_history.md проекта (FIFO 5). Подтягивается в start_task — даёт continuous memory через compact-границы. Используй когда контекст сжимается и важно сохранить контекст работы.
         'description': "Save a summary when the context is compacted (PostCompact event). Writes to the project's _compact_history.md (FIFO 5). Pulled into start_task — provides continuous memory across compact boundaries. Use when the context is being compacted and it's important to preserve the working context.",
         'params': {
+            'project': 'Project name',
             'summary': 'Brief summary of what happened before the compaction (what was being done, key decisions, open questions)',
         },
     },
@@ -328,6 +349,7 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'topic': 'Secret title',
             'content': 'Content (will be encrypted)',
+            'project': 'Project name',
         },
     },
     'git_capture': {

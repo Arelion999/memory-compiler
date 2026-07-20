@@ -358,11 +358,44 @@ async def test_get_runbook(knowledge_dir):
 @pytest.mark.asyncio
 async def test_save_decision(knowledge_dir):
     result = await save_decision(
-        "Use PostgreSQL", "PostgreSQL for main DB",
-        "MySQL, SQLite", "Better JSON support, extensions",
-        "testproj", ["postgres"]
+        title="Use PostgreSQL", decision="PostgreSQL for main DB",
+        alternatives="MySQL, SQLite", reasoning="Better JSON support, extensions",
+        project="testproj", tags=["postgres"]
     )
     assert "Решение записано" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_save_decision_without_alternatives(knowledge_dir):
+    """Решение без альтернатив записывается, а не падает.
+
+    Обязательности `alternatives` модель не видит (клиент срезает required у
+    строковых полей — см. tests/test_tool_schemas.py), поэтому поле должно быть
+    необязательным и на уровне обработчика.
+    """
+    result = await save_decision(
+        title="Drop the reranker", decision="RERANK_ENABLED=0",
+        reasoning="Замер показал вред на превью и нейтральность на полном теле",
+        project="testproj",
+    )
+    assert "Решение записано" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_save_decision_records_absence_of_alternatives(knowledge_dir):
+    """Пустые альтернативы фиксируются словами, а не пустой секцией.
+
+    Пустая «## Альтернативы» читалась бы как «забыли заполнить»; отсутствие
+    выбора — само по себе факт, и оно должно быть различимо в статье.
+    """
+    await save_decision(
+        title="Drop the reranker", decision="RERANK_ENABLED=0",
+        reasoning="Замер показал вред на превью", project="testproj",
+    )
+    articles = list((knowledge_dir / "testproj").glob("decision_*.md"))
+    assert len(articles) == 1, f"ожидалась одна статья решения, найдено: {articles}"
+    text = articles[0].read_text(encoding="utf-8")
+    assert "## Альтернативы\nне рассматривались\n" in text
 
 
 @pytest.mark.asyncio

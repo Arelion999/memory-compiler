@@ -62,7 +62,7 @@ docker-compose up -d --build
 | Инструмент | Описание |
 |------------|----------|
 | `save_lesson(topic, content, project, tags)` | Сохранить с diff-отчётом, автомержем, автотегами, детекцией противоречий |
-| `save_decision(title, decision, alternatives, reasoning, project)` | Записать архитектурное решение |
+| `save_decision(title, decision, reasoning, project, alternatives)` | Записать архитектурное решение (`alternatives` необязателен) |
 | `save_runbook(topic, steps, project)` | Создать пошаговую инструкцию с чекбоксами |
 | `save_from_template(template, fields, project)` | Создать статью по шаблону (bug, setup, 1c, deploy, integration) |
 | `save_secret(topic, content, project)` | Сохранить зашифрованную статью (пароли, ключи) |

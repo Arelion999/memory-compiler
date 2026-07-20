@@ -62,7 +62,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 | Tool | Description |
 |------|-------------|
 | `save_lesson(topic, content, project, tags)` | Save with a diff report, auto-merge, auto-tagging and contradiction detection |
-| `save_decision(title, decision, alternatives, reasoning, project)` | Record an architectural decision |
+| `save_decision(title, decision, reasoning, project, alternatives)` | Record an architectural decision (`alternatives` is optional) |
 | `save_runbook(topic, steps, project)` | Create a step-by-step runbook with checkboxes |
 | `save_from_template(template, fields, project)` | Create an article from a template (bug, setup, 1c, deploy, integration) |
 | `save_secret(topic, content, project)` | Save an encrypted article (passwords, keys) |

@@ -91,7 +91,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {"type": "string", "description": "Поисковый запрос"},
                     "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["query"]
@@ -400,7 +400,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "topic": {"type": "string", "description": "Название runbook"},
                     "steps": {"type": "array", "items": {"type": "string"}, "description": "Список шагов"},
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
                 "required": ["topic", "steps", "project"]
@@ -412,8 +412,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
-                    "filename": {"type": "string"}
+                    "project": {"type": "string", "description": "Имя проекта"},
+                    "filename": {"type": "string", "description": "Имя файла runbook"}
                 },
                 "required": ["project", "filename"]
             }
@@ -436,7 +436,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Список проектов-зависимостей"}
                 },
                 "required": ["project", "depends_on"]
@@ -448,7 +448,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"}
+                    "project": {"type": "string", "description": "Имя проекта"}
                 },
                 "required": ["project"]
             }
@@ -461,12 +461,12 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "title": {"type": "string", "description": "Название решения"},
                     "decision": {"type": "string", "description": "Что решили"},
-                    "alternatives": {"type": "string", "description": "Какие были альтернативы"},
+                    "alternatives": {"type": "string", "description": "Какие были альтернативы (необязательно; пусто = не рассматривались)"},
                     "reasoning": {"type": "string", "description": "Почему выбрали это"},
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
-                "required": ["title", "decision", "alternatives", "reasoning", "project"]
+                "required": ["title", "decision", "reasoning", "project"]
             }
         ),
         Tool(
@@ -475,7 +475,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {"type": "string", "description": "Поисковый запрос"},
                     "project": {"type": "string", "default": "all"}
                 },
                 "required": ["query"]
@@ -489,7 +489,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "template": {"type": "string", "description": "Имя шаблона: bug, setup, 1c, deploy, integration"},
                     "fields": {"type": "object", "description": "Поля шаблона (зависят от типа)"},
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
                 "required": ["template", "fields", "project"]
@@ -509,7 +509,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "entity": {"type": "string", "description": "Название сущности: release, deployment, config"},
                     "facts": {"type": "object", "description": "Факты: {version: '1.3.50', url: ...}"},
                     "narrative": {"type": "string", "description": "Опциональное описание (иначе автогенерация)"}
@@ -523,8 +523,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
-                    "entity": {"type": "string"}
+                    "project": {"type": "string", "description": "Имя проекта"},
+                    "entity": {"type": "string", "description": "Название сущности: release, deployment, config"}
                 },
                 "required": ["project", "entity"]
             }
@@ -547,7 +547,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "summary": {"type": "string", "description": "Краткое резюме того что было до сжатия (что делали, ключевые решения, открытые вопросы)"}
                 },
                 "required": ["project", "summary"]
@@ -599,7 +599,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "topic": {"type": "string", "description": "Название секрета"},
                     "content": {"type": "string", "description": "Содержание (будет зашифровано)"},
-                    "project": {"type": "string"},
+                    "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
                 "required": ["topic", "content", "project"]
