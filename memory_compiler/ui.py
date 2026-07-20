@@ -1030,18 +1030,26 @@ button:hover{background:#2563eb}
 </head>
 <body>
 <div class="card">
-<h1>Memory Compiler</h1>
+<h1 id="formTitle">Memory Compiler</h1>
 <input type="password" id="key" placeholder="API Key" autofocus>
-<button onclick="doLogin()">Войти</button>
+<button id="loginBtn" onclick="doLogin()">Войти</button>
 <div class="error" id="err"></div>
 </div>
 <script>
+var LANG="/*MC_LANG*/"==="en"?"en":"ru";
+/* i18n-dict */
+var L={ru:{title:"Вход",btn:"Войти",err:"Ошибка"},
+       en:{title:"Sign in",btn:"Sign in",err:"Error"}}[LANG];
+/* /i18n-dict */
+document.title="Memory Compiler — "+L.title;
+document.getElementById("formTitle").textContent="Memory Compiler — "+L.title;
+document.getElementById("loginBtn").textContent=L.btn;
 async function doLogin(){
   const key=document.getElementById("key").value.trim();
   if(!key)return;
   const r=await fetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key})});
   if(r.ok){location.href="/";}
-  else{const d=await r.json();const e=document.getElementById("err");e.textContent=d.error||"Ошибка";e.style.display="block";}
+  else{const d=await r.json();const e=document.getElementById("err");e.textContent=d.error||L.err;e.style.display="block";}
 }
 document.getElementById("key").addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()});
 </script>

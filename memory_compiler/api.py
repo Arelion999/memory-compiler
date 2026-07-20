@@ -724,7 +724,7 @@ class AuthMiddleware:
 
 async def web_login(request: Request):
     if request.method == "GET":
-        return HTMLResponse(LOGIN_HTML)
+        return HTMLResponse(LOGIN_HTML.replace("/*MC_LANG*/", MC_LANG))
     # POST
     try:
         data = await request.json()
