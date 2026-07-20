@@ -144,19 +144,19 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <button class="theme-toggle" onclick="toggleLang()" title="RU / EN">RU/EN</button>
 </div>
 <div class="tab-bar">
-<a href="#" class="active" onclick="showTab('search');return false" id="tab-search">Поиск</a>
-<a href="#" onclick="showTab('ask');return false" id="tab-ask">Ответы</a>
-<a href="#" onclick="showTab('add');return false" id="tab-add">Добавить</a>
-<a href="#" onclick="showTab('graph');return false" id="tab-graph">Граф</a>
-<a href="#" onclick="showTab('compile');return false" id="tab-compile">Компиляция</a>
-<a href="#" onclick="showTab('analytics');return false" id="tab-analytics">Аналитика</a>
-<a href="#" onclick="showTab('audit');return false" id="tab-audit">Аудит</a>
+<a href="#" class="active" onclick="showTab('search');return false" id="tab-search" data-i18n="tab.search">Поиск</a>
+<a href="#" onclick="showTab('ask');return false" id="tab-ask" data-i18n="tab.ask">Ответы</a>
+<a href="#" onclick="showTab('add');return false" id="tab-add" data-i18n="tab.add">Добавить</a>
+<a href="#" onclick="showTab('graph');return false" id="tab-graph" data-i18n="tab.graph">Граф</a>
+<a href="#" onclick="showTab('compile');return false" id="tab-compile" data-i18n="tab.compile">Компиляция</a>
+<a href="#" onclick="showTab('analytics');return false" id="tab-analytics" data-i18n="tab.analytics">Аналитика</a>
+<a href="#" onclick="showTab('audit');return false" id="tab-audit" data-i18n="tab.audit">Аудит</a>
 </div>
 <div id="view-search">
 <div class="search-box">
-<input id="q" type="search" placeholder="Поиск по базе знаний...">
-<select id="q-project" onchange="onProjectChange()"><option value="">Все проекты</option></select>
-<button onclick="doSearch()">Найти</button>
+<input id="q" type="search" data-i18n-ph="ph.search" placeholder="Поиск по базе знаний...">
+<select id="q-project" onchange="onProjectChange()"><option value="" data-i18n="lbl.allProjects">Все проекты</option></select>
+<button onclick="doSearch()" data-i18n="btn.find">Найти</button>
 </div>
 <div class="tags-bar" id="tags-bar"></div>
 <div class="projects" id="projects"></div>
@@ -164,25 +164,25 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 </div>
 <div id="view-ask" style="display:none">
 <div class="search-box">
-<input id="ask-q" type="search" placeholder="Вопрос по базе знаний...">
-<select id="ask-project"><option value="">Все проекты</option></select>
-<button onclick="doAsk()">Спросить</button>
+<input id="ask-q" type="search" data-i18n-ph="ph.ask" placeholder="Вопрос по базе знаний...">
+<select id="ask-project"><option value="" data-i18n="lbl.allProjects">Все проекты</option></select>
+<button onclick="doAsk()" data-i18n="btn.ask">Спросить</button>
 </div>
-<div class="ask-note">Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет.</div>
+<div class="ask-note" data-i18n="ask.note">Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет.</div>
 <div id="ask-results"></div>
 </div>
 <div id="view-add" style="display:none">
 <div id="save-msg"></div>
-<div class="form-group"><label>Тема</label><input id="f-topic" placeholder="Краткое название"></div>
-<div class="form-group"><label>Проект</label><select id="f-project"></select></div>
-<div class="form-group"><label>Теги (через запятую)</label><input id="f-tags" placeholder="docker, nas, fix"></div>
-<div class="form-group"><label>Содержание</label><textarea id="f-content" placeholder="Проблема, решение, ключевые факты..."></textarea></div>
-<button class="btn-save" onclick="doSave()">Сохранить</button>
+<div class="form-group"><label data-i18n="lbl.topic">Тема</label><input id="f-topic" data-i18n-ph="ph.topic" placeholder="Краткое название"></div>
+<div class="form-group"><label data-i18n="lbl.project">Проект</label><select id="f-project"></select></div>
+<div class="form-group"><label data-i18n="lbl.tags">Теги (через запятую)</label><input id="f-tags" placeholder="docker, nas, fix"></div>
+<div class="form-group"><label data-i18n="lbl.content">Содержание</label><textarea id="f-content" data-i18n-ph="ph.content" placeholder="Проблема, решение, ключевые факты..."></textarea></div>
+<button class="btn-save" onclick="doSave()" data-i18n="btn.save">Сохранить</button>
 </div>
 <div id="view-graph" style="display:none">
 <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
 <select id="graph-project" onchange="filterGraph()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:13px">
-<option value="">Все проекты</option>
+<option value="" data-i18n="lbl.allProjects">Все проекты</option>
 </select>
 <span id="graph-info" style="color:var(--text2);font-size:13px;padding:6px 0"></span>
 </div>
@@ -194,8 +194,8 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <div id="compile-msg"></div>
 <div id="compile-preview" class="card" style="display:none"><pre></pre></div>
 <div style="display:flex;gap:8px;margin-top:12px">
-<button class="btn-save" onclick="doCompilePreview()" style="background:#1f6feb">Превью</button>
-<button class="btn-save" onclick="doCompileRun()" style="background:#238636">Применить</button>
+<button class="btn-save" onclick="doCompilePreview()" style="background:#1f6feb" data-i18n="btn.preview">Превью</button>
+<button class="btn-save" onclick="doCompileRun()" style="background:#238636" data-i18n="btn.apply">Применить</button>
 </div>
 </div>
 <div id="view-analytics" style="display:none">
@@ -206,16 +206,16 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 </div>
 <div class="cmdk-overlay" id="cmdk" onclick="if(event.target===this)closeCmdk()">
 <div class="cmdk-box">
-<input id="cmdk-input" type="search" placeholder="Поиск по базе знаний…" autocomplete="off">
+<input id="cmdk-input" type="search" data-i18n-ph="ph.searchDots" placeholder="Поиск по базе знаний…" autocomplete="off">
 <div class="cmdk-results" id="cmdk-results"></div>
-<div class="cmdk-hint"><span>&uarr;&darr; навигация</span><span>&crarr; открыть</span><span>Esc закрыть</span></div>
+<div class="cmdk-hint"><span>&uarr;&darr; <span data-i18n="cmdk.nav">навигация</span></span><span>&crarr; <span data-i18n="cmdk.open">открыть</span></span><span data-i18n="cmdk.esc">Esc закрыть</span></div>
 </div>
 </div>
 <div class="related" id="related">
 <div class="related-head">
-<span class="ttl">Похожие</span>
-<button id="related-play" onclick="toggleRelatedPause()" title="Заморозить список: не переключаться на другую статью при переходах">следит</button>
-<button onclick="closeRelated()" title="Закрыть">&times;</button>
+<span class="ttl" data-i18n="lbl.related">Похожие</span>
+<button id="related-play" onclick="toggleRelatedPause()" data-i18n="lbl.watching" data-i18n-title="title.freeze" title="Заморозить список: не переключаться на другую статью при переходах">следит</button>
+<button onclick="closeRelated()" data-i18n-title="title.close" title="Закрыть">&times;</button>
 </div>
 <div class="related-list" id="related-list"></div>
 </div>
@@ -225,7 +225,72 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 // Плейсхолдер подставляет api.py тем же приёмом, что и /*PYGMENTS_CSS*/.
 var SERVER_LANG="/*MC_LANG*/";
 /* i18n-dict */
-var I18N={ru:{},en:{}};
+var I18N={
+  ru:{
+    "tab.search":"Поиск",
+    "tab.ask":"Ответы",
+    "tab.add":"Добавить",
+    "tab.graph":"Граф",
+    "tab.compile":"Компиляция",
+    "tab.analytics":"Аналитика",
+    "tab.audit":"Аудит",
+    "btn.find":"Найти",
+    "btn.ask":"Спросить",
+    "btn.save":"Сохранить",
+    "btn.preview":"Превью",
+    "btn.apply":"Применить",
+    "lbl.project":"Проект",
+    "lbl.topic":"Тема",
+    "lbl.content":"Содержание",
+    "lbl.tags":"Теги (через запятую)",
+    "lbl.allProjects":"Все проекты",
+    "lbl.related":"Похожие",
+    "lbl.watching":"следит",
+    "ph.search":"Поиск по базе знаний...",
+    "ph.searchDots":"Поиск по базе знаний…",
+    "ph.ask":"Вопрос по базе знаний...",
+    "ph.topic":"Краткое название",
+    "ph.content":"Проблема, решение, ключевые факты...",
+    "title.close":"Закрыть",
+    "title.freeze":"Заморозить список: не переключаться на другую статью при переходах",
+    "cmdk.open":"открыть",
+    "cmdk.nav":"навигация",
+    "cmdk.esc":"Esc закрыть",
+    "ask.note":"Ответ собирается из найденных фрагментов базы — это поиск с источниками, а не сгенерированный текст: LLM на сервере нет."
+  },
+  en:{
+    "tab.search":"Search",
+    "tab.ask":"Answers",
+    "tab.add":"Add",
+    "tab.graph":"Graph",
+    "tab.compile":"Compile",
+    "tab.analytics":"Analytics",
+    "tab.audit":"Audit",
+    "btn.find":"Search",
+    "btn.ask":"Ask",
+    "btn.save":"Save",
+    "btn.preview":"Preview",
+    "btn.apply":"Apply",
+    "lbl.project":"Project",
+    "lbl.topic":"Topic",
+    "lbl.content":"Content",
+    "lbl.tags":"Tags (comma-separated)",
+    "lbl.allProjects":"All projects",
+    "lbl.related":"Related",
+    "lbl.watching":"watching",
+    "ph.search":"Search the knowledge base...",
+    "ph.searchDots":"Search the knowledge base…",
+    "ph.ask":"Ask the knowledge base...",
+    "ph.topic":"Short title",
+    "ph.content":"Problem, solution, key facts...",
+    "title.close":"Close",
+    "title.freeze":"Freeze the list: do not switch to another article when navigating",
+    "cmdk.open":"open",
+    "cmdk.nav":"navigate",
+    "cmdk.esc":"Esc to close",
+    "ask.note":"The answer is assembled from retrieved fragments — this is search with sources, not generated text: there is no LLM on the server."
+  }
+};
 /* /i18n-dict */
 var LANG=localStorage.getItem("lang")||SERVER_LANG||"ru";
 if(!I18N[LANG])LANG="ru";
