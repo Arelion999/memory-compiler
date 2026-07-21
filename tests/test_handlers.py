@@ -984,6 +984,23 @@ def test_lint_duplicate_check_skips_service_files(knowledge_dir):
         f"служебные файлы сравниваются как статьи: {dupes}"
 
 
+def test_save_with_wildcard_project_is_refused_with_hint(knowledge_dir):
+    """Запись с project='all' отклоняется ВНЯТНО, а не падает исключением.
+
+    Контракт наружу важнее внутреннего ValueError: модель должна понять, что делать
+    дальше, поэтому в тексте — подсказка про list_projects/route_project. Каталог при
+    этом не создаётся: именно так в базе и завёлся проект «all» с 7 статьями."""
+    import asyncio
+    from memory_compiler.tools import call_tool
+
+    result = asyncio.run(call_tool(
+        "save_lesson", {"topic": "проба", "content": "тело", "project": "all"}))
+    text = result[0].text
+    assert "служебное имя" in text, f"нет объяснения: {text}"
+    assert "list_projects" in text or "route_project" in text, f"нет подсказки: {text}"
+    assert not (knowledge_dir / "all").exists(), "каталог всё же создан"
+
+
 def test_lint_duplicate_check_skips_secrets(knowledge_dir):
     """Секреты не сравниваются между собой как дубли.
 

@@ -85,7 +85,9 @@ from whoosh.lang.snowball import russian as ru_snowball, english as en_snowball
 KNOWLEDGE_DIR = Path(os.environ.get("KNOWLEDGE_DIR", "/knowledge"))
 INDEX_DIR = KNOWLEDGE_DIR / ".whoosh_index"
 _INITIAL_PROJECTS = os.environ.get("PROJECTS", "general").split(",")
-_HIDDEN_DIRS = {".whoosh_index", ".git", "daily"}
+# 'logs' — каталог структурного лога сервера (obs.py пишет туда app.jsonl), а не проект.
+# Числясь проектом, он попадал в list_projects как «0 статей» и линтовался вхолостую.
+_HIDDEN_DIRS = {".whoosh_index", ".git", "daily", "logs"}
 
 # Auth & encryption
 MC_API_KEY = os.environ.get("MC_API_KEY", "")

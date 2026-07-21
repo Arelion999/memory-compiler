@@ -1,5 +1,13 @@
 """Tests for config module."""
 import memory_compiler.config as cfg
+
+
+def test_logs_dir_is_not_a_project(knowledge_dir):
+    """knowledge/logs — каталог структурного лога сервера (obs.py пишет туда app.jsonl),
+    а не проект. Числясь проектом, он попадал в list_projects как «0 статей» и линтовался."""
+    (knowledge_dir / "logs").mkdir(exist_ok=True)
+    (knowledge_dir / "logs" / "app.jsonl").write_text('{"level":"INFO"}\n', encoding="utf-8")
+    assert "logs" not in cfg._discover_projects()
 from memory_compiler.config import decay_factor, track_access, _bilingual_stem, is_secret_article
 
 

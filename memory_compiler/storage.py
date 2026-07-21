@@ -27,6 +27,14 @@ def today_log_path() -> Path:
     return p
 
 
+# Имена, занятые СЕМАНТИКОЙ инструментов: 'all' у read-инструментов означает «по всем
+# проектам». Каталог с таким именем делает свои статьи неадресуемыми — их нельзя ни
+# отфильтровать поиском, ни залинтовать: вызов уходит в общий режим. Такой проект
+# завёлся в базе сам (project_dir делает mkdir для любого имени) и накопил 7 статей,
+# пока не был переименован в misc 2026-07-21.
+RESERVED_PROJECTS = frozenset({"all"})
+
+
 def normalize_project(project: str) -> str:
     """Normalize project name to canonical form (Jira pattern: lowercase + trim).
 
@@ -89,6 +97,11 @@ def project_dir(project: str) -> Path:
     """
     import memory_compiler.config as _cfg
     norm = normalize_project(project)
+    if norm in RESERVED_PROJECTS:
+        raise ValueError(
+            f"'{norm}' — служебное имя (подстановка «по всем проектам»), а не проект. "
+            f"Укажи настоящий проект: list_projects покажет существующие, "
+            f"route_project подберёт подходящий по тексту.")
     p = KNOWLEDGE_DIR / norm
     p.mkdir(parents=True, exist_ok=True)
     if norm not in _cfg.PROJECTS:

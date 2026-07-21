@@ -1055,6 +1055,32 @@ def test_version_regex_does_not_match_ip_octets():
     assert matches == [], f"Version regex must not match IP octets, got: {matches}"
 
 
+def test_project_dir_rejects_wildcard_name(knowledge_dir):
+    """«all» — подстановка «по всем проектам», а не имя проекта.
+
+    Живой случай 2026-07-21: в базе завёлся каталог-проект «all» с 7 статьями, которые
+    стало невозможно ни отфильтровать поиском, ни залинтовать — любой вызов с таким
+    project уходил в общий режим. Создавался он САМ: project_dir() делает mkdir для
+    любого имени, поэтому одна запись с project='all' и порождала каталог."""
+    import pytest
+    from memory_compiler.storage import project_dir
+
+    with pytest.raises(ValueError):
+        project_dir("all")
+    assert not (knowledge_dir / "all").exists(), "каталог всё же создан"
+
+
+def test_project_dir_rejects_wildcard_any_case(knowledge_dir):
+    """Регистр и пробелы не должны обходить гард: имя нормализуется до 'all'."""
+    import pytest
+    from memory_compiler.storage import project_dir
+
+    for name in ("ALL", " All ", "aLL"):
+        with pytest.raises(ValueError):
+            project_dir(name)
+    assert not (knowledge_dir / "all").exists()
+
+
 def test_extract_facts_strips_url_query():
     """URL в факт идёт БЕЗ query: там живут токены.
 
