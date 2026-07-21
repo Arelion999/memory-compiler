@@ -58,6 +58,7 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'project': "Project name, or 'all'",
             'fix': 'Auto-fix safe issues (tags, index)',
+            'verbose': 'Expand what is collapsed into a counter by default (stale articles, orphans)',
         },
     },
     'reindex': {

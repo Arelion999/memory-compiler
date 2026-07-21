@@ -837,7 +837,7 @@ def test_lint_flags_orphan_article(knowledge_dir):
     rebuild_index()
     rebuild_embeddings()
 
-    result = asyncio.run(lint_handler(project="testproj"))
+    result = asyncio.run(lint_handler(project="testproj", verbose=True))
     text = result[0].text
     # Explicit marker required — find line(s) with the orphan label
     isolated_marker = ("сирота", "isolated", "no inbound")
@@ -902,6 +902,58 @@ def test_lint_check2_skips_service_files(knowledge_dir):
     assert "_log.md" not in flagged
     assert "_reflections.md" not in flagged
     assert "tracking_release.md" not in flagged
+
+
+def _lint_fixture(knowledge_dir):
+    """Проект, где есть и шум (старые статьи без входящих ссылок), и сигнал (битая ссылка)."""
+    import memory_compiler.config as _cfg
+    proj = knowledge_dir / "testproj"
+    for i in range(4):
+        (proj / f"старая_{i}.md").write_text(
+            f"# Старая статья {i}\n\n**Проект:** testproj\n**Теги:** t\n"
+            f"**Дата:** 2020-01-0{i+1} 10:00\n\n## Записи\n\nтело статьи достаточной длины.\n",
+            encoding="utf-8")
+    (proj / "с_битой_ссылкой.md").write_text(
+        "# Статья со сломанной связью\n\n**Проект:** testproj\n**Теги:** t\n"
+        "**Дата:** 2026-07-21 10:00\n\n## Записи\n\nСсылка в никуда: [[nonexistent_xyz]].\n",
+        encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+
+def test_lint_collapses_informational_noise(knowledge_dir):
+    """По умолчанию «сирота» и «устарела» сворачиваются в счётчик, а не печатаются построчно.
+
+    Замер по всей базе 2026-07-21: 1157 записей, из них 70% «сирота» и 25% «устарела» —
+    это описание НОРМЫ базы (ручных входящих ссылок всего 101 на 1612 статей). Полезный
+    сигнал составлял 4% и тонул. Информация не теряется — остаётся счётчик."""
+    import asyncio
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    _lint_fixture(knowledge_dir)
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj"))[0].text
+    per_line = [l for l in text.splitlines() if "сирота" in l or "устарела" in l]
+    assert len(per_line) <= 2, f"норма всё ещё печатается построчно: {per_line}"
+    assert "сирот" in text and "устарел" in text, "счётчики пропали вместе со строками"
+    assert "nonexistent_xyz" in text, "сигнал потерян вместе с шумом"
+
+
+def test_lint_verbose_shows_everything(knowledge_dir):
+    """verbose=true разворачивает свёрнутое — информация доступна, просто не по умолчанию."""
+    import asyncio
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    _lint_fixture(knowledge_dir)
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj", verbose=True))[0].text
+    stale = [l for l in text.splitlines() if "устарела" in l]
+    assert len(stale) >= 4, f"verbose не развернул построчный список: {len(stale)}"
 
 
 def test_lint_duplicate_check_skips_service_files(knowledge_dir):
@@ -1090,7 +1142,7 @@ def test_lint_orphan_ignores_substring_false_positive(knowledge_dir):
     _cfg.PROJECTS = _cfg._discover_projects()
     rebuild_index()
     rebuild_embeddings()
-    result = asyncio.run(lint_handler(project="testproj"))
+    result = asyncio.run(lint_handler(project="testproj", verbose=True))
     text = result[0].text
     orphan_lines = [l for l in text.splitlines()
                     if "сирота" in l.lower() or "isolated" in l.lower() or "no inbound" in l.lower()]

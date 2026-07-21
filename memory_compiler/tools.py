@@ -140,7 +140,8 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"},
-                    "fix": {"type": "boolean", "default": False, "description": "Автоисправление безопасных проблем (теги, index)"}
+                    "fix": {"type": "boolean", "default": False, "description": "Автоисправление безопасных проблем (теги, index)"},
+                    "verbose": {"type": "boolean", "default": False, "description": "Развернуть построчно то, что по умолчанию свёрнуто в счётчик (устаревшие статьи, сироты)"}
                 }
             }
         ),
@@ -1014,7 +1015,8 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "compile":
         result = await handlers.compile(arguments.get("dry_run", True), arguments.get("project"), arguments.get("since"))
     elif name == "lint":
-        result = await handlers.lint(arguments.get("project", "all"), arguments.get("fix", False))
+        result = await handlers.lint(arguments.get("project", "all"), arguments.get("fix", False),
+                                     arguments.get("verbose", False))
     elif name == "reindex":
         started = start_background_reindex()
         if started:

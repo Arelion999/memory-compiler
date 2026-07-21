@@ -112,7 +112,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 | `git_capture(repo_path, project, ...)` | Harvest knowledge from git commits (repo_path or git_log_raw) |
 | `knowledge_gap(repo_path, project, days)` | Find topics present in git commits but missing from the knowledge base |
 | `compile(dry_run, project, since)` | Compile daily logs into wiki articles |
-| `lint(project, fix)` | Check for duplicates, staleness and tags |
+| `lint(project, fix, verbose)` | Check for duplicates, staleness, tags and broken links. By default "stale" and "orphan" collapse into a counter — they describe the state of the base rather than problems (across 1612 articles they made up 95% of the output); `verbose` expands them line by line |
 | `reindex()` | Rebuild the index |
 | `article_history(project, filename)` | Git history of an article |
 | `backlinks(project, filename)` | Who links to this article: incoming MANUAL links with a context line. The auto-generated "See also" block is excluded — it reflects semantic similarity |

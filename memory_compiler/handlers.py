@@ -541,7 +541,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
 # ─── lint ────────────────────────────────────────────────────────────────────
 
 
-async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
+async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -> list[TextContent]:
     """Check knowledge base health."""
     issues = []
     fixed = []
@@ -751,10 +751,37 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
         await asyncio.to_thread(regenerate_index)
         fixed.append("\U0001f527 index.md перегенерирован")
 
+    # СВОРАЧИВАНИЕ НОРМЫ. Замер по всей базе 2026-07-21: 1157 записей, из них 70%
+    # «сирота» и 25% «устарела» — это описание нормального СОСТОЯНИЯ базы (ручных
+    # входящих ссылок 101 на 1612 статей), а не список проблем. Полезный сигнал
+    # составлял 4% и тонул в тысяче строк: 40 битых ссылок было не разглядеть.
+    # Информация не теряется — остаётся счётчик, а verbose=True печатает как раньше.
+    _COLLAPSIBLE = (
+        ("устарела", "устарело (>90 дней без обновления)"),
+        ("сирота", "сирот (нет входящих ссылок)"),
+        ("связанные:", "подсказок о связанных статьях"),
+    )
+    collapsed_counts: dict[str, int] = {}
+    issues_shown = issues
+    if not verbose:
+        kept = []
+        for line in issues:
+            for marker, label in _COLLAPSIBLE:
+                if marker in line:
+                    collapsed_counts[label] = collapsed_counts.get(label, 0) + 1
+                    break
+            else:
+                kept.append(line)
+        issues_shown = kept
+
     out = [f"# Lint \u2014 проверка базы знаний\n"]
-    if issues:
-        out.append(f"## Проблемы ({len(issues)})\n")
-        out.extend(issues)
+    if issues_shown:
+        out.append(f"## Проблемы ({len(issues_shown)})\n")
+        out.extend(issues_shown)
+    if collapsed_counts:
+        out.append("\n## Норма базы (свёрнуто; verbose=true развернёт построчно)\n")
+        for label, n in sorted(collapsed_counts.items(), key=lambda kv: -kv[1]):
+            out.append(f"ℹ️ {n} — {label}")
     if fixed:
         out.append(f"\n## Исправлено ({len(fixed)})\n")
         out.extend(fixed)
