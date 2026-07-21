@@ -1055,6 +1055,58 @@ def test_version_regex_does_not_match_ip_octets():
     assert matches == [], f"Version regex must not match IP octets, got: {matches}"
 
 
+def test_extract_facts_strips_url_query():
+    """URL в факт идёт БЕЗ query: там живут токены.
+
+    Асимметрия, найденная зондом 2026-07-21: в читающем пути (detect_contradictions)
+    query срезается _normalize_url именно потому, что «там же ?key=СЕКРЕТ», а на
+    ПИШУЩЕМ пути защиты не было — и адрес с токеном уезжал в tracking-статью целиком.
+    """
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text(
+        "проверка: curl https://example.ru/api/health?token=SECRETVALUE123 вернул 200")
+    urls = facts.get("url", [])
+    assert urls, "URL вообще не извлёкся — позитивный контроль провален"
+    assert not any("SECRETVALUE123" in u for u in urls), f"токен в факте: {urls}"
+    assert not any("?" in u for u in urls), f"query не срезан: {urls}"
+
+
+def test_auto_update_tracking_never_writes_token_to_disk(knowledge_dir):
+    """Сквозной: токен из адреса не должен оказаться в НЕзашифрованной статье."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking
+    import memory_compiler.config as _cfg
+
+    save_tracking_article("testproj", "service", {"url": "https://example.ru/api/health"})
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    auto_update_tracking(
+        "testproj",
+        "service: дёргал https://example.ru/api/health?token=SECRETVALUE123 — вернул 200",
+        topic="Проверка сервиса")
+
+    disk = (knowledge_dir / "testproj" / "tracking_service.md").read_text(encoding="utf-8")
+    assert "SECRETVALUE123" not in disk, "токен записан в статью на диск"
+
+
+def test_extract_facts_ignores_code_blocks():
+    """Факты не берутся из блоков кода: там значения ПРИМЕРА, а не состояния.
+
+    Заметка, ЦИТИРУЮЩАЯ конфиг, не заявляет его как факт о сущности."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text(
+        "Конфиг сервиса:\n\n```ini\nport = 9999\nhost = 10.9.9.9\n```\n\nБольше ничего.")
+    assert "port" not in facts, f"порт взят из блока кода: {facts}"
+    assert "ip" not in facts, f"IP взят из блока кода: {facts}"
+
+
+def test_extract_facts_still_reads_values_outside_code():
+    """Позитивный контроль к предыдущему: вне кода факты по-прежнему извлекаются."""
+    from memory_compiler.storage import extract_facts_from_text
+    facts = extract_facts_from_text("сервис слушает порт 9999 на хосте 10.9.9.9")
+    assert facts.get("port") == ["9999"], f"порт потерян: {facts}"
+    assert facts.get("ip") == ["10.9.9.9"], f"IP потерян: {facts}"
+
+
 def test_port_regex_does_not_match_timestamps():
     """Паттерн порта не должен ловить метку времени.
 

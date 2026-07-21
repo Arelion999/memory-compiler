@@ -641,6 +641,21 @@ _FACT_PATTERNS_SECONDARY = [
 ]
 
 
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def strip_code_blocks(text: str) -> str:
+    """Выбросить блоки кода (```…``` и `инлайн`).
+
+    ОДНО определение на весь код: им пользуются и извлечение фактов (storage), и
+    разбор ссылок (handlers). Внутри кода живут ПРИМЕРЫ, а не утверждения: '[[…]]'
+    там оказывается синтаксисом TOML, а 'port = N' — строкой чужого конфига. Оба
+    случая найдены на живой базе 2026-07-21.
+    """
+    return _INLINE_CODE_RE.sub(" ", _CODE_FENCE_RE.sub(" ", text))
+
+
 def _normalize_url(u: str) -> str:
     """Нормализовать URL для сравнения и хранения (L4): срезать хвостовую
     пунктуацию из markdown/JSON, отбросить query/fragment (там же ?key=СЕКРЕТ),
@@ -2603,7 +2618,10 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
     Only returns values that appear in non-historical context.
     """
     facts = {}
-    combined = f"{topic}\n{text}"
+    # Блоки кода вон ДО разбора: там значения ПРИМЕРА, а не состояния сущности.
+    # Заметка, цитирующая конфиг ('port = 9999' внутри ```-блока), не заявляет этот
+    # порт фактом — а факты отсюда уходят в ЗАПИСЬ через auto_update_tracking.
+    combined = strip_code_blocks(f"{topic}\n{text}")
 
     # Split into sentences (by . followed by space or newline) and lines; filter historical
     parts = re.split(r'(?:\.\s+|\n)', combined)
@@ -2648,6 +2666,12 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
         values = []
         for m in matches:
             v = m if isinstance(m, str) else m[0]
+            # URL нормализуем ЗДЕСЬ, а не только в detect_contradictions: query-строка
+            # несёт токены ('?token=…'), а этот факт УХОДИТ В ЗАПИСЬ через
+            # auto_update_tracking — то есть секрет оказывался в НЕзашифрованной
+            # tracking-статье на диске. Проверено сквозным прогоном 2026-07-21.
+            if kind == "url":
+                v = _normalize_url(v)
             if v and v not in seen:
                 seen.add(v)
                 values.append(v)

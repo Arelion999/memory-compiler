@@ -40,6 +40,7 @@ from memory_compiler.storage import (
     log_event, mark_dependents,
     extract_reflections, append_reflections,
     safe_article_path, safe_project_dir, make_slug,
+    strip_code_blocks,
 )
 
 _CTX_INSTRUCTIONS = (
@@ -1267,19 +1268,15 @@ _MD_LINK_RE = re.compile(r"\]\(([^)]+)\)")
 # Пробелы запрещены как второй рубеж: имя статьи их не содержит (проверено на 1618
 # стемах), а весь пойманный мусор — содержит.
 _WIKI_LINK_RE = re.compile(r"\[\[([^\[\]|\s]{1,120})\]\]")
-_CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
-
-
 def _strip_code(text: str) -> str:
-    """Выбросить блоки кода: там '[[…]]' — не ссылка.
+    """Делегат → storage.strip_code_blocks (одно определение на весь код).
 
-    `[[tool.mypy.overrides]]` — это TOML (массив таблиц), на живой базе 11 вхождений,
-    плюс 13 вхождений `[[X]]` в примерах синтаксиса. Пока таких статей нет, они просто
-    не разрешаются; заведись статья с таким именем — получили бы ложную связь из
-    куска конфига.
+    Здесь это нужно потому, что '[[tool.mypy.overrides]]' — синтаксис TOML, а не
+    ссылка (11 вхождений на живой базе); в storage тем же помощником отсекаются
+    значения-примеры при извлечении фактов. Две копии разошлись бы — как уже
+    разошлись два словаря паттернов.
     """
-    return _INLINE_CODE_RE.sub(" ", _CODE_FENCE_RE.sub(" ", text))
+    return strip_code_blocks(text)
 
 
 def _link_scan_body(text: str) -> str:
