@@ -33,6 +33,38 @@ def test_rebuild_index_masks_secret_in_daily(knowledge_dir):
         f"тело секрета из daily проиндексировано в plaintext: {results}"
 
 
+def test_daily_archive_stays_out_of_index(knowledge_dir):
+    """daily/archive/ НЕ индексируется — это РЕШЕНИЕ, а не побочный эффект glob.
+
+    Туда `compile` уносит логи, чьи записи уже разложены по статьям проектов: контент
+    представлен в базе, и индексация архива дала бы дубли к скомпилированным статьям.
+    Плюс в архивных логах лежат креды открытым текстом (категория C аудита 2026-07-21),
+    и находимость там — не польза, а экспозиция. Решение принято владельцем 2026-07-21.
+
+    Позитивный контроль обязателен: без него тест «в архиве не найдено» проходил бы и
+    при полностью сломанном индексе, то есть не проверял бы ничего.
+    """
+    from memory_compiler.search import whoosh_search
+    daily = knowledge_dir / "daily"
+    archive = daily / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    (daily / "2026-07-20.md").write_text(
+        "# Лог\n\n**Теги:** daily\n\nЖивая запись про ЗОНДAKTIVNY в работе\n",
+        encoding="utf-8",
+    )
+    (archive / "2026-01-15.md").write_text(
+        "# Лог\n\n**Теги:** daily\n\nАрхивная запись про ЗОНДARHIVNY из прошлого\n",
+        encoding="utf-8",
+    )
+    rebuild_index()
+
+    live = whoosh_search("ЗОНДAKTIVNY", project="all", limit=10)
+    assert live, "позитивный контроль провален: обычный daily-лог не находится, тест ниже бессмысленен"
+
+    archived = whoosh_search("ЗОНДARHIVNY", project="all", limit=10)
+    assert not archived, f"архивный daily-лог попал в индекс: {archived}"
+
+
 def test_index_safe_text_body_mention_not_masked():
     """Баг 1.7.27: '**Секрет:** да' в теле (после '## ') — не признак секрета,
     статья индексируется по телу. Флаг в меташапке — по-прежнему маскируется."""

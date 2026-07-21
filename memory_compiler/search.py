@@ -652,6 +652,9 @@ def rebuild_embeddings():
 
     daily = KNOWLEDGE_DIR / "daily"
     if daily.exists():
+        # glob, НЕ rglob: daily/archive/ вне семантического индекса — то же решение,
+        # что и для whoosh (см. коммент в rebuild_index). Держит
+        # tests/test_search.py::test_daily_archive_stays_out_of_index.
         for md in daily.glob("*.md"):
             try:
                 text = md.read_text(encoding="utf-8")
@@ -1037,6 +1040,8 @@ def rebuild_index():
 
         def _index_dir(proj_name: str, dir_path):
             nonlocal count
+            # glob, НЕ rglob — сознательно: daily/archive/ вне индекса (см. коммент
+            # к сбору daily ниже и tests/test_daily_archive_stays_out_of_index).
             for md in dir_path.glob("*.md"):
                 # _index_safe_text: секрет (маркер '**Секрет:** да') не становится
                 # searchable — тело маскируется плейсхолдером (симметрично для daily).
@@ -1052,6 +1057,13 @@ def rebuild_index():
             p = KNOWLEDGE_DIR / proj
             if p.exists():
                 _index_dir(proj, p)
+        # daily/archive/ ВНЕ индекса — решение, а не побочный эффект нерекурсивного
+        # glob (2026-07-21, 86 файлов). Туда `compile` уносит логи, чьи записи уже
+        # разложены по статьям проектов: контент в базе представлен, а индексация
+        # архива дала бы дубли к скомпилированным статьям. Плюс в архивных логах
+        # лежат креды открытым текстом (категория C аудита) — находимость там не
+        # польза, а экспозиция. Симметрично в rebuild_embeddings.
+        # Захочешь включить — сперва разобрать креды, потом менять обход.
         daily = KNOWLEDGE_DIR / "daily"
         if daily.exists():
             _index_dir("daily", daily)

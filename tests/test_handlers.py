@@ -904,6 +904,54 @@ def test_lint_check2_skips_service_files(knowledge_dir):
     assert "tracking_release.md" not in flagged
 
 
+def test_lint_stale_rotation_reports_every_article_and_moves_nothing(knowledge_dir):
+    """Check 6 (ротация >180 дней) обязан идти ПО СТАТЬЯМ и только отчитываться.
+
+    Был вложен не в тот цикл: стоял внутри перебора ключей эмбеддингов (сравнение
+    дублей) и работал с `a`/`updated`, вытекшими из предыдущего цикла, — то есть по
+    ПОСЛЕДНЕЙ статье проекта и по разу на каждый ключ. Отсюда: остальные статьи не
+    проверялись никогда, предупреждение дублировалось, а при fix=True один и тот же
+    файл переименовывался по кругу (вторая итерация — падение).
+
+    Перемещение убрано намеренно: daily/archive и <проект>/archive вне поиска
+    (см. test_daily_archive_stays_out_of_index), поэтому «архивация» — это скрытие
+    статьи из базы. Массовое скрытие не должно быть побочным эффектом линта.
+    """
+    import asyncio
+    from datetime import datetime
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    for name, date in (("stale_one.md", "2020-01-01"), ("stale_two.md", "2020-02-02")):
+        (proj / name).write_text(
+            f"# Старая статья {name}\n\n**Проект:** testproj\n**Теги:** test\n"
+            f"**Дата:** {date} 10:00\n\nТело статьи достаточной длины для проверок линта.\n",
+            encoding="utf-8",
+        )
+    (proj / "fresh.md").write_text(
+        "# Свежая статья\n\n**Проект:** testproj\n**Теги:** test\n"
+        f"**Дата:** {datetime.now().strftime('%Y-%m-%d')} 10:00\n\nТело свежей статьи, тоже длинное.\n",
+        encoding="utf-8",
+    )
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    result = asyncio.run(lint_handler(project="testproj", fix=True))
+    text = result[0].text
+    rotation = [l for l in text.splitlines() if "архивац" in l]
+
+    assert sum("stale_one.md" in l for l in rotation) == 1, f"stale_one ровно раз: {rotation}"
+    assert sum("stale_two.md" in l for l in rotation) == 1, f"stale_two ровно раз: {rotation}"
+    assert not any("fresh.md" in l for l in rotation), f"свежая статья помечена: {rotation}"
+
+    assert (proj / "stale_one.md").exists(), "линт переместил статью — скрытие из поиска"
+    assert (proj / "stale_two.md").exists(), "линт переместил статью — скрытие из поиска"
+    assert not (proj / "archive").exists(), "линт создал archive/ — статьи выпали из индекса"
+
+
 def test_lint_fix_removes_dead_refs(knowledge_dir):
     """With fix=true, lint removes dead markdown-link references — keeps the
     link text but drops the broken target."""

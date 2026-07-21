@@ -596,6 +596,20 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                 days = (datetime.now() - updated).days
                 issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 устарела ({days} дней без обновления)")
 
+            # Check 6: кандидат на ротацию (>180 дней). ТОЛЬКО ОТЧЁТ, без перемещения.
+            # Проверка жила внутри цикла сравнения дублей (перебор ключей эмбеддингов) и
+            # работала с `a`/`updated`, вытекшими из ЭТОГО цикла: проверялась лишь
+            # ПОСЛЕДНЯЯ статья проекта, предупреждение дублировалось по разу на ключ, а
+            # при fix=True один и тот же файл переименовывался по кругу — линт падал
+            # FileNotFoundError со второй итерации. Поэтому проектных archive/ в базе
+            # не появилось ни одного: ротация никогда не работала.
+            # Перемещение убрано намеренно: <проект>/archive и daily/archive вне поиска
+            # (см. rebuild_index), то есть «архивация» = скрытие статьи из базы. Массовое
+            # скрытие — решение человека, а не побочный эффект линта.
+            if updated and (datetime.now() - updated).days > 180:
+                days = (datetime.now() - updated).days
+                issues.append(f"⚠️ [{proj}] {a.name} — кандидат на архивацию ({days} дней)")
+
             # Check 4: Tag normalization
             for line in lines[:10]:
                 if line.startswith("**Теги:**"):
@@ -634,17 +648,6 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                     name_i = keys[i].split("/", 1)[-1]
                     name_j = keys[j].split("/", 1)[-1]
                     issues.append(f"\u26a0\ufe0f [{proj}] Возможный дубль (sim={sim:.2f}): {name_i} \u2194 {name_j}")
-
-            # Check 6: Stale rotation (>180 days -> archive)
-            if updated and (datetime.now() - updated).days > 180:
-                days = (datetime.now() - updated).days
-                if fix:
-                    archive_dir = proj_path / "archive"
-                    archive_dir.mkdir(parents=True, exist_ok=True)
-                    a.rename(archive_dir / a.name)
-                    fixed.append(f"\U0001f527 [{proj}] {a.name} \u2192 archive/ ({days} дней)")
-                else:
-                    issues.append(f"\u26a0\ufe0f [{proj}] {a.name} \u2014 кандидат на архивацию ({days} дней)")
 
         # Check 7: Cross-references — find related articles
         if len(keys) >= 2:
