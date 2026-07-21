@@ -41,7 +41,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 ## Features
 
-### 46 MCP tools
+### 47 MCP tools
 
 **Search and read:**
 
@@ -115,6 +115,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 | `lint(project, fix)` | Check for duplicates, staleness and tags |
 | `reindex()` | Rebuild the index |
 | `article_history(project, filename)` | Git history of an article |
+| `backlinks(project, filename)` | Who links to this article: incoming MANUAL links with a context line. The auto-generated "See also" block is excluded — it reflects semantic similarity |
 
 **Contextual generation (contextual retrieval):**
 

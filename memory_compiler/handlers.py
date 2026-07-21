@@ -1250,6 +1250,106 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(out)), *_resource_links(results)]
 
 
+# Блоки, которые пишет САМ сервер: add_see_also_links (семантические соседи) и
+# git-ссылки. Их содержимое — не «кто сослался», а «что похоже», и на этот вопрос уже
+# отвечает related. Замер базы 2026-07-21: ручных связей 264, авто-ссылок 2608 —
+# без отсечения бэклинки были бы на 90% шумом.
+_AUTO_LINK_BLOCKS = ("## См. также", "## Git-ссылки")
+_MD_LINK_RE = re.compile(r"\]\(([^)]+)\)")
+# Алиас '[[цель|подпись]]' в базе не встречается ни разу, но разбор дешевле проверки.
+_WIKI_LINK_RE = re.compile(r"\[\[([^\]|]+)")
+
+
+def _manual_link_body(text: str) -> str:
+    """Тело статьи без машинных блоков ссылок."""
+    cut = len(text)
+    for marker in _AUTO_LINK_BLOCKS:
+        i = text.find(marker)
+        if i != -1:
+            cut = min(cut, i)
+    return text[:cut]
+
+
+def _line_links_to(line: str, source_project: str, target_project: str,
+                   target_file: str, target_stem: str) -> bool:
+    """Ссылается ли строка на целевую статью.
+
+    Вики-цель разрешается по ИМЕНИ ФАЙЛА: на живой базе из 173 целей по имени файла
+    разрешились 124, по заголовку — НОЛЬ. Эвристики по заголовкам нет намеренно.
+    """
+    if any(t.strip() == target_stem for t in _WIKI_LINK_RE.findall(line)):
+        return True
+    for raw in _MD_LINK_RE.findall(line):
+        href = raw.split("#", 1)[0].strip()
+        if not href.endswith(target_file):
+            continue
+        # Имя файла может совпасть в разных проектах — требуем либо явный проект в
+        # пути, либо ссылку внутри своего же проекта.
+        if f"{target_project}/{target_file}" in href or source_project == target_project:
+            return True
+    return False
+
+
+def _collect_backlinks(target_project: str, target_file: str) -> list[dict]:
+    """Обойти базу и собрать ручные ссылки на статью. Синхронно (~0.45 с на 1777
+    файлов) — вызывать через asyncio.to_thread, как всё тяжёлое.
+
+    Отдельный индекс не заводится СОЗНАТЕЛЬНО: полсекунды дешевле, чем ещё одно
+    состояние, которое придётся держать в синхроне с базой.
+    """
+    # Без pathlib: в этом модуле Path импортируется локально в одном месте, а имя
+    # статьи всегда оканчивается на .md — отрезать суффикс достаточно и честнее.
+    target_stem = target_file[:-3] if target_file.endswith(".md") else target_file
+    found = []
+    for proj in _discover_projects():
+        pdir = KNOWLEDGE_DIR / proj
+        if not pdir.exists():
+            continue
+        for md in pdir.glob("*.md"):
+            # Служебные файлы (_log, _active_context, ...) ведёт движок: ссылка оттуда
+            # означает «статья существует», а не «кто-то на неё сослался».
+            if md.name.startswith("_"):
+                continue
+            if proj == target_project and md.name == target_file:
+                continue  # самоссылка — не связь
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            body = _manual_link_body(text)
+            if target_stem not in body and target_file not in body:
+                continue  # дешёвый отсев до построчного разбора
+            title, _ = article_title_tags(text, fallback=md.stem)
+            for line in body.splitlines():
+                if _line_links_to(line, proj, target_project, target_file, target_stem):
+                    found.append({"project": proj, "file": md.name, "title": title,
+                                  "context": line.strip()})
+                    break   # одной строки контекста достаточно
+    return found
+
+
+async def backlinks(project: str, filename: str) -> list[TextContent]:
+    """Кто ссылается на статью — обратное направление РУЧНЫХ связей."""
+    try:
+        fpath = safe_article_path(project, filename)   # traversal, как в read/delete
+    except ValueError as e:
+        return [TextContent(type="text", text=f"❌ Небезопасный путь: {e}")]
+    if not fpath.exists():
+        return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
+
+    found = await asyncio.to_thread(_collect_backlinks, project, filename)
+    if not found:
+        return [TextContent(type="text", text=(
+            f"На статью {project}/{filename} нет ручных ссылок.\n"
+            "Считаются только связи, проставленные вручную: авто-блоки «См. также» "
+            "не учитываются — они про семантическую близость, её показывает related."))]
+
+    out = [f"# Ссылаются на {project}/{filename} ({len(found)})\n"]
+    for r in found:
+        out.append(f"---\n### [{r['project']}] {r['title']}\n{r['file']}\n> {r['context']}\n")
+    return [TextContent(type="text", text="\n".join(out))]
+
+
 async def article_history(project: str, filename: str) -> list[TextContent]:
     # safe_article_path как в read/delete/edit — иначе traversal-зонд существования
     # файлов вне базы (LOW из аудита 2026-07-03)

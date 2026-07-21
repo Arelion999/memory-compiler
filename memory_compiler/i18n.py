@@ -154,6 +154,17 @@ TOOLS_EN: dict[str, dict] = {
             'project': "Project name, or 'all'",
         },
     },
+    'backlinks': {
+        # RU: Кто ссылается на статью: обратные РУЧНЫЕ связи ...
+        'description': ("Who links to this article: incoming MANUAL links "
+                        "([[wiki-links]] and markdown links in the body) with a context "
+                        "line. The auto-generated «See also» block is excluded — "
+                        "it reflects semantic similarity, which related already shows."),
+        'params': {
+            'project': "Article's project name",
+            'filename': 'Article file name',
+        },
+    },
     'article_history': {
         # RU: Получить историю изменений статьи (git log).
         'description': "Get an article's change history (git log).",

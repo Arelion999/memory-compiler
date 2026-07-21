@@ -25,7 +25,7 @@ app = Server("memory-compiler")
 # клиент авто-подтвердит потенциально пишущий вызов.
 _READONLY_LOCAL = frozenset({
     "get_context", "search", "load_session", "get_summary", "ask",
-    "get_active_context", "read_article", "search_by_tag", "article_history",
+    "get_active_context", "read_article", "search_by_tag", "article_history", "backlinks",
     "list_projects", "search_snippets", "get_runbook", "search_error",
     "get_project_deps", "search_decisions", "list_templates", "get_current",
     "consolidate", "stale_facts", "gap_report", "route_project",
@@ -304,6 +304,21 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "Имя проекта"},
+                    "filename": {"type": "string", "description": "Имя файла статьи"}
+                },
+                "required": ["project", "filename"]
+            }
+        ),
+        Tool(
+            name="backlinks",
+            description=("Кто ссылается на статью: обратные РУЧНЫЕ связи "
+                         "([[вики-ссылки]] и markdown-ссылки в теле) со строкой "
+                         "контекста. Авто-блок «См. также» не учитывается — он про "
+                         "семантическую близость, её показывает related."),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Имя проекта статьи"},
                     "filename": {"type": "string", "description": "Имя файла статьи"}
                 },
                 "required": ["project", "filename"]
@@ -1030,6 +1045,8 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await handlers.search_by_tag(**arguments)
     elif name == "article_history":
         result = await handlers.article_history(**arguments)
+    elif name == "backlinks":
+        result = await handlers.backlinks(**arguments)
     elif name == "init_schema":
         result = await handlers.init_schema(**arguments)
     elif name == "add_project":
