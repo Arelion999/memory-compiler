@@ -133,6 +133,8 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .ask-src .h .t:hover{text-decoration:underline}
 .ask-src .h .s{color:var(--text2);font-size:0.72em;white-space:nowrap}
 .ask-src .frag{font-size:0.82em;line-height:1.5;color:var(--text);white-space:pre-wrap;word-break:break-word;border-left:3px solid var(--accent);padding-left:8px}
+.ask-src .secret-btn{background:none;border:1px solid var(--border);border-radius:5px;color:var(--text2);cursor:pointer;font-size:0.9em;padding:1px 7px;margin-left:6px}
+.ask-src .secret-btn:hover{color:var(--accent);border-color:var(--accent)}
 .ask-src .src{color:var(--text2);font-size:0.72em;margin-top:6px}
 /*PYGMENTS_CSS*/
 </style>
@@ -299,7 +301,9 @@ var I18N={
     "timeline.toPresent":"— по сейчас",
     "ask.searching":"Ищу…",
     "ask.fallbackAll":"В выбранном проекте ничего не нашлось — показаны результаты по всем проектам.",
-    "ask.secretFragment":"[зашифровано — откройте статью для просмотра]",
+    "ask.secretFragment":"[зашифровано]",
+    "ask.secretShow":"Показать",
+    "ask.secretError":"Не удалось раскрыть",
     "ask.queryError":"Ошибка запроса"
   },
   en:{
@@ -371,7 +375,9 @@ var I18N={
     "timeline.toPresent":"— to present",
     "ask.searching":"Searching…",
     "ask.fallbackAll":"Nothing found in the selected project — showing results from all projects.",
-    "ask.secretFragment":"[encrypted — open the article to view]",
+    "ask.secretFragment":"[encrypted]",
+    "ask.secretShow":"Show",
+    "ask.secretError":"Could not reveal",
     "ask.queryError":"Query error"
   }
 };
@@ -984,6 +990,23 @@ function renderTimeline(idx){
 // Вкладка «Ответы»: retrieval с источниками (генерации нет — LLM на сервере отсутствует)
 let askItems=[];
 function askOpen(idx){const i=askItems[idx];if(i)openArticle(i.project,i.file,i.title);}
+
+// Раскрытие секрета прямо во вкладке ответов. Тела секрета в /api/ask НЕТ вовсе
+// (ask_sources отдаёт пустой fragment), поэтому дотягиваем статью тем же endpoint'ом,
+// что и обычное разворачивание карточки: он уже расшифровывает и уже под тем же
+// ключом доступа. Отдельный endpoint выдачи plaintext не заводим — лишняя поверхность.
+// Вставляем через textContent: тело секрета не должно ни рендериться как markdown,
+// ни исполняться как разметка.
+async function askReveal(idx,btn){
+  const i=askItems[idx];if(!i)return;
+  const box=btn.closest(".frag");
+  btn.disabled=true;
+  try{
+    const r=await fetch("/api/article/"+encodeURIComponent(i.project)+"/"+encodeURIComponent(i.file));
+    const d=await r.json();
+    box.textContent=d.content||"";
+  }catch(e){btn.disabled=false;box.textContent=t("ask.secretError");}
+}
 async function doAsk(){
   const q=$("ask-q").value.trim();
   if(!q)return;
@@ -997,7 +1020,9 @@ async function doAsk(){
     let h=d.fallback_all?'<div class="ask-fallback">'+t("ask.fallbackAll")+'</div>':"";
     h+=askItems.map((i,idx)=>{
       const sc="score "+i.score+((i.rerank!==null&&i.rerank!==undefined)?" · rerank "+i.rerank:"");
-      const frag=i.secret?t("ask.secretFragment"):esc(i.fragment);
+      const frag=i.secret
+        ?t("ask.secretFragment")+'<button class="secret-btn" onclick="askReveal('+idx+',this)">'+t("ask.secretShow")+'</button>'
+        :esc(i.fragment);
       return '<div class="ask-src"><div class="h"><span class="t" onclick="askOpen('+idx+')">'+esc(i.title)+'</span>'
         +'<span class="s">'+sc+'</span></div>'
         +'<div class="frag">'+frag+'</div>'
