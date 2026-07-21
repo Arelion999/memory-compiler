@@ -1055,6 +1055,53 @@ def test_version_regex_does_not_match_ip_octets():
     assert matches == [], f"Version regex must not match IP octets, got: {matches}"
 
 
+def test_port_regex_does_not_match_timestamps():
+    """Паттерн порта не должен ловить метку времени.
+
+    Был голым ':(\\d{2,5})' — ЛЮБОЕ двоеточие с цифрами. Живой случай 2026-07-21:
+    заметка про деплой со строкой '11:20:55' дала «порт 20» и затёрла 8765 в
+    tracking/deployment. Соседние паттерны (version, ip) обвешаны гардами от таких
+    же коллизий — порт остался наивным."""
+    from memory_compiler.storage import _FACT_PATTERNS
+    pat = _FACT_PATTERNS["port"]
+    for text in ("рестарт 2026-07-21 11:20:55", "релиз в 08:56", "замер 19.07 19:24",
+                 "прогон занял 1:30:00"):
+        assert pat.findall(text) == [], f"метка времени прочитана как порт: {text!r}"
+
+
+def test_port_regex_still_finds_real_ports():
+    """Гард не должен убить извлечение настоящих портов — иначе лечение хуже болезни."""
+    from memory_compiler.storage import _FACT_PATTERNS
+    pat = _FACT_PATTERNS["port"]
+    for text, expected in (
+        ("curl localhost:8765/api/health", "8765"),
+        ("сервис на 192.168.1.10:8080", "8080"),
+        ("проксируем example.ru:443", "443"),
+        ("порт 8765 проброшен наружу", "8765"),
+        ("port: 5432 в конфиге", "5432"),
+    ):
+        assert pat.findall(text) == [expected], f"не найден порт в {text!r}: {pat.findall(text)}"
+
+
+def test_auto_update_tracking_timestamp_does_not_overwrite_port(knowledge_dir):
+    """Поведенческий: метка времени в заметке НЕ должна переписывать порт трекера.
+
+    Именно так сломалось вживую: finish_task с текстом «переиндексирован ... 11:20:55»
+    записал в tracking/deployment port=20 вместо 8765, молча и без противоречия."""
+    from memory_compiler.storage import save_tracking_article, auto_update_tracking, load_tracking
+    import memory_compiler.config as _cfg
+
+    save_tracking_article("testproj", "deployment", {"port": "8765", "container": "mc-mcp"})
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    text = "deployment: прод переиндексирован 2026-07-21 11:20:55, тег релиза выложен в 08:56"
+    updates = auto_update_tracking("testproj", text, topic="Проверка деплоя")
+
+    cur = load_tracking("testproj", "deployment")["current"]
+    assert str(cur["port"]) == "8765", f"порт затёрт меткой времени: {cur['port']!r}"
+    assert updates == [], f"апдейта быть не должно: {updates}"
+
+
 def test_auto_update_tracking_only_strict_key_match(knowledge_dir):
     """auto_update_tracking must use strict key names, not substring match.
     Otherwise keys like 'iptables_policy', 'hosting', 'bitrix_version_date'
