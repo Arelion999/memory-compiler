@@ -646,9 +646,12 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
         # как статьи бессмысленно. Без этого фильтра на каждый проект приходило по два
         # «дубля» вида '_session.md ↔ tracking_release.md': оба файла описывают одно и
         # то же состояние по построению. Тот же фильтр уже стоит в Check 1/2.
+        # Плюс СЕКРЕТЫ: в индекс у них идёт плейсхолдер (титул + теги + слова-намерения),
+        # а не тело — значит все секреты проекта похожи ПО ПОСТРОЕНИЮ. На проде это дало
+        # шесть «дублей» подряд со схожестью 0.90–0.96, и все ложные: сравнивались маски.
         proj_embeddings = {k: v for k, v in _search.snapshot_embeddings().items()
                           if k.startswith(f"{proj}/") and "#chunk" not in k
-                          and not k.split("/", 1)[-1].startswith(("_", "tracking_"))}
+                          and not k.split("/", 1)[-1].startswith(("_", "tracking_", "secret_"))}
         keys = list(proj_embeddings.keys())
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):

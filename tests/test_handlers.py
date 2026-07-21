@@ -984,6 +984,33 @@ def test_lint_duplicate_check_skips_service_files(knowledge_dir):
         f"служебные файлы сравниваются как статьи: {dupes}"
 
 
+def test_lint_duplicate_check_skips_secrets(knowledge_dir):
+    """Секреты не сравниваются между собой как дубли.
+
+    В индекс у секрета идёт ПЛЕЙСХОЛДЕР (титул + теги + слова-намерения), а не тело —
+    значит все секреты проекта похожи друг на друга ПО ПОСТРОЕНИЮ. На проде это дало
+    6 «дублей» подряд в одном проекте со схожестью 0.90–0.96, и все ложные: сравнивались
+    маски, а не содержимое. Тот же класс, что и со служебными файлами."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    for name in ("secret_доступы_к_серверу.md", "secret_пароли_базы_данных.md"):
+        (proj / name).write_text(
+            f"# {name[:-3]}\n\n**Проект:** testproj\n**Теги:** secret, credentials\n"
+            "**Дата:** 2026-07-21 10:00\n**Секрет:** да\n\n## Содержание\n\nENC:gAAAfake\n",
+            encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj"))[0].text
+    dupes = [l for l in text.splitlines() if "дубл" in l.lower()]
+    assert not any("secret_" in l for l in dupes), f"секреты сравниваются как дубли: {dupes}"
+
+
 def test_lint_orphan_counts_cross_project_link(knowledge_dir):
     """Ссылка из ЧУЖОГО проекта снимает сиротство.
 
