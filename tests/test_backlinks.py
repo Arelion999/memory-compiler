@@ -113,6 +113,50 @@ def test_no_backlinks_is_explicit(knowledge_dir):
     assert "lonely.md" in out or "нет" in out.lower()
 
 
+def test_ignores_links_inside_code_fences(knowledge_dir):
+    """`[[…]]` в блоке кода — не ссылка. Это синтаксис TOML (массив таблиц).
+
+    На живой базе 2026-07-21: `[[tool.mypy.overrides]]` встречается 11 раз, `[[X]]` —
+    13 раз. Сегодня безвредно (не разрешаются), но стоит завести статью с таким именем —
+    и получим ложную связь из куска конфига.
+    """
+    _write(knowledge_dir, "testproj", "tool.mypy.overrides.md", "тело цели")
+    p = knowledge_dir / "testproj"
+    (p / "конфиг.md").write_text(
+        "# Конфиг\n\n**Проект:** testproj\n**Теги:** test\n**Дата:** 2026-07-21 10:00\n\n"
+        "## Записи\n\nПример настройки:\n\n```toml\n[[tool.mypy.overrides]]\n"
+        "ignore_missing_imports = true\n```\n\nВот и всё.\n",
+        encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    out = _text(asyncio.run(backlinks(project="testproj", filename="tool.mypy.overrides.md")))
+    assert "конфиг.md" not in out, f"TOML из блока кода принят за вики-ссылку: {out}"
+
+
+def test_unclosed_brackets_do_not_swallow_text(knowledge_dir):
+    """Незакрытая `[[` в прозе — не ссылка и не «цель длиной в абзац».
+
+    Живой случай (лог линта 2026-07-21): статья описывала триггер автодополнения
+    словами «инлайн [[ или # → дропдаун», закрывающих скобок не было, и разбор
+    проглатывал сотни символов до первой `]`. В backlinks это безвредно (не
+    разрешается), но линт печатал такую «цель» на двадцать строк.
+    """
+    from memory_compiler.handlers import _link_targets
+
+    text = ("Инлайн [[ или # → дропдаун. Vanilla JS: слушать input, "
+            "regex /(\\[\\[)/ и открывать список.\n\nА это настоящая: [[target]].")
+    wiki, _ = _link_targets(text)
+    assert wiki == {"target"}, f"разбор поймал мусор: {wiki}"
+
+
+def test_bracketed_phrase_is_not_a_link(knowledge_dir):
+    """Скобки вокруг фразы с пробелами — не имя статьи: имена пробелов не содержат."""
+    from memory_compiler.handlers import _link_targets
+
+    wiki, _ = _link_targets("Ссылка на [[несколько слов подряд]] и на [[target]].")
+    assert wiki == {"target"}, f"фраза с пробелами принята за ссылку: {wiki}"
+
+
 def test_rejects_traversal(knowledge_dir):
     out = _text(asyncio.run(backlinks(project="..", filename="outside.md")))
     assert "❌" in out, f"traversal не отвергнут: {out}"

@@ -545,6 +545,9 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
     issues = []
     fixed = []
     check_projects = PROJECTS if project == "all" else [project]
+    # Индекс ссылок по ВСЕЙ базе, один раз на вызов (~0.5 с): нужен для сиротства
+    # (входящая ссылка приходит и из чужого проекта) и для битых вики-ссылок.
+    known_stems, referenced_wiki, referenced_md = await asyncio.to_thread(_base_link_index)
 
     for proj in check_projects:
         proj_path = KNOWLEDGE_DIR / proj
@@ -638,8 +641,13 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
         # Check 5: Duplicates (semantic similarity) — compare parent articles only.
         # Снимок актуального _embeddings под локом (см. snapshot_embeddings) — иначе
         # фоновый rebuild может мутировать dict во время comprehension (RuntimeError).
+        # Служебные файлы (_session, _log, tracking_*) ведёт движок — сравнивать их
+        # как статьи бессмысленно. Без этого фильтра на каждый проект приходило по два
+        # «дубля» вида '_session.md ↔ tracking_release.md': оба файла описывают одно и
+        # то же состояние по построению. Тот же фильтр уже стоит в Check 1/2.
         proj_embeddings = {k: v for k, v in _search.snapshot_embeddings().items()
-                          if k.startswith(f"{proj}/") and "#chunk" not in k}
+                          if k.startswith(f"{proj}/") and "#chunk" not in k
+                          and not k.split("/", 1)[-1].startswith(("_", "tracking_"))}
         keys = list(proj_embeddings.keys())
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):
@@ -672,25 +680,12 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                        if not a.name.startswith("_")
                        and not a.name.startswith("tracking_")]
         if len(non_service) > 1:
-            import re as _re_orph
-            md_link_orph = _re_orph.compile(
-                r"\[[^\]]+\]\(\s*"
-                r"(?:\./)?"
-                r"(?:\.\./[\w.\-]+/)?"
-                r"([\w.\-]+\.md)\s*\)"
-            )
-            referenced = set()
+            # Входящие ссылки берём из ОБЩЕГО индекса базы (_base_link_index): сбор
+            # только по своему проекту объявлял сиротой статью, на которую ссылались
+            # из другого проекта — на живой базе так выглядела связь infra → niksdesk.
+            # Учитываются и вики-ссылки: раньше проверка их не видела вовсе.
             for a in non_service:
-                try:
-                    body = a.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-                for m in md_link_orph.finditer(body):
-                    target = m.group(1)
-                    if target != a.name:
-                        referenced.add(target)
-            for a in non_service:
-                if a.name not in referenced:
+                if a.name not in referenced_md and a.stem not in referenced_wiki:
                     issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 сирота (no inbound refs)")
 
         # Check 9: Dead cross-references — markdown links to missing .md files
@@ -710,6 +705,14 @@ async def lint(project: str = "all", fix: bool = False) -> list[TextContent]:
                 atext = a.read_text(encoding="utf-8")
             except Exception:
                 continue
+            # Битые ВИКИ-ссылки: раньше не проверялись вовсе — считалось, что связи
+            # живут в markdown. С появлением backlinks битая вики-цель это потерянная
+            # связь, а не косметика. Блоки кода исключены: '[[tool.mypy.overrides]]' —
+            # синтаксис TOML, таких «целей» на живой базе 11.
+            wiki_targets, _ = _link_targets(_link_scan_body(atext))
+            for wt in sorted(wiki_targets - known_stems):
+                issues.append(
+                    f"⚠️ [{proj}] {a.name} — dead wiki link → [[{wt}]]")
             seen_dead = set()
             # Two passes: first collect dead refs, then optionally strip them when fix=True.
             dead_matches = []  # list of (match, display) for fix pass
@@ -1256,18 +1259,87 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
 # без отсечения бэклинки были бы на 90% шумом.
 _AUTO_LINK_BLOCKS = ("## См. также", "## Git-ссылки")
 _MD_LINK_RE = re.compile(r"\]\(([^)]+)\)")
+# Вики-ссылка: ОБЯЗАТЕЛЬНО закрытая, однострочная, без пробелов и не длиннее 120.
 # Алиас '[[цель|подпись]]' в базе не встречается ни разу, но разбор дешевле проверки.
-_WIKI_LINK_RE = re.compile(r"\[\[([^\]|]+)")
+# Прежний permissive-вариант '\[\[([^\]|]+)' не требовал закрывающих скобок: на фразе
+# «инлайн [[ или # → дропдаун» он проглатывал сотни символов до первой ']' — в
+# backlinks безвредно (не разрешается), а линт печатал такую «цель» на двадцать строк.
+# Пробелы запрещены как второй рубеж: имя статьи их не содержит (проверено на 1618
+# стемах), а весь пойманный мусор — содержит.
+_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]|\s]{1,120})\]\]")
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _strip_code(text: str) -> str:
+    """Выбросить блоки кода: там '[[…]]' — не ссылка.
+
+    `[[tool.mypy.overrides]]` — это TOML (массив таблиц), на живой базе 11 вхождений,
+    плюс 13 вхождений `[[X]]` в примерах синтаксиса. Пока таких статей нет, они просто
+    не разрешаются; заведись статья с таким именем — получили бы ложную связь из
+    куска конфига.
+    """
+    return _INLINE_CODE_RE.sub(" ", _CODE_FENCE_RE.sub(" ", text))
+
+
+def _link_scan_body(text: str) -> str:
+    """Тело для ГИГИЕНЫ ссылок: без кода, но С машинными блоками.
+
+    Для сиротства и битых ссылок авто-блок «См. также» — полноценный указатель:
+    вопрос «на статью хоть что-то ссылается» шире, чем «кто сослался осознанно».
+    """
+    return _strip_code(text)
 
 
 def _manual_link_body(text: str) -> str:
-    """Тело статьи без машинных блоков ссылок."""
+    """Тело для РУЧНЫХ связей: без кода и без машинных блоков ссылок."""
     cut = len(text)
     for marker in _AUTO_LINK_BLOCKS:
         i = text.find(marker)
         if i != -1:
             cut = min(cut, i)
-    return text[:cut]
+    return _strip_code(text[:cut])
+
+
+def _link_targets(body: str) -> tuple[set[str], set[str]]:
+    """Цели ссылок из готового тела: (вики-стемы, имена md-файлов).
+
+    Единственное место, где в коде решается, «что считать ссылкой». Раньше определений
+    было ТРИ — у backlinks, у проверки сирот и у проверки битых ссылок, — и они
+    расходились: сироты не видели вики-ссылок и чужих проектов, битые не видели вики
+    вовсе, а backlinks единственный отсекал машинные блоки.
+    """
+    wiki = {t.strip() for t in _WIKI_LINK_RE.findall(body) if t.strip()}
+    md = set()
+    for raw in _MD_LINK_RE.findall(body):
+        href = raw.split("#", 1)[0].strip()
+        if href.endswith(".md") and not href.startswith(("http://", "https://")):
+            md.add(href.split("/")[-1])
+    return wiki, md
+
+
+def _base_link_index() -> tuple[set[str], set[str], set[str]]:
+    """Один проход по базе: (известные стемы, куда ссылаются вики, куда ссылаются md).
+
+    Строится РАЗ на вызов линта, а не на проект: входящая ссылка может прийти из
+    любого проекта (на живой базе infra → niksdesk), и per-project сбор объявлял такие
+    статьи сиротами.
+    """
+    stems, ref_wiki, ref_md = set(), set(), set()
+    for proj in _discover_projects():
+        pdir = KNOWLEDGE_DIR / proj
+        if not pdir.exists():
+            continue
+        for md_file in pdir.glob("*.md"):
+            stems.add(md_file.stem)
+            try:
+                body = _link_scan_body(md_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            w, m = _link_targets(body)
+            ref_wiki |= {t for t in w if t != md_file.stem}
+            ref_md |= {t for t in m if t != md_file.name}
+    return stems, ref_wiki, ref_md
 
 
 def _line_links_to(line: str, source_project: str, target_project: str,

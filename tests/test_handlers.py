@@ -904,6 +904,89 @@ def test_lint_check2_skips_service_files(knowledge_dir):
     assert "tracking_release.md" not in flagged
 
 
+def test_lint_duplicate_check_skips_service_files(knowledge_dir):
+    """Check 5 не должен сравнивать служебные файлы: они ведутся движком.
+
+    На проде это давало ровно два «дубля» на проект, и оба бессмысленные:
+    `_session.md ↔ tracking_release.md`. Check 1/2 служебные уже пропускают —
+    здесь тот же фильтр просто не применялся."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    same = ("Деплой сервиса на прод: рестарт контейнера, проверка health, "
+            "миграции применяются автоматически при старте.\n")
+    (proj / "_session.md").write_text(f"# Сессия\n\n{same}", encoding="utf-8")
+    (proj / "tracking_release.md").write_text(
+        f"---\ntype: tracking\ncurrent:\n  version: 1.0\n---\n# Релиз\n\n{same}",
+        encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj"))[0].text
+    dupes = [l for l in text.splitlines() if "дубл" in l.lower()]
+    assert not any("_session.md" in l or "tracking_release.md" in l for l in dupes), \
+        f"служебные файлы сравниваются как статьи: {dupes}"
+
+
+def test_lint_orphan_counts_cross_project_link(knowledge_dir):
+    """Ссылка из ЧУЖОГО проекта снимает сиротство.
+
+    Проверка собирала входящие ссылки только внутри своего проекта, поэтому реальная
+    кросс-проектная связь (infra → niksdesk на живой базе) сиротства не снимала."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    (knowledge_dir / "testproj").mkdir(exist_ok=True)
+    (knowledge_dir / "otherproj").mkdir(exist_ok=True)
+    (knowledge_dir / "testproj" / "target.md").write_text(
+        "# Цель\n\n**Проект:** testproj\n**Теги:** t\n**Дата:** 2026-07-21 10:00\n\n"
+        "## Записи\n\nтело достаточной длины для проверок линта\n", encoding="utf-8")
+    (knowledge_dir / "testproj" / "sibling.md").write_text(
+        "# Сосед\n\n**Проект:** testproj\n**Теги:** t\n**Дата:** 2026-07-21 10:00\n\n"
+        "## Записи\n\nтело достаточной длины для проверок линта\n", encoding="utf-8")
+    (knowledge_dir / "otherproj" / "outer.md").write_text(
+        "# Внешний\n\n**Проект:** otherproj\n**Теги:** t\n**Дата:** 2026-07-21 10:00\n\n"
+        "## Записи\n\nСвязано с [[target]] из соседнего проекта.\n", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj"))[0].text
+    orphans = [l for l in text.splitlines() if "сирота" in l]
+    assert not any("target.md" in l for l in orphans), \
+        f"кросс-проектная ссылка не снимает сиротство: {orphans}"
+
+
+def test_lint_reports_dead_wiki_link(knowledge_dir):
+    """Битая вики-ссылка — потерянная связь, и теперь она видна в backlinks.
+
+    Линт проверял только markdown-ссылки; на живой базе ~23 вики-цели не разрешаются."""
+    import asyncio
+    import memory_compiler.config as _cfg
+    from memory_compiler.handlers import lint as lint_handler
+    from memory_compiler.search import rebuild_index, rebuild_embeddings
+
+    proj = knowledge_dir / "testproj"
+    (proj / "source.md").write_text(
+        "# Источник\n\n**Проект:** testproj\n**Теги:** t\n**Дата:** 2026-07-21 10:00\n\n"
+        "## Записи\n\nСсылка в никуда: [[nonexistent_target_xyz]].\n"
+        "А это TOML, не ссылка:\n\n```toml\n[[tool.mypy.overrides]]\n```\n",
+        encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+    rebuild_index()
+    rebuild_embeddings()
+
+    text = asyncio.run(lint_handler(project="testproj"))[0].text
+    assert "nonexistent_target_xyz" in text, f"битая вики-ссылка не найдена: {text}"
+    assert "tool.mypy.overrides" not in text, "TOML из блока кода принят за битую ссылку"
+
+
 def test_lint_stale_rotation_reports_every_article_and_moves_nothing(knowledge_dir):
     """Check 6 (ротация >180 дней) обязан идти ПО СТАТЬЯМ и только отчитываться.
 
