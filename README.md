@@ -187,7 +187,7 @@ Before embedding, every chunk is prefixed with a context header that situates th
 
 - **Phase 1 (metadata):** a context header `[project · title · section · tags]`, automatic, for every article.
 - **Phase 2 (AI context):** in multi-section articles each section gets an AI-generated context phrase (one line per section), stored in the YAML frontmatter (`contexts:`) and used in place of the metadata. It is populated through two tools:
-  - `context_gaps(project, limit)` — returns articles that need context (multi-section, non-secret, no `contexts:`), together with their sections, body and instructions. Append-log `### {date}` entries are ignored.
+  - `context_gaps(project, limit)` — returns articles that need context (multi-section, non-secret, no `contexts:`): the full section structure, the list of unfilled sections (`pending`) and the body of the unfilled sections only — section-wise, with a per-section budget, frontmatter stripped. Append-log `### {date}` entries are ignored.
   - `save_contexts(project, filename, contexts)` — validates the headings, writes `contexts:` into the frontmatter and incrementally re-embeds the article.
 
 The embedding line format is versioned (`context_format_version` in `.embeddings.pkl`) — on a mismatch the cache is rebuilt from scratch.
@@ -217,7 +217,7 @@ AI context (phase 2) is layered in gradually and is not required for search to w
 ```
 While context_gaps(project) returns articles:
   1. context_gaps(project, limit=5)      — fetch a batch of gap articles
-  2. for each section — write one phrase (≤25 words) situating it in the document
+  2. for each pending section — write one phrase (≤25 words) situating it in the document
   3. save_contexts(project, filename, [{heading, context}, …])
   4. repeat until remaining == 0
 ```

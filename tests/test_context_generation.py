@@ -177,6 +177,75 @@ def test_context_gaps_ignores_timestamp_log_sections(knowledge_dir):
     assert ref["sections"] == ["Установка", "Обновление"]  # timestamp-секция отфильтрована
 
 
+def test_context_gaps_sectionwise_delta_tail_and_no_frontmatter(knowledge_dir):
+    """Длинная статья с наполненным frontmatter: full_text собирается посекционно —
+    тело ХВОСТОВОЙ pending-секции обязано доезжать, а frontmatter и тела уже
+    наполненных секций бюджет не едят. Frontmatter реалистичный: >300 символов
+    И >15 строк (правило test_frontmatter_blind — мимо обоих исторических срезов)."""
+    import json
+    filled = [f"Раздел {i}" for i in range(1, 8)]
+    fm_lines = ["---", "contexts:"]
+    for hd in filled:
+        fm_lines += [f'  - heading: "{hd}"',
+                     f'    context: "ИИ-контекст секции {hd} — длинное описание для реализма"']
+    fm = "\n".join(fm_lines + ["---"]) + "\n"
+    assert len(fm) > 300 and fm.count("\n") > 15
+
+    body = "# Длинная статья\n\n**Теги:** t\n\n"
+    for i, hd in enumerate(filled, 1):
+        body += f"### {hd}\n" + f"тело-{i} " * 220 + "\n\n"
+    body += "### Хвост\nМАРКЕР_ХВОСТА уникальный текст последней секции\n"
+    text = fm + body
+    assert len(text) > h._CTX_FULLTEXT_CAP  # старый head-срез отрезал бы хвост
+
+    (knowledge_dir / "testproj" / "long.md").write_text(text, encoding="utf-8")
+    payload = json.loads("".join(c.text for c in asyncio.run(h.context_gaps("testproj", 10))))
+    art = next(a for a in payload["articles"] if a["filename"] == "long.md")
+
+    assert "МАРКЕР_ХВОСТА" in art["full_text"]      # хвостовая pending-секция доезжает
+    assert "contexts:" not in art["full_text"]      # frontmatter не ест бюджет
+    assert "ИИ-контекст" not in art["full_text"]
+    assert "тело-1" not in art["full_text"]         # наполненные секции не едут
+    assert art["sections"] == filled + ["Хвост"]    # структура статьи целиком
+    assert art["pending"] == ["Хвост"]              # дельта — только ненаполненные
+
+
+def test_context_gaps_budget_spreads_over_all_pending_sections(knowledge_dir):
+    """Water-fill: бюджет делится между pending-секциями независимо от порядка —
+    голова КАЖДОЙ длинной секции присутствует, короткая доезжает целиком,
+    суммарный размер держится около капа."""
+    import json
+    text = "# Бюджет\n\n**Теги:** t\n\n"
+    for name in ("Альфа", "Бета", "Гамма"):
+        text += f"### {name}\nНАЧАЛО_{name} " + f"наполнитель-{name} " * 450 + "\n\n"
+    text += "### Дельта\nкороткое тело целиком\n"
+    (knowledge_dir / "testproj" / "budget.md").write_text(text, encoding="utf-8")
+
+    payload = json.loads("".join(c.text for c in asyncio.run(h.context_gaps("testproj", 10))))
+    art = next(a for a in payload["articles"] if a["filename"] == "budget.md")
+    for name in ("Альфа", "Бета", "Гамма"):
+        assert f"НАЧАЛО_{name}" in art["full_text"]
+    assert "короткое тело целиком" in art["full_text"]
+    assert len(art["full_text"]) <= h._CTX_FULLTEXT_CAP + 500  # заголовки/стыки — мелочь
+    assert art["truncated"] is True
+
+
+def test_context_gaps_log_section_body_does_not_eat_budget(knowledge_dir):
+    """Тело append-лог секций (### YYYY-MM-DD …) не входит в full_text: контексту
+    они не подлежат, а огромный лог съедал бы бюджет так же, как frontmatter."""
+    import json
+    text = ("# Лог\n\n**Теги:** t\n\n"
+            "### Обзор\nописание обзора\n\n"
+            "### 2026-07-17 10:00\n" + "ЛОГ_ЗАПИСЬ " * 900 + "\n\n"
+            "### Хвост\nХВОСТ_ПОСЛЕ_ЛОГА тело\n")
+    (knowledge_dir / "testproj" / "logart.md").write_text(text, encoding="utf-8")
+    payload = json.loads("".join(c.text for c in asyncio.run(h.context_gaps("testproj", 10))))
+    art = next(a for a in payload["articles"] if a["filename"] == "logart.md")
+    assert "ХВОСТ_ПОСЛЕ_ЛОГА" in art["full_text"]
+    assert "ЛОГ_ЗАПИСЬ" not in art["full_text"]
+    assert art["sections"] == ["Обзор", "Хвост"]
+
+
 def test_save_contexts_whitespace_insensitive_heading(knowledge_dir, monkeypatch):
     """Заголовки с нестандартным whitespace (таб/повторы/NBSP — артефакт импорта)
     матчатся по нормализованным пробелам, но хранится КАНОНИЧЕСКИЙ заголовок статьи,

@@ -44,11 +44,16 @@ from memory_compiler.storage import (
 )
 
 _CTX_INSTRUCTIONS = (
-    "Для каждой секции напиши ОДНО краткое предложение (≤25 слов, рус.), ситуирующее "
-    "секцию в документе: что покрывает и как связана с остальным. Не повторяй заголовок "
-    "дословно; добавь различающий контекст (проект, сущность, связь). Верни через "
+    "Для каждой секции из pending напиши ОДНО краткое предложение (≤25 слов, рус.), "
+    "ситуирующее секцию в документе: что покрывает и как связана с остальным. Не повторяй "
+    "заголовок дословно; добавь различающий контекст (проект, сущность, связь). "
+    "sections — полная структура статьи для ситуирования; full_text содержит шапку и "
+    "тела только pending-секций. Уже наполненные секции не переписывай. Верни через "
     "save_contexts как contexts=[{heading, context}, …]."
 )
+# Бюджет символов full_text на ОДНУ статью; смысл — размер батча (limit=5 → ~40к).
+# Тратится только на полезное: шапку и тела pending-секций (без frontmatter, без
+# уже наполненных и без append-лог секций), делится water-fill'ом — см. context_gaps.
 _CTX_FULLTEXT_CAP = 8000
 
 
@@ -1117,10 +1122,64 @@ def _is_log_heading(h: str) -> bool:
     return bool(re.match(r"^\d{4}-\d{2}-\d{2}", h.strip()))
 
 
+def _body_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
+    """(преамбула, [(заголовок, тело)]) из тела статьи БЕЗ frontmatter — той же
+    line-based логикой, что _chunk_article. Преамбула — всё до первого '### '
+    (заголовок статьи, дата, теги): нужна модели, чтобы ситуировать секции."""
+    pre_lines: list[str] = []
+    acc: list[tuple[str, list[str]]] = []
+    for line in body.splitlines():
+        if line.startswith("### "):
+            acc.append((line[4:].strip(), []))
+        elif acc:
+            acc[-1][1].append(line)
+        else:
+            pre_lines.append(line)
+    return "\n".join(pre_lines).strip(), [(hd, "\n".join(ls).strip()) for hd, ls in acc]
+
+
+def _fair_section_budgets(lengths: list[int], total: int) -> list[int]:
+    """Распределить бюджет символов по секциям (max-min fairness): короткие получают
+    свою длину целиком, остаток делится поровну между длинными. Не зависит от порядка
+    секций — хвостовая получает столько же, сколько первая (head-срез всего файла
+    отдавал хвосту ноль)."""
+    budgets = [0] * len(lengths)
+    open_idx = set(range(len(lengths)))
+    left = total
+    while open_idx:
+        fair = left // len(open_idx)
+        fits = {i for i in open_idx if lengths[i] <= fair}
+        if not fits:
+            for i in open_idx:
+                budgets[i] = fair
+            break
+        for i in fits:
+            budgets[i] = lengths[i]
+            left -= lengths[i]
+        open_idx -= fits
+    return budgets
+
+
+def _cut_section_body(body: str, budget: int) -> tuple[str, bool]:
+    """Обрезать тело секции до бюджета по границе строки (если она не слишком рано),
+    пометив срез многоточием. Влезает целиком → как есть."""
+    if len(body) <= budget:
+        return body, False
+    head = body[:budget]
+    nl = head.rfind("\n")
+    if nl > budget * 0.6:
+        head = head[:nl]
+    return head + "\n…", True
+
+
 async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent]:
     """Выдать батч статей, требующих ИИ-контекст: многосекционные, не-секретные,
     у которых есть '### '-секции без записи в contexts. Timestamp-секции (append-лог)
-    игнорируются — иначе статьи-логи никогда не покидали бы список пробелов. Stateless."""
+    игнорируются — иначе статьи-логи никогда не покидали бы список пробелов.
+    full_text собирается ПОСЕКЦИОННО: шапка + тела только pending-секций (дельта
+    headings−have), бюджет _CTX_FULLTEXT_CAP делится water-fill'ом. Head-срез сырого
+    файла резал всегда хвост, а frontmatter/наполненные/лог-секции съедали бюджет
+    (худший случай: contexts: 5312 из 8000). Stateless."""
     import json
     from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS
     from memory_compiler.search import section_headings, _article_contexts, _strip_frontmatter
@@ -1149,11 +1208,21 @@ async def context_gaps(project: str = "all", limit: int = 5) -> list[TextContent
                 body = _strip_frontmatter(text)
                 bl = body.splitlines()
                 title = bl[0].lstrip("# ").strip() if bl else md.stem
-                ft = text if len(text) <= _CTX_FULLTEXT_CAP else text[:_CTX_FULLTEXT_CAP]
+                pending = [hd for hd in headings if hd not in have]
+                pend_set = set(pending)
+                preamble, secs = _body_sections(body)
+                parts = [("", preamble)] + [(hd, sb) for hd, sb in secs if hd in pend_set]
+                budgets = _fair_section_budgets([len(sb) for _, sb in parts], _CTX_FULLTEXT_CAP)
+                pieces, truncated = [], False
+                for (hd, sb), bud in zip(parts, budgets):
+                    piece, cut = _cut_section_body(sb, bud)
+                    truncated = truncated or cut
+                    if piece.strip():
+                        pieces.append(f"### {hd}\n{piece}" if hd else piece)
                 articles.append({
                     "project": proj, "filename": md.name, "title": title,
-                    "sections": headings, "full_text": ft,
-                    "truncated": len(text) > _CTX_FULLTEXT_CAP,
+                    "sections": headings, "pending": pending,
+                    "full_text": "\n\n".join(pieces), "truncated": truncated,
                 })
     payload = {"remaining": remaining, "instructions": _CTX_INSTRUCTIONS, "articles": articles}
     return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
