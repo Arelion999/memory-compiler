@@ -1,4 +1,5 @@
 """MCP tool definitions and dispatch."""
+import json
 import time
 
 from mcp.server import Server
@@ -945,6 +946,107 @@ async def complete(ref, argument, context=None) -> Completion:
     return Completion(values=[], total=0, hasMore=False)
 
 
+# ─── Guard от утёкшей разметки вызова ────────────────────────────────────────
+# Клиентский парсер иногда не видит границу параметра (модель пишет закрывающие
+# теги без обязательного префикса) и доедает остаток блока вызова в строковое
+# значение: «…текст.</content>\n<session_summary>…</session_summary>\n</invoke>».
+# Замер 2026-07-27: 208 живых статей (~11% базы) с таким хвостом, у ~50 сессий
+# session_summary/open_questions потеряны, tags ставил только авто-теггер.
+# Лечение на транспортной границе: хвост отрезается, поля доезжают по назначению.
+# Якорь — ТОЛЬКО на конце строки: упоминания тегов в середине текста (статьи про
+# сам баг) не трогаются. Словарь тегов — имена параметров самого тула из схемы.
+
+_INVOKE_CLOSE = "</invoke>"
+_PARAM_CLOSE = "</parameter>"
+_TOOL_PROPS: dict | None = None
+
+
+async def _tool_props() -> dict:
+    """Ленивая карта {tool: properties} из объявленных схем — словарь имён
+    параметров для heal_arguments. Схемы статичны, строится один раз."""
+    global _TOOL_PROPS
+    if _TOOL_PROPS is None:
+        _TOOL_PROPS = {tl.name: (tl.inputSchema or {}).get("properties", {}) or {}
+                       for tl in await list_tools()}
+    return _TOOL_PROPS
+
+
+def _trailing_field(work: str, others: set) -> tuple | None:
+    """Замыкающий блок чужого поля: '<q>…</q>' или '<parameter name="q">…</parameter>'
+    (q — параметр того же тула). None, если конец строки — не такой блок."""
+    for q in sorted(others, key=len, reverse=True):
+        close = f"</{q}>"
+        if work.endswith(close):
+            i = work.rfind(f"<{q}>")
+            if i >= 0:
+                raw = work[i + len(q) + 2:-len(close)]
+                return q, raw.strip(), work[:i].rstrip()
+    if work.endswith(_PARAM_CLOSE):
+        i = work.rfind('<parameter name="')
+        if i >= 0:
+            rest = work[i + len('<parameter name="'):]
+            q, sep, tail = rest.partition('">')
+            if sep and q in others:
+                return q, tail[:-len(_PARAM_CLOSE)].strip(), work[:i].rstrip()
+    return None
+
+
+def _parse_leaked(raw: str, prop: dict):
+    """Значение утёкшего поля по типу из схемы. Непарсибельное — None (поле
+    не восстанавливаем: содержимое уже мусор, а падать нельзя)."""
+    raw = raw.strip()
+    ptype = prop.get("type")
+    if ptype in (None, "string"):
+        return raw or None
+    try:
+        val = json.loads(raw)
+    except Exception:
+        return None
+    if ptype == "array" and not isinstance(val, list):
+        return None
+    return val
+
+
+def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
+    """Отрезать утёкший хвост разметки у строковых параметров и вернуть
+    восстановленные поля по назначению (явно переданные не перекрываются).
+    Возвращает (аргументы, список вылеченного) — список пуст у здоровых вызовов."""
+    healed: list = []
+    out = dict(arguments)
+    for key, val in arguments.items():
+        if not isinstance(val, str) or key not in props:
+            continue
+        text = val.rstrip()
+        touched = False
+        if text.endswith(_INVOKE_CLOSE):
+            text = text[:-len(_INVOKE_CLOSE)].rstrip()
+            touched = True
+        fields: dict = {}
+        work = text
+        while True:
+            hit = _trailing_field(work, set(props) - {key})
+            if not hit:
+                break
+            q, raw, work = hit
+            fields.setdefault(q, raw)
+        anchor = next((a for a in (f"</{key}>", _PARAM_CLOSE) if work.endswith(a)), None)
+        if anchor:
+            out[key] = work[:-len(anchor)].rstrip()
+        elif touched:
+            out[key] = text        # без якоря блоки не трогаем — только срез </invoke>
+            fields = {}
+        else:
+            continue
+        healed.append(key)
+        for q, raw in fields.items():
+            if out.get(q) in (None, "", []):
+                parsed = _parse_leaked(raw, props.get(q, {}))
+                if parsed is not None:
+                    out[q] = parsed
+                    healed.append(f"+{q}")
+    return out, healed
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     obs.new_request_id()          # корреляция всех логов этого вызова
@@ -963,6 +1065,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if proj and proj.lower() != "all":
             arguments["project"] = normalize_project(proj)
 
+    healed: list = []
+    props = (await _tool_props()).get(name)
+    if props:
+        arguments, healed = heal_arguments(arguments, props)
+    audit_args = {**arguments, "_healed": healed} if healed else arguments
+    if healed:
+        _log.info("leaked markup healed", extra={"tool": name, "healed": ",".join(healed)})
+
     try:
         result = await _dispatch_tool(name, arguments)
     except ValueError as e:
@@ -975,14 +1085,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         obs.record_error(name, code)
         _log.error(f"tool {name} failed: {e}", extra={"tool": name, "err_code": code}, exc_info=True)
         try:
-            audit_log(name, arguments, 0, error=code)
+            audit_log(name, audit_args, 0, error=code)
         except Exception:
             pass
         raise
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
-    audit_log(name, arguments, total)
+    audit_log(name, audit_args, total)
     _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000), "size": total})
     # У search объявлен outputSchema — обязаны вернуть structuredContent (SDK валидирует).
     # Строим из уже готовых resource_link-блоков content: программный клиент получает
