@@ -5,6 +5,11 @@ services:
     build: .
     container_name: memory-compiler-mcp
     restart: unless-stopped
+    # PID 1 = docker-init (tini) вместо python: реапит осиротевших потомков.
+    # Без него git-демон автообслуживания (fork+setsid из `git commit`) терял
+    # родителя, переусыновлялся к python и оставался зомби — ~100 [git] <defunct>
+    # за сутки, копились до перезапуска контейнера.
+    init: true
     # Ротация stdout-логов контейнера: драйвер json-file по умолчанию БЕЗ лимита
     # → лог рос неограниченно на диске NAS (print-и сервера + логи SDK).
     logging:

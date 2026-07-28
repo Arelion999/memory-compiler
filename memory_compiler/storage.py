@@ -602,12 +602,33 @@ def git_commit(message: str):
             cwd=str(KNOWLEDGE_DIR), capture_output=True
         )
         if result.returncode != 0:  # there are staged changes
+            # gc.auto=0: `git commit` иначе запускает фоновое автообслуживание,
+            # которое отсоединяется (fork+setsid) и осиротевшим уходит к PID 1 —
+            # лишний форк на каждый коммит. Упаковку делаем плановым `git gc`.
             subprocess.run(
-                ["git", "commit", "-m", message],
+                ["git", "-c", "gc.auto=0", "commit", "-m", message],
                 cwd=str(KNOWLEDGE_DIR), capture_output=True
             )
     except Exception:
         pass  # git not available — silently skip
+
+
+def git_gc():
+    """Упаковать knowledge-репо, если git считает это нужным (--auto).
+
+    Нужна отдельная точка вызова, потому что git_commit зовётся с gc.auto=0:
+    на пути записи автообслуживания больше нет, и loose-объекты иначе копились бы
+    без предела. autoDetach=false обязателен — иначе gc снова отсоединится
+    (fork+setsid) и осиротеет к PID 1. Зовётся из фонового цикла (api.py), не из
+    обработчика запроса: --auto обычно no-op, но при срабатывании порога
+    (6700 loose / 50 паков) полная упаковка идёт минутами."""
+    try:
+        subprocess.run(
+            ["git", "-c", "gc.autoDetach=false", "gc", "--auto", "--quiet"],
+            cwd=str(KNOWLEDGE_DIR), capture_output=True, timeout=1800
+        )
+    except Exception:
+        pass  # git not available / таймаут — упакуемся на следующей неделе
 
 
 # ─── Active context ──────────────────────────────────────────────────────────

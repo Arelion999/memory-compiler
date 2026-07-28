@@ -25,7 +25,7 @@ from memory_compiler.search import (
     related_display_score,
 )
 from memory_compiler.storage import (
-    project_dir, regenerate_index, git_init, read_audit_log,
+    project_dir, regenerate_index, git_init, git_gc, read_audit_log,
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
     make_preview, tracking_timeline, _parse_frontmatter,
     article_title_tags, parse_meta_value,
@@ -839,6 +839,28 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             except Exception as e:
                 print(f"Auto-lint error: {e}")
 
+    async def auto_gc_loop():
+        """Упаковка knowledge-репо, воскресенье 04:00 (после lint в 03:00).
+
+        Компенсирует gc.auto=0 в git_commit: git больше не обслуживает репо сам
+        на каждом коммите (его фоновый процесс отсоединялся и оседал зомби на
+        PID 1 контейнера — ~100 [git] <defunct> за сутки). Порог решает git:
+        обычно проход no-op, полная упаковка — раз в несколько недель. Субпроцесс
+        блокирующий, поэтому в executor'е."""
+        from datetime import datetime, timedelta
+        while True:
+            now = datetime.now()
+            days_ahead = (6 - now.weekday()) % 7
+            target = (now + timedelta(days=days_ahead)).replace(hour=4, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=7)
+            await asyncio.sleep((target - now).total_seconds())
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, git_gc)
+                print("Auto-gc: проход упаковки knowledge-репо выполнен")
+            except Exception as e:
+                print(f"Auto-gc error: {e}")
+
     @asynccontextmanager
     async def lifespan(app):
         obs.setup_logging()  # структурное логирование (JSON-lines + ротация) до всего
@@ -901,6 +923,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         warm_task = asyncio.create_task(warm_models())  # strong ref: avoid GC
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
+        gc_task = asyncio.create_task(auto_gc_loop())  # strong ref: avoid GC
 
         async def anomaly_loop():
             """P2 observability: раз в 15 мин проверяет аномалии (всплеск ошибок,
@@ -922,7 +945,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
                     log.error(f"anomaly_loop error: {e}")
 
         anomaly_task = asyncio.create_task(anomaly_loop())
-        print("Auto-compile daily 02:00, auto-lint Sun 03:00, anomaly-check каждые 15м")
+        print("Auto-compile daily 02:00, auto-lint Sun 03:00, auto-gc Sun 04:00, anomaly-check каждые 15м")
         # session_manager.run() — жизненный цикл Streamable HTTP (task group). Оборачивает
         # yield: без него handle_request на /mcp упадёт. Если бы .run() падал — не стартовал
         # бы весь сервер (вкл. /sse), поэтому старт проверяем health-check'ом при деплое.
