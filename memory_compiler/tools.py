@@ -1047,10 +1047,56 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
     return out, healed
 
 
+# --- Зонд MCP Apps: что клиент объявляет на initialize -----------------------
+# Расширение io.modelcontextprotocol/ui (спека 2026-01-26) хост объявляет САМ:
+# capabilities.extensions["io.modelcontextprotocol/ui"] = {"mimeTypes": [...]}.
+# Это прямой машиночитаемый ответ на «умеет ли клиент MCP Apps» — надёжнее, чем
+# смотреть глазами, отрисовалась ли панель. Опора: 1.28.1 поле extensions не
+# моделирует, но ClientCapabilities.model_config extra="allow" и оно переживает
+# валидацию. Смена этого поведения на бампе SDK ослепит зонд МОЛЧА — держит
+# tests/test_client_capabilities.py.
+UI_EXTENSION = "io.modelcontextprotocol/ui"
+
+_seen_clients: set[str] = set()
+
+
+def client_ui_support(params) -> dict:
+    """Что клиент объявил про UI-расширение. Чистая функция — тестируется без сессии."""
+    if params is None:
+        return {"client": "?", "version": "?", "ui_extension": None, "extensions": []}
+    info = getattr(params, "clientInfo", None)
+    caps = getattr(params, "capabilities", None)
+    ext = {}
+    if caps is not None:
+        ext = caps.model_dump(by_alias=True, exclude_none=True).get("extensions") or {}
+    return {
+        "client": getattr(info, "name", None) or "?",
+        "version": getattr(info, "version", None) or "?",
+        "ui_extension": ext.get(UI_EXTENSION),
+        "extensions": sorted(ext),
+    }
+
+
+def _log_client_once() -> None:
+    """Одна запись на уникального клиента: поддержка UI — свойство клиента, а не
+    вызова, и капать в лог на каждый tool-call ей незачем."""
+    try:
+        params = app.request_context.session.client_params
+    except Exception:
+        return                    # вне запроса — молча, зонд не смеет ронять вызов
+    info = client_ui_support(params)
+    key = f"{info['client']}/{info['version']}"
+    if key in _seen_clients:
+        return
+    _seen_clients.add(key)
+    obs.get_logger("client").info("client connected", extra=info)
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     obs.new_request_id()          # корреляция всех логов этого вызова
     obs.record_call(name)
+    _log_client_once()
     _log = obs.get_logger("tool")
     t0 = time.perf_counter()
     # Count every tool call (not only predefined keys)
