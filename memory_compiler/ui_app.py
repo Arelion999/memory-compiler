@@ -31,7 +31,12 @@ createElement'ом, innerHTML не используется нигде.
 # отправки рукопожатия, иначе первый же tool-result может прийти в пустоту.
 PROTOCOL_VERSION = "2026-01-26"
 
-SEARCH_VIEW_HTML = """<!DOCTYPE html>
+# СТРОКА RAW (r"""), и это не украшение. Внутри лежит JS, а в JS backslash —
+# рабочий символ: обычная строка съела бы `\n` из parts.join("\n") как настоящий
+# перевод строки, разорвав литерал прямо посреди кода. Поймано node --check'ом
+# из tests/test_mcp_apps.py — глазами такое не видно, а панель молча остаётся
+# пустой: консоль песочного iframe нам недоступна.
+SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -52,17 +57,34 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
     font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .head b { font-size: 15px; }
   .head span { color: var(--muted); font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+  .chip {
+    font: inherit; font-size: 12px; cursor: pointer; color: var(--muted);
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 10px;
+  }
+  .chip[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
   ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   li {
     background: var(--card); border: 1px solid var(--line); border-radius: 6px;
-    padding: 8px 10px;
+    padding: 8px 10px; cursor: pointer;
   }
+  li:hover, li:focus { border-color: var(--accent); outline: none; }
   .title { font-weight: 600; color: var(--accent); word-break: break-word; }
   .meta { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
   .empty { color: var(--muted); padding: 8px 0; }
+  .back {
+    font: inherit; font-size: 13px; cursor: pointer; color: var(--accent);
+    background: none; border: none; padding: 0; margin-bottom: 8px;
+  }
+  .article {
+    background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; margin: 0; white-space: pre-wrap; word-break: break-word;
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
 </style>
 </head>
 <body>
@@ -118,22 +140,75 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     return n;
   }
 
-  function render(data) {
-    var results = (data && data.results) || [];
+  var state = { data: null, project: null };
+
+  function openArticle(r) {
     root.textContent = "";
+    var back = el("button", "back", "← к результатам");
+    back.addEventListener("click", function () { renderList(); });
+    root.appendChild(back);
+    root.appendChild(el("div", "title", r.title || r.name || ""));
+    var body = el("pre", "article", "Загрузка…");
+    root.appendChild(body);
+    requestAnimationFrame(sendSize);
+    // Идём к серверу НАПРЯМУЮ: модель в этом не участвует — ни хода, ни токенов.
+    // Секрет открывается тем же путём: read_article расшифровывает, а сам клик и
+    // есть осознанное раскрытие (тело не грузится, пока на карточку не нажали).
+    request("tools/call", { name: "read_article", arguments: { project: r.project, filename: r.file } })
+      .then(function (res) {
+        var parts = ((res && res.content) || [])
+          .filter(function (c) { return c && c.type === "text"; })
+          .map(function (c) { return c.text; });
+        body.textContent = parts.length ? parts.join("\n") : "Пусто.";
+        requestAnimationFrame(sendSize);
+      });
+  }
+
+  function renderList() {
+    var data = state.data || {};
+    var all = data.results || [];
+    var shown = state.project ? all.filter(function (r) { return r.project === state.project; }) : all;
+    root.textContent = "";
+
     var head = el("div", "head");
-    head.appendChild(el("b", null, data && data.query ? data.query : "Поиск"));
-    head.appendChild(el("span", null, "найдено: " + ((data && data.count) || 0)));
+    head.appendChild(el("b", null, data.query || "Поиск"));
+    head.appendChild(el("span", null, "найдено: " + (data.count || 0)));
     root.appendChild(head);
-    if (!results.length) {
+
+    // Фильтр по проекту — поверх УЖЕ полученных результатов, без обращения к
+    // серверу и без хода модели.
+    var projects = [];
+    all.forEach(function (r) { if (r.project && projects.indexOf(r.project) < 0) projects.push(r.project); });
+    if (projects.length > 1) {
+      var chips = el("div", "chips");
+      projects.forEach(function (p) {
+        var b = el("button", "chip", p);
+        b.setAttribute("aria-pressed", state.project === p ? "true" : "false");
+        b.addEventListener("click", function () {
+          state.project = state.project === p ? null : p;
+          renderList();
+        });
+        chips.appendChild(b);
+      });
+      root.appendChild(chips);
+    }
+
+    if (!shown.length) {
       root.appendChild(el("div", "empty", "Ничего не найдено."));
     } else {
       var list = el("ol");
-      results.forEach(function (r) {
+      shown.forEach(function (r) {
         var li = el("li");
-        li.appendChild(el("div", "title", r.title || r.name || r.uri || ""));
+        li.setAttribute("role", "button");
+        li.setAttribute("tabindex", "0");
+        li.appendChild(el("div", "title", (r.secret ? "🔒 " : "") + (r.title || r.name || r.uri || "")));
         var meta = (r.name || "") + (r.score ? "  ·  " + r.score : "");
+        if (r.secret) meta += "  ·  зашифровано, открыть — по клику";
         if (meta.trim()) li.appendChild(el("div", "meta", meta));
+        li.addEventListener("click", function () { openArticle(r); });
+        li.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openArticle(r); }
+        });
         list.appendChild(li);
       });
       root.appendChild(list);
@@ -141,6 +216,12 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     // После вёрстки, а не в этом кадре: scrollHeight до перерасчёта layout'а
     // вернул бы высоту ПРЕДЫДУЩЕГО содержимого.
     requestAnimationFrame(sendSize);
+  }
+
+  function render(data) {
+    state.data = data || {};
+    state.project = null;
+    renderList();
   }
 
   // Подписка ДО рукопожатия: хост шлёт tool-result сразу после initialized.

@@ -110,10 +110,17 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "uri": {"type": "string", "description": "memory://<project>/<file>"},
+                                # Описания здесь ПО-АНГЛИЙСКИ: i18n.localize_tools переводит
+                                # только description инструмента и inputSchema, outputSchema
+                                # он не трогает — кириллица тут непереводима в принципе и
+                                # роняет гейт «при MC_LANG=en не осталось кириллицы».
+                                "uri": {"type": "string", "description": "memory://<project>/<file>; for a secret article it does NOT resolve as a resource — read it via read_article"},
                                 "name": {"type": "string"},
                                 "title": {"type": "string"},
-                                "score": {"type": "string"}
+                                "score": {"type": "string"},
+                                "project": {"type": "string", "description": "argument for read_article"},
+                                "file": {"type": "string", "description": "argument for read_article"},
+                                "secret": {"type": "boolean", "description": "body is encrypted; opens only via read_article"}
                             },
                             "required": ["uri", "name"]
                         }
@@ -1173,6 +1180,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 def _build_search_structured(query: str, blocks: list) -> dict:
+    """Структурированная выдача search.
+
+    Основной источник — payload, собранный самим хендлером: он один знает про
+    секретность. Сборка из resource-ссылок (ниже, как фолбэк) секреты ТЕРЯЛА —
+    ссылок на них нет намеренно, и панель MCP Apps молча показывала меньше
+    результатов, чем текстовая выдача того же вызова, включая счётчик.
+    """
+    payload = handlers.search_payload_var.get()
+    if payload is not None and payload.get("query") == query:
+        return payload
     results = []
     for b in blocks:
         if getattr(b, "type", None) == "resource_link":
@@ -1181,6 +1198,9 @@ def _build_search_structured(query: str, blocks: list) -> dict:
                 "name": b.name or "",
                 "title": b.title or "",
                 "score": b.description or "",
+                "project": (b.name or "/").split("/", 1)[0],
+                "file": (b.name or "/").split("/", 1)[-1],
+                "secret": False,
             })
     return {"query": query, "count": len(results), "results": results}
 

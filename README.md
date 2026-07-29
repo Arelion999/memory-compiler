@@ -257,6 +257,11 @@ A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
 
 Search results render as an interactive panel inside the chat, not as a wall of text. This is the `io.modelcontextprotocol/ui` extension (spec 2026-01-26): the `search` tool carries `_meta.ui.resourceUri`, the host fetches `ui://memory-compiler/search-results.html` and renders it in a sandboxed iframe, talking to it over JSON-RPC on `postMessage`.
 
+The point is not the frame — it is that **the model is not in the loop**. Clicking a result issues `tools/call read_article` straight from the iframe to the server and shows the article in the panel. Reading five articles costs five clicks instead of five model turns: no generation, no article bodies filling the context, no waiting.
+
+- **Secrets are listed, marked, and openable.** A search that matches an encrypted article shows it with a lock. Nothing is decrypted until you click — so the click itself is the deliberate reveal, the same bargain the Web UI's "Show" button makes. (Secrets still have no `memory://` resource link: as passive context they stay unavailable, which is a different question from an explicit click.)
+- **Project filter** — chips over the results already in hand, filtering without a server round-trip or a model turn.
+- **The panel reports its own height.** Sizing is a negotiation, not CSS: the host sends `containerDimensions` and listens for `ui/notifications/size-changed`. A view that never reports stays stuck in the default height with a scrollbar.
 - **Self-contained by necessity.** The host applies `default-src 'none'` with `connect-src 'none'`, so nothing external loads and the view cannot make network calls at all — no CDN, no fonts, not even our own `/api/*`. CSS and JS are inline; the data arrives from the host as `structuredContent`, which the `search` tool already produces.
 - **Served with the MIME the client asks for** — `text/html;profile=mcp-app`, exactly the type advertised in the client's `initialize` capabilities. (Note for anyone porting this: `text/html+skybridge` is the OpenAI Apps SDK type for ChatGPT and will not work here.)
 - **Not in `resources/list`.** The spec allows omitting UI-only resources, and the listing is about knowledge articles; the host resolves the view by URI from the tool description.

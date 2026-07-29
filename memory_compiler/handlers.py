@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextvars import ContextVar
 from datetime import datetime, timedelta, date
 from typing import Optional
 
@@ -356,6 +357,16 @@ def _resource_links(items) -> list[ResourceLink]:
     return links
 
 
+# Структурированная выдача search собирается ЗДЕСЬ, а не из resource-ссылок в
+# tools.py. Ссылок на секреты нет НАМЕРЕННО (как ресурс секрет недоступен — это
+# верная политика, см. read_resource), но сборка структуры из ссылок молча теряла
+# секретные попадания: панель MCP Apps не показывала их вовсе, и счётчик «найдено»
+# расходился с текстовой выдачей того же вызова. Ни исключения, ни предупреждения.
+# Передаём через ContextVar, а не модульную переменную: он привязан к задаче,
+# поэтому параллельные вызовы не перепутают выдачу.
+search_payload_var: ContextVar[dict | None] = ContextVar("search_payload", default=None)
+
+
 async def search(query: str, project: str = "all") -> list[TextContent]:
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
     # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
@@ -370,6 +381,9 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
         fallback_all = bool(results)
 
     if not results:
+        # Пустую выдачу тоже объявляем явно: иначе панель прочитала бы payload
+        # предыдущего вызова и показала чужие результаты под новым запросом.
+        search_payload_var.set({"query": query, "count": 0, "results": []})
         return [TextContent(type="text", text=f"Ничего не найдено: '{query}'")]
 
     results = await _rerank_async(query, results, top_k=8)
@@ -382,6 +396,7 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
                    f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
     out = [header]
     links: list[ResourceLink] = []
+    found: list[dict] = []
     for r in results:
         secret = is_secret_article(r.get("preview", ""), r.get("file", ""))
         if secret:
@@ -402,7 +417,21 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
                 description=scores,
                 mimeType="text/markdown",
             ))
+        # А в структурированную выдачу секрет ВХОДИТ — с флагом. Панель покажет его
+        # с замком, а открывать будет через read_article (тот расшифровывает), не
+        # через memory://. uri у секрета остаётся идентификатором статьи и НЕ
+        # разрешается как ресурс — на это и указывает secret.
+        found.append({
+            "uri": f"memory://{r['project']}/{r['file']}",
+            "name": f"{r['project']}/{r['file']}",
+            "title": r.get("title", "") or "",
+            "score": scores,
+            "project": r["project"],
+            "file": r["file"],
+            "secret": bool(secret),
+        })
 
+    search_payload_var.set({"query": query, "count": len(found), "results": found})
     return [TextContent(type="text", text="\n".join(out)), *links]
 
 

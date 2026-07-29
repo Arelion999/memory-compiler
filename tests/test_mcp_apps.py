@@ -123,6 +123,33 @@ def test_size_is_measured_after_layout():
     assert "requestAnimationFrame(sendSize)" in SEARCH_VIEW_HTML
 
 
+def test_view_opens_articles_through_read_article():
+    """Смысл панели весь в этом: клик уходит на сервер НАПРЯМУЮ. В текстовой
+    выдаче чтобы открыть статью нужен ход модели — генерация, токены, ожидание."""
+    assert "tools/call" in SEARCH_VIEW_HTML
+    assert "read_article" in SEARCH_VIEW_HTML
+
+
+def test_view_marks_secrets_and_still_opens_them():
+    """Секрет виден замком заранее и открывается кликом: read_article
+    расшифровывает, а сам клик и есть осознанное раскрытие — тело не грузится,
+    пока на карточку не нажали."""
+    assert "🔒" in SEARCH_VIEW_HTML
+    assert "r.secret" in SEARCH_VIEW_HTML
+
+
+def test_view_filters_by_project_without_touching_the_server():
+    assert 'el("button", "chip", p)' in SEARCH_VIEW_HTML
+    assert "state.project" in SEARCH_VIEW_HTML
+
+
+def test_cards_are_keyboard_reachable():
+    """Карточка выглядит кликабельной — значит обязана быть достижимой с
+    клавиатуры, иначе синий заголовок остаётся ложным обещанием."""
+    assert 'setAttribute("tabindex", "0")' in SEARCH_VIEW_HTML
+    assert 'setAttribute("role", "button")' in SEARCH_VIEW_HTML
+
+
 def test_view_js_is_valid_syntax(tmp_path):
     """Синтаксическая ошибка во вьюхе = пустая панель БЕЗ единой жалобы: консоль
     песочного iframe нам не видна, сервер отдал ресурс успешно, тесты Python

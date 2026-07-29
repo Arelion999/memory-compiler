@@ -35,6 +35,52 @@ def test_build_search_structured_from_blocks():
     assert str(s["results"][0]["uri"]).startswith("memory://p/a.md")
 
 
+def test_secret_article_is_present_in_structured_output(knowledge_dir):
+    """РЕГРЕСС. structuredContent собирался из resource_link-блоков, а ссылок на
+    секреты нет НАМЕРЕННО (как ресурс секрет недоступен). Из-за этого панель MCP
+    Apps не показывала секретные попадания ВООБЩЕ — ни строкой, ни замком, — и её
+    счётчик «найдено» расходился с текстовой выдачей того же вызова. Молча:
+    ни исключения, ни предупреждения. Сценарий владельца — «искал креды, статью
+    с ними не вижу».
+    """
+    proj = knowledge_dir / "testproj"
+    (proj / "secret_docker_creds.md").write_text(
+        "# Доступы к docker-реестру\n\n"
+        "**Дата:** 2026-01-01 10:00\n"
+        "**Проект:** testproj\n"
+        "**Теги:** docker, пароль\n\n"
+        "## Записи\n\nENC:gAAAAABsecretpayload\n",
+        encoding="utf-8",
+    )
+    content, structured = asyncio.run(call_tool("search", {"query": "docker", "project": "testproj"}))
+
+    names = [r["name"] for r in structured["results"]]
+    assert any("secret_docker_creds" in n for n in names), (
+        f"секретная статья пропала из structuredContent: {names}"
+    )
+    hit = next(r for r in structured["results"] if "secret_docker_creds" in r["name"])
+    assert hit["secret"] is True, "секрет обязан быть помечен — панель рисует по этому флагу замок"
+    assert hit["project"] == "testproj" and hit["file"].endswith(".md"), (
+        "панель открывает статью через read_article(project, filename) — оба поля обязаны быть"
+    )
+    assert structured["count"] == len(structured["results"])
+    # Ссылок на секрет по-прежнему нет: как ресурс он недоступен, и это не меняется.
+    links = [b for b in content if getattr(b, "type", None) == "resource_link"]
+    assert not [b for b in links if "secret_" in (b.name or "")]
+
+
+def test_structured_count_matches_the_text_output(knowledge_dir):
+    """Два представления одного вызова не должны расходиться."""
+    proj = knowledge_dir / "testproj"
+    (proj / "secret_docker_creds.md").write_text(
+        "# Доступы к docker-реестру\n\n**Теги:** docker\n\n## Записи\n\nENC:x\n", encoding="utf-8")
+    content, structured = asyncio.run(call_tool("search", {"query": "docker", "project": "testproj"}))
+    headings = content[0].text.count("\n### ")
+    assert structured["count"] == headings, (
+        f"панель покажет {structured['count']}, текст — {headings}"
+    )
+
+
 def test_call_tool_search_returns_structured(knowledge_dir):
     out = asyncio.run(call_tool("search", {"query": "docker", "project": "testproj"}))
     # CombinationContent: (content_blocks, structuredContent)
