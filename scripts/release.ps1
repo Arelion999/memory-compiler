@@ -61,9 +61,17 @@ Write-Host "== git add -A ==" -ForegroundColor Cyan
 git add -A
 git status --short
 
+# Правила НИКС лежат ГЛОБАЛЬНО, своего .gitleaks.toml в репозитории нет. Без
+# --config gitleaks идёт с дефолтными правилами и без allowlist'ов — и тогда любой
+# релиз, ТРОГАЮЩИЙ tests/test_ui_secret_reveal.py, отменяется на литерале
+# test-encrypt-key-123 из monkeypatch. Конфиг подставляем, только если он есть:
+# на машине без него скан должен идти с дефолтными правилами, а не падать.
+$gitleaksConfig = Join-Path $HOME ".git-hooks/gitleaks.toml"
+$glCfg = if (Test-Path $gitleaksConfig) { @("--config", $gitleaksConfig) } else { @() }
+
 Write-Host "== gitleaks (staged) ==" -ForegroundColor Cyan
 if (Get-Command gitleaks -ErrorAction SilentlyContinue) {
-    gitleaks protect --staged --no-banner --redact
+    gitleaks protect --staged --no-banner --redact @glCfg
     if ($LASTEXITCODE -ne 0) { Write-Error "gitleaks нашёл секреты — релиз отменён."; exit 1 }
 }
 else {

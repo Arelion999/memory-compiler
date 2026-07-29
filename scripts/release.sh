@@ -62,9 +62,18 @@ echo "== git add -A =="
 git add -A
 git status --short
 
+# Правила НИКС лежат ГЛОБАЛЬНО, своего .gitleaks.toml в репозитории нет. Без
+# --config gitleaks идёт с дефолтными правилами и без allowlist'ов — и тогда любой
+# релиз, ТРОГАЮЩИЙ tests/test_ui_secret_reveal.py, отменяется на литерале
+# test-encrypt-key-123 из monkeypatch. Конфиг подставляем, только если он есть:
+# на машине без него скан должен идти с дефолтными правилами, а не падать.
+GITLEAKS_CONFIG="$HOME/.git-hooks/gitleaks.toml"
+GL_CFG=""
+[ -f "$GITLEAKS_CONFIG" ] && GL_CFG="--config $GITLEAKS_CONFIG"
+
 echo "== gitleaks (staged) =="
 if command -v gitleaks >/dev/null 2>&1; then
-    gitleaks protect --staged --no-banner --redact || { echo "ОШИБКА: gitleaks нашёл секреты — релиз отменён."; exit 1; }
+    gitleaks protect --staged --no-banner --redact $GL_CFG || { echo "ОШИБКА: gitleaks нашёл секреты — релиз отменён."; exit 1; }
 else
     echo "ОШИБКА: gitleaks не установлен — шаг проверки утечек пропустить нельзя."; exit 1
 fi
