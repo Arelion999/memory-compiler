@@ -394,6 +394,28 @@ git log --format="%H|%s|%an|%aI" --numstat --since="7 days ago"
 
 Repeat calls with `repo_path` automatically process only new commits.
 
+### Claude Code output limit
+
+A long article saved in a single `finish_task` call may never reach the server: the client rejects it as `InputValidationError` — "input that could not be parsed as JSON".
+
+This is not a memory-compiler limit. The call's arguments are cut off client-side, during generation: thinking tokens share the `max_tokens` budget with the reply text and with the arguments, leaving no room for a large payload. The JSON arrives unterminated and the call never reaches the server at all — it will not appear in the audit log.
+
+How to tell it apart from a genuine data error: the `raw` in the error text breaks off mid-word, and its length differs from attempt to attempt. That means a truncated stream, not a bad character — escaping will not help, and repeating the same payload is pointless.
+
+The output ceiling is set on the client side, in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+  }
+}
+```
+
+The default is 32000 and the documented maximum is 64000; it takes effect when the application restarts. Amazon Bedrock users are advised to go the other way and set 4096 — its throttling logic differs.
+
+⚠️ Non-Latin text costs more tokens. On the default ceiling keep `content` within ~1500 characters; a raised ceiling comfortably takes ~4000. Long analysis is better saved as its own article and linked to: headings carry ×5 weight in search, while text buried in another topic's `content` will not surface under its own topic.
+
 ## License
 
 [MIT](LICENSE)
