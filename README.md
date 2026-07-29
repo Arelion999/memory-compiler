@@ -253,6 +253,17 @@ A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
 - **Audit** — a log of every MCP call
 - **Language** — an RU/EN toggle next to the theme switch. The default comes from `MC_LANG`, the choice is remembered in the browser. Interface labels are translated; content (article titles, snippets, audit entries, error texts) comes from the server and stays in Russian
 
+### MCP Apps
+
+Search results render as an interactive panel inside the chat, not as a wall of text. This is the `io.modelcontextprotocol/ui` extension (spec 2026-01-26): the `search` tool carries `_meta.ui.resourceUri`, the host fetches `ui://memory-compiler/search-results.html` and renders it in a sandboxed iframe, talking to it over JSON-RPC on `postMessage`.
+
+- **Self-contained by necessity.** The host applies `default-src 'none'` with `connect-src 'none'`, so nothing external loads and the view cannot make network calls at all — no CDN, no fonts, not even our own `/api/*`. CSS and JS are inline; the data arrives from the host as `structuredContent`, which the `search` tool already produces.
+- **Served with the MIME the client asks for** — `text/html;profile=mcp-app`, exactly the type advertised in the client's `initialize` capabilities. (Note for anyone porting this: `text/html+skybridge` is the OpenAI Apps SDK type for ChatGPT and will not work here.)
+- **Not in `resources/list`.** The spec allows omitting UI-only resources, and the listing is about knowledge articles; the host resolves the view by URI from the tool description.
+- **Article titles are inserted as `textContent` only** — they are user content, and `innerHTML` would be an injection vector inside the frame.
+
+Requires a client that declares the extension on `initialize`; Claude web and desktop do. The server records what each client declared, so an unsupported host is diagnosable rather than mysterious.
+
 ### REST API
 
 20 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).

@@ -120,7 +120,12 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["query", "count", "results"]
-            }
+            },
+            # MCP Apps: ссылка на вьюху. Ключ передаётся ПО АЛИАСУ `_meta` — у Tool
+            # не выставлен populate_by_name, поэтому Tool(meta=...) не заполняет
+            # НИЧЕГО и молча: исключения нет, поле остаётся None, а хост потом
+            # просто не находит ссылку. Держит tests/test_mcp_apps.py.
+            **{"_meta": {"ui": {"resourceUri": UI_SEARCH_RESOURCE}}}
         ),
         Tool(
             name="compile",
@@ -695,6 +700,18 @@ async def list_tools() -> list[Tool]:
 _RESOURCE_MIME = "text/markdown"
 _RESOURCE_SCHEME = "memory://"
 
+# --- MCP Apps (P3): вьюха результатов поиска как ui://-ресурс ----------------
+# Расширение io.modelcontextprotocol/ui, спека 2026-01-26. Хост берёт HTML по
+# ссылке из `_meta.ui.resourceUri` инструмента и рисует его в песочном iframe.
+# MIME — РОВНО тот, что клиент объявляет на initialize (зонд v1.51.2 показал
+# text/html;profile=mcp-app). Другой MIME = хост не возьмёт ресурс, панель не
+# отрисуется, и выглядеть это будет как «клиент не умеет MCP Apps».
+# В resources/list ui:// НЕ показываем — спека разрешает, а листинг у нас про
+# статьи базы. Держит tests/test_mcp_apps.py.
+UI_SCHEME = "ui://"
+UI_MIME = "text/html;profile=mcp-app"
+UI_SEARCH_RESOURCE = "ui://memory-compiler/search-results.html"
+
 
 def _is_meta_file(name: str) -> bool:
     """Служебные/не-статейные файлы, которые не показываем как ресурсы."""
@@ -773,6 +790,13 @@ async def read_resource(uri) -> list[ReadResourceContents]:
         return [ReadResourceContents(content=msg, mime_type=_RESOURCE_MIME)]
 
     uri_s = str(uri)
+    if uri_s.startswith(UI_SCHEME):
+        # Вьюха MCP Apps. Отдаётся до всякой работы с базой: это статика, ни
+        # проекта, ни файла тут нет, и путь в knowledge/ по ui:// не строится.
+        from memory_compiler.ui_app import SEARCH_VIEW_HTML
+        if uri_s == UI_SEARCH_RESOURCE:
+            return [ReadResourceContents(content=SEARCH_VIEW_HTML, mime_type=UI_MIME)]
+        return notice(f"❌ Неизвестный ui-ресурс: {uri_s}")
     if not uri_s.startswith(_RESOURCE_SCHEME):
         return notice(f"❌ Неподдерживаемый URI: {uri_s}")
     rest = uri_s[len(_RESOURCE_SCHEME):]
