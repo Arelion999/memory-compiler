@@ -414,7 +414,9 @@ The output ceiling is set on the client side, in `~/.claude/settings.json`:
 
 The default is 32000 and the documented maximum is 64000; it takes effect when the application restarts. Amazon Bedrock users are advised to go the other way and set 4096 — its throttling logic differs.
 
-⚠️ Non-Latin text costs more tokens. On the default ceiling keep `content` within ~1500 characters; a raised ceiling comfortably takes ~4000. Long analysis is better saved as its own article and linked to: headings carry ×5 weight in search, while text buried in another topic's `content` will not surface under its own topic.
+⚠️ Non-Latin text costs more tokens. On the default ceiling keep `content` within ~1500 characters of ordinary text; a raised ceiling comfortably takes ~4000. Long analysis is better saved as its own article and linked to: headings carry ×5 weight in search, while text buried in another topic's `content` will not surface under its own topic.
+
+⚠️ Count what actually goes into the call, not the readable text. JSON accepts non-Latin characters both literally and as `\uXXXX` escape sequences — in the latter case a single letter occupies six characters, so the same text exhausts the budget six times faster. The `raw` tells them apart: readable text is the ordinary case, an unbroken ribbon of `\uXXXX` is the escaped form, where the content limit drops to roughly 400 characters. If a retry with the same text in meaning goes through, the form changed, not the length.
 
 ## License
 
