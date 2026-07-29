@@ -1,8 +1,16 @@
-# Запинено на 1.28.1 (последняя стабильная 1.x, июнь 2026; SDK в maintenance-режиме).
-# Раньше был не пиннутый >=1.0.0 → невоспроизводимые сборки. Совместимость с нашим
-# кодом (SseServerTransport.connect_sse, StreamableHTTPSessionManager, декораторы
-# Server incl. resources/prompts/completion, ToolAnnotations) проверена + полный сьют.
-mcp[cli]==1.28.1
+# Запинено на 1.29.0 — ПОСЛЕДНЯЯ в ветке 1.x (28.07.2026), дальше только maintenance.
+# Это осознанная конечная станция: 2.0.0 вышел в тот же день, но миграция на него
+# переписывает FastMCP→MCPServer, декораторы Server→параметры конструктора и слой
+# транспортов, то есть api.py/tools.py/handlers.py и весь сьют, — при нулевой выгоде
+# для нас (см. разбор P3). Раньше был не пиннутый >=1.0.0 → невоспроизводимые сборки.
+# Совместимость проверена полным сьютом на связке 1.29.0 + starlette 1.0.0, плюс
+# точечно: SseServerTransport.connect_sse, StreamableHTTPSessionManager, декораторы
+# Server (resources/prompts/completion), ToolAnnotations, outputSchema.
+# ⚠️ Две несущие детали поведения pydantic-моделей SDK, на которых мы стоим и которые
+# проверены НА 1.29.0 (обе молчаливые — сломаются без исключения):
+#   ClientCapabilities.model_config extra="allow" — иначе слепнет зонд MCP Apps;
+#   у Tool НЕ выставлен populate_by_name — значит _meta ставится только по алиасу.
+mcp[cli]==1.29.0
 uvicorn>=0.30.0
 # Запинено на 1.0.0 (проверенная на NAS версия). Starlette 1.0 требует, чтобы
 # endpoint возвращал Response — handle_sse это делает (см. фикс -32602 v1.7.34).
