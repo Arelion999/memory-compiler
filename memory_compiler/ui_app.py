@@ -83,6 +83,34 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     });
   }
 
+  // Высота НЕ настраивается стилями: ею управляет обмен. Хост присылает
+  // containerDimensions (height = фиксированная, хостовая; maxHeight = гибкая,
+  // нашa, до потолка; ничего = без ограничений), и обязан слушать
+  // ui/notifications/size-changed. Не прислать размер = остаться в дефолтной
+  // высоте с полосой прокрутки на полторы карточки.
+  var maxHeight = null, fixedHeight = false;
+
+  function findDims(o, depth) {
+    // containerDimensions живёт в HostContext результата ui/initialize. Точный
+    // путь в спеке не закреплён, поэтому ищем по имени — промах по пути молча
+    // вернул бы «размер не сообщаем», то есть ровно исходный дефект.
+    if (!o || typeof o !== "object" || depth > 4) return null;
+    if (o.containerDimensions) return o.containerDimensions;
+    for (var k in o) {
+      var f = findDims(o[k], depth + 1);
+      if (f) return f;
+    }
+    return null;
+  }
+
+  function sendSize() {
+    if (fixedHeight) return;          // высотой распоряжается хост — молчим
+    var d = document.documentElement;
+    var h = Math.ceil(d.scrollHeight);
+    if (maxHeight) h = Math.min(h, maxHeight);
+    notify("ui/notifications/size-changed", { width: Math.ceil(d.scrollWidth), height: h });
+  }
+
   function el(tag, cls, text) {
     var n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -99,17 +127,20 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     root.appendChild(head);
     if (!results.length) {
       root.appendChild(el("div", "empty", "Ничего не найдено."));
-      return;
+    } else {
+      var list = el("ol");
+      results.forEach(function (r) {
+        var li = el("li");
+        li.appendChild(el("div", "title", r.title || r.name || r.uri || ""));
+        var meta = (r.name || "") + (r.score ? "  ·  " + r.score : "");
+        if (meta.trim()) li.appendChild(el("div", "meta", meta));
+        list.appendChild(li);
+      });
+      root.appendChild(list);
     }
-    var list = el("ol");
-    results.forEach(function (r) {
-      var li = el("li");
-      li.appendChild(el("div", "title", r.title || r.name || r.uri || ""));
-      var meta = (r.name || "") + (r.score ? "  ·  " + r.score : "");
-      if (meta.trim()) li.appendChild(el("div", "meta", meta));
-      list.appendChild(li);
-    });
-    root.appendChild(list);
+    // После вёрстки, а не в этом кадре: scrollHeight до перерасчёта layout'а
+    // вернул бы высоту ПРЕДЫДУЩЕГО содержимого.
+    requestAnimationFrame(sendSize);
   }
 
   // Подписка ДО рукопожатия: хост шлёт tool-result сразу после initialized.
@@ -130,8 +161,14 @@ SEARCH_VIEW_HTML = """<!DOCTYPE html>
     protocolVersion: "2026-01-26",
     capabilities: {},
     clientInfo: { name: "memory-compiler-search-view", version: "1" }
-  }).then(function () {
+  }).then(function (result) {
+    var dims = findDims(result, 0);
+    if (dims) {
+      fixedHeight = dims.height !== undefined && dims.height !== null;
+      maxHeight = dims.maxHeight || null;
+    }
     notify("ui/notifications/initialized");
+    requestAnimationFrame(sendSize);   // и до первых результатов: «Ожидание…» тоже занимает место
   });
 })();
 </script>

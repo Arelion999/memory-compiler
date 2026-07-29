@@ -101,6 +101,48 @@ def test_view_speaks_the_documented_handshake():
         assert method in SEARCH_VIEW_HTML, f"вьюха не знает метод {method}"
 
 
+def test_view_reports_its_height():
+    """Высотой панели управляет ОБМЕН, а не стили: хост обязан слушать
+    `ui/notifications/size-changed` и подгонять iframe. Не слать размер — значит
+    остаться в дефолтной высоте с прокруткой на полторы карточки (так и было
+    в v1.52.0)."""
+    assert "ui/notifications/size-changed" in SEARCH_VIEW_HTML
+    assert "scrollHeight" in SEARCH_VIEW_HTML
+
+
+def test_view_honours_container_dimensions():
+    """`height` от хоста = размер фиксирован хостом, свой слать нельзя;
+    `maxHeight` = потолок, выше которого просить бессмысленно."""
+    assert "containerDimensions" in SEARCH_VIEW_HTML
+    assert "maxHeight" in SEARCH_VIEW_HTML
+    assert "fixedHeight" in SEARCH_VIEW_HTML
+
+
+def test_size_is_measured_after_layout():
+    """scrollHeight в том же кадре вернул бы высоту ПРЕДЫДУЩЕГО содержимого."""
+    assert "requestAnimationFrame(sendSize)" in SEARCH_VIEW_HTML
+
+
+def test_view_js_is_valid_syntax(tmp_path):
+    """Синтаксическая ошибка во вьюхе = пустая панель БЕЗ единой жалобы: консоль
+    песочного iframe нам не видна, сервер отдал ресурс успешно, тесты Python
+    зелены. Требует node; без него пропускаем."""
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node не установлен — проверка синтаксиса JS вьюхи пропущена")
+
+    js = re.search(r"<script>(.*?)</script>", SEARCH_VIEW_HTML, re.S)
+    assert js, "во вьюхе не найден инлайновый <script> — рендерить будет нечем"
+    f = tmp_path / "view.js"
+    f.write_text(js.group(1), encoding="utf-8")
+    done = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+    assert done.returncode == 0, f"JS вьюхи невалиден:\n{done.stderr}"
+
+
 def test_protocol_version_literal_matches_the_constant():
     """В HTML версия вписана литералом (подстановки нет намеренно) — сторож от
     тихого расхождения с константой модуля."""
