@@ -15,9 +15,46 @@ from memory_compiler.search import rebuild_index, rebuild_embeddings, start_back
 from memory_compiler.storage import regenerate_index, audit_log, _parse_frontmatter
 from memory_compiler import handlers
 from memory_compiler import obs
+from memory_compiler import i18n
 from memory_compiler.i18n import localize_tools, localize_prompts
 
 app = Server("memory-compiler")
+
+
+# --- Маркер обязательности (v1.54.0) ----------------------------------------
+# Клиент срезает `required` у СТРОКОВЫХ параметров (замер и разбор — в docstring
+# tests/test_tool_schemas.py), поэтому единственный доезжающий до модели канал —
+# description. Наличия описания оказалось мало: «Почему выбрали это» объясняет
+# смысл поля и молчит про обязательность, и на этом пять раз подряд упал
+# save_decision (2026-08-02, в аудите прода записей нет вовсе — вызовы отбивал
+# клиент). Маркер дописывается ЗДЕСЬ, а не руками у 60 параметров: источник
+# правды один — `required` схемы, и на новом инструменте забыть нельзя.
+_REQUIRED_MARK_RU = " (обязательно)"
+_REQUIRED_MARK_EN = " (required)"
+
+
+def _mark_required(tools: list[Tool]) -> list[Tool]:
+    """Дописать маркер обязательности в description обязательных строк.
+
+    Язык читается в момент вызова через модуль i18n, а не берётся импортом
+    значения: тесты переключают MC_LANG через monkeypatch на модуле, и снимок
+    константы остался бы русским. Правка идёт по месту — list_tools() собирает
+    объекты заново на каждый вызов, чужие Tool сюда не попадают.
+    """
+    mark = _REQUIRED_MARK_EN if i18n.MC_LANG == "en" else _REQUIRED_MARK_RU
+    for tool in tools:
+        schema = tool.inputSchema or {}
+        props = schema.get("properties") or {}
+        for name in schema.get("required") or []:
+            spec = props.get(name)
+            if not isinstance(spec, dict) or spec.get("type") != "string":
+                continue
+            text = (spec.get("description") or "").rstrip()
+            # Проверяем ОБА маркера: иначе смена языка наслоила бы второй.
+            if text.endswith((_REQUIRED_MARK_RU, _REQUIRED_MARK_EN)):
+                continue
+            spec["description"] = f"{text}{mark}".lstrip()
+    return tools
 
 
 # --- Tool annotations (MCP hints для клиента, напр. Claude Desktop) ---------
@@ -697,7 +734,9 @@ async def list_tools() -> list[Tool]:
     ]
     for t in tools:
         t.annotations = _annotations_for(t.name)
-    return localize_tools(tools)
+    # Маркер ПОСЛЕ локализации: иначе он лёг бы на русский текст и был бы затёрт
+    # английским переводом описания.
+    return _mark_required(localize_tools(tools))
 
 
 # --- Resources (P1): статьи базы как memory://<проект>/<файл> ----------------
