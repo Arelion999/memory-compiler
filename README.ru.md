@@ -61,7 +61,7 @@ docker-compose up -d --build
 
 | Инструмент | Описание |
 |------------|----------|
-| `save_lesson(topic, content, project, tags)` | Сохранить с diff-отчётом, автомержем, автотегами, детекцией противоречий |
+| `save_lesson(topic, content, project, tags)` | Сохранить с diff-отчётом, автомержем, автотегами |
 | `save_decision(title, decision, reasoning, project, alternatives)` | Записать архитектурное решение (`alternatives` необязателен) |
 | `save_runbook(topic, steps, project)` | Создать пошаговую инструкцию с чекбоксами |
 | `save_from_template(template, fields, project)` | Создать статью по шаблону (bug, setup, 1c, deploy, integration) |
@@ -231,10 +231,10 @@ Temporal decay — свежие и часто используемые стат�
 1. Запись в дневной лог (аудит-трейл)
 2. Автотегирование (14 regex-правил)
 3. Поиск существующей статьи по смыслу — мерж вместо дубля
-4. Обнаружение противоречий (IP, версии, URL, порты) — role-aware: разные роли IP (private vs public) и well-known DNS (8.8.8.8, 1.1.1.1, …) не дают FP; CIDR-нотация не сравнивается как host
-5. Cross-references в связанных статьях
-6. Обновление ленты активного контекста
-7. Извлечение git-ссылок (коммиты, issues, теги)
+4. Cross-references в связанных статьях
+5. Обновление ленты активного контекста
+6. Извлечение git-ссылок (коммиты, issues, теги)
+7. Обновление подходящих tracking-статей (версия, IP, порт, URL) — текущее значение ведёт tracking, с guard от отката версии
 8. Git commit
 
 ### Веб-интерфейс

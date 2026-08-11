@@ -32,7 +32,7 @@ from memory_compiler.storage import (
     merge_into_article, is_duplicate_entry, make_preview,
     article_title_tags, parse_meta_value, _parse_frontmatter,
     regenerate_index, git_commit,
-    update_active_context, detect_contradictions,
+    update_active_context,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
     extract_snippets, extract_errors, TEMPLATES,
@@ -156,11 +156,14 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     article_text = article_path.read_text(encoding="utf-8")
     await _index_embed(article_text, article_path.name, project)
 
-    # 6. Обнаружение противоречий
-    saved_key = f"{project}/{article_path.name}"
-    contradictions = detect_contradictions(content, project, exclude_path=saved_key)
+    # 6. Обнаружение противоречий УБРАНО (v1.54.1). Предупреждение уходило только в
+    # текст ответа — статья не помечалась, задача не заводилась, в журнал не писалось,
+    # то есть сигнал жил ровно до конца реплики. Задачу «какое значение актуально»
+    # решает tracking ниже (шаг 10): не предупреждает, а обновляет, и знает, что
+    # новее. Подробности и цена — в docstring storage.detect_contradictions.
 
     # 7. Cross-references
+    saved_key = f"{project}/{article_path.name}"
     update_cross_references(topic, project, saved_key)
 
     # 8. Active Context
@@ -224,13 +227,6 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         if changed_keys:
             diff = ", ".join(f"{k}: {old.get(k, '—')} → {new.get(k)}" for k in changed_keys)
             result += f"\n🔄 tracking/{upd['entity']}: {diff}"
-    if contradictions:
-        # Filter contradictions that were auto-resolved
-        if tracking_updates:
-            bad_words = ["версия", "version", "ip", "порт", "port", "url"]
-            contradictions = [c for c in contradictions if not any(w in c.lower() for w in bad_words)]
-        if contradictions:
-            result += "\n\n\u26a0\ufe0f Возможные противоречия:\n" + "\n".join(f"  - {c}" for c in contradictions)
     return [TextContent(type="text", text=result)]
 
 

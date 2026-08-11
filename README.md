@@ -61,7 +61,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 | Tool | Description |
 |------|-------------|
-| `save_lesson(topic, content, project, tags)` | Save with a diff report, auto-merge, auto-tagging and contradiction detection |
+| `save_lesson(topic, content, project, tags)` | Save with a diff report, auto-merge and auto-tagging |
 | `save_decision(title, decision, reasoning, project, alternatives)` | Record an architectural decision (`alternatives` is optional) |
 | `save_runbook(topic, steps, project)` | Create a step-by-step runbook with checkboxes |
 | `save_from_template(template, fields, project)` | Create an article from a template (bug, setup, 1c, deploy, integration) |
@@ -231,10 +231,10 @@ The backfill is interruptible and resumable (the state is the frontmatter itself
 1. A write into the daily log (audit trail)
 2. Auto-tagging (14 regex rules)
 3. A semantic lookup for an existing article — merge instead of duplicate
-4. Contradiction detection (IPs, versions, URLs, ports) — role-aware: distinct IP roles (private vs public) and well-known DNS (8.8.8.8, 1.1.1.1, …) produce no false positives; CIDR notation is not compared as a host
-5. Cross-references in related articles
-6. An update to the active-context feed
-7. Extraction of git references (commits, issues, tags)
+4. Cross-references in related articles
+5. An update to the active-context feed
+6. Extraction of git references (commits, issues, tags)
+7. An update to matching tracking articles (version, IP, port, URL) — the current value is owned by tracking, with a guard against version regression
 8. A git commit
 
 ### Web interface

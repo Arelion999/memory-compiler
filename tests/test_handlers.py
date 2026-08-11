@@ -234,6 +234,35 @@ async def test_save_lesson_force_new_no_overwrite(knowledge_dir):
 
 
 @pytest.mark.asyncio
+async def test_save_lesson_does_not_report_contradictions(knowledge_dir):
+    """save_lesson НЕ печатает «Возможные противоречия» (убрано в v1.54.1).
+
+    Детектор отключён от вывода намеренно: его задачу («какое значение актуально»)
+    решает tracking — действием и с авторитетом по времени, — а сам сигнал никуда
+    не вёл, кроме текста ответа. Плюс он читал ВСЕ *.md проекта синхронно в
+    async-хендлере (медиана 149 мс на 225 файлах).
+
+    ПОЗИТИВНЫЙ КОНТРОЛЬ обязателен: без него «в ответе нет предупреждения» прошло бы
+    и на сценарии, где детектор молчит по любой причине. Сперва проверяем, что на
+    ЭТИХ данных detect_contradictions срабатывает, и лишь потом — что хендлер молчит.
+    """
+    from memory_compiler.storage import detect_contradictions
+
+    proj = knowledge_dir / "testproj"
+    proj.mkdir(exist_ok=True)
+    (proj / "nginx_host.md").write_text("Nginx сервер на 192.168.1.10", encoding="utf-8")
+
+    # Позитивный контроль: одна подсеть + общая сущность → детектор шумит
+    assert detect_contradictions("Nginx теперь на 192.168.1.50", "testproj"), \
+        "сценарий перестал быть конфликтным — тест ниже потерял смысл, обнови данные"
+
+    result = await save_lesson("Nginx переехал", "Nginx теперь на 192.168.1.50",
+                               "testproj", force_new=True)
+    assert "противоречия" not in result[0].text.lower(), \
+        f"детектор вернулся в вывод save_lesson: {result[0].text}"
+
+
+@pytest.mark.asyncio
 async def test_search(knowledge_dir):
     result = await search("docker", "testproj")
     # Первый блок — текстовый summary (обратная совместимость)
