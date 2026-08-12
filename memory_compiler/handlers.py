@@ -575,6 +575,8 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
     """Check knowledge base health."""
     issues = []
     fixed = []
+    # tag.lower() -> {написание: [файлы]}; коллизии печатаем после обхода
+    tag_case: dict = {}
     check_projects = PROJECTS if project == "all" else [project]
     # Индекс ссылок по ВСЕЙ базе, один раз на вызов (~0.5 с): нужен для сиротства
     # (входящая ссылка приходит и из чужого проекта) и для битых вики-ссылок.
@@ -656,17 +658,27 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
                     # search_by_tag не находил ни одну из 126 по первому тегу.
                     tags_str = parse_meta_value(line)
                     raw_tags = [t.strip() for t in tags_str.split(",") if t.strip() and t.strip() != "\u2014"]
-                    lower_tags = [t.lower() for t in raw_tags]
-                    if raw_tags != lower_tags and raw_tags:
-                        if fix:
-                            new_line = f"**Теги:** {', '.join(lower_tags)}"
+                    # РЕГИСТР НЕ НОРМАЛИЗУЕМ (с v1.54.2). Прежнее условие
+                    # `raw_tags != lower_tags` требовало нижнего регистра от ВСЕХ тегов
+                    # и ругалось на MAX, ПУЭ, LG, QR-код, DESIGNER — правильные написания
+                    # имён и аббревиатур: на живой базе 32 ложных пункта из 41, причём
+                    # fix их «нормализовал», то есть портил. Реальна ровно одна беда —
+                    # ОДИН тег в разных написаниях: search_by_tag и чипы /api/tags
+                    # разводят MAX и max по разным ведёркам. Копим и печатаем ОДНОЙ
+                    # строкой на тег после обхода, а не строкой на каждую статью.
+                    for _t in raw_tags:
+                        tag_case.setdefault(_t.lower(), {}).setdefault(_t, []).append(f"{proj}/{a.name}")
+                    if fix and raw_tags:
+                        # Чиним РАЗМЕТКУ метки, а не написание тегов: '**Теги:** ** ftp'
+                        # (наследие прежнего fix, 126 статей) приводим к канону. Здоровая
+                        # строка обязана остаться байт-в-байт прежней.
+                        canonical = f"**Теги:** {', '.join(raw_tags)}"
+                        if line != canonical:
                             # count=1: replace шёл по ВСЕМУ документу и правил строки
                             # тегов внутри записей тоже (у daily-агрегатов их десятки).
-                            text = text.replace(line, new_line, 1)
+                            text = text.replace(line, canonical, 1)
                             a.write_text(text, encoding="utf-8")
-                            fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 теги нормализованы")
-                        else:
-                            issues.append(f"\u2139\ufe0f [{proj}] {a.name} \u2014 теги с разным регистром: {', '.join(raw_tags)}")
+                            fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 разметка тегов починена")
                     break
 
         # Check 5: Duplicates (semantic similarity) — compare parent articles only.
@@ -779,6 +791,14 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
                 if replaced > 0 and new_text != atext:
                     a.write_text(new_text, encoding="utf-8")
                     fixed.append(f"\U0001f527 [{proj}] {a.name} \u2014 \u0443\u0434\u0430\u043b\u0435\u043d\u043e {replaced} \u0431\u0438\u0442\u044b\u0445 \u0441\u0441\u044b\u043b\u043e\u043a")
+
+    # Check 4 (итог): один тег в разных написаниях = разъехавшийся поиск по тегу.
+    for _low, _variants in sorted(tag_case.items()):
+        if len(_variants) < 2:
+            continue
+        _shown = ", ".join(f"{_v} ({len(_files)})" for _v, _files in sorted(_variants.items()))
+        _where = sorted({f for _files in _variants.values() for f in _files})[:3]
+        issues.append(f"\u2139\ufe0f коллизия регистра тега \u00ab{_low}\u00bb: {_shown} \u2014 напр. {', '.join(_where)}")
 
     if fix:
         await asyncio.to_thread(regenerate_index)

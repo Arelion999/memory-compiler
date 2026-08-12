@@ -53,23 +53,28 @@ def _tags_line(path):
 
 
 def test_lint_fix_does_not_corrupt_tags(knowledge_dir):
-    """ГЛАВНЫЙ РЕГРЕСС: нормализация регистра записывала '**Теги:** ** ftp, mcp'."""
+    """ГЛАВНЫЙ РЕГРЕСС: нормализация регистра записывала '**Теги:** ** ftp, mcp'.
+
+    С v1.54.2 регистр вообще не трогается (см. тест про коллизии ниже): здоровая
+    строка обязана пережить fix без единого изменения, включая заглавные буквы.
+    """
     from memory_compiler.handlers import lint
     f = _article(knowledge_dir, "case.md", "**Теги:** ftp, MCP")
     asyncio.run(lint(project="testproj", fix=True))
     line = _tags_line(f)
-    assert line == "**Теги:** ftp, mcp", f"lint испортил строку тегов: {line!r}"
+    assert line == "**Теги:** ftp, MCP", f"lint изменил здоровую строку тегов: {line!r}"
     # Проверять ЗНАЧЕНИЕ, а не подстроку: сама метка «**Теги:**» кончается на '**',
     # поэтому '** ftp' находится и в правильной строке.
-    assert parse_meta_value(line) == "ftp, mcp"
+    assert parse_meta_value(line) == "ftp, MCP"
 
 
 def test_lint_fix_heals_already_corrupted_tags(knowledge_dir):
-    """Уже испорченная строка после прохода lint становится чистой."""
+    """Уже испорченная строка после прохода lint становится чистой — но регистр
+    сохраняется: чинится РАЗМЕТКА метки, а не написание тегов."""
     from memory_compiler.handlers import lint
     f = _article(knowledge_dir, "dirty.md", "**Теги:** ** ftp, MCP")
     asyncio.run(lint(project="testproj", fix=True))
-    assert _tags_line(f) == "**Теги:** ftp, mcp"
+    assert _tags_line(f) == "**Теги:** ftp, MCP"
 
 
 def test_lint_fix_touches_only_header_tags_line(knowledge_dir):
@@ -81,14 +86,39 @@ def test_lint_fix_touches_only_header_tags_line(knowledge_dir):
     f = p / "agg.md"
     f.write_text(
         "# Агрегат\n\n**Дата:** 2026-01-01 10:00\n**Проект:** testproj\n"
-        "**Теги:** ftp, MCP\n\n## Записи\n\n### 2026-01-01 10:00\n"
-        "Первая запись.\n**Теги:** ftp, MCP\n\n### 2026-01-02 10:00\nВторая.\n",
+        "**Теги:** ** ftp, MCP\n\n## Записи\n\n### 2026-01-01 10:00\n"
+        "Первая запись.\n**Теги:** ** ftp, MCP\n\n### 2026-01-02 10:00\nВторая.\n",
         encoding="utf-8")
     asyncio.run(lint(project="testproj", fix=True))
     lines = [l for l in f.read_text(encoding="utf-8").splitlines()
              if l.startswith("**Теги:**")]
-    assert lines[0] == "**Теги:** ftp, mcp"
-    assert lines[1] == "**Теги:** ftp, MCP", "правка уехала в тело записи"
+    assert lines[0] == "**Теги:** ftp, MCP"
+    assert lines[1] == "**Теги:** ** ftp, MCP", "правка уехала в тело записи"
+
+
+def test_lint_reports_case_collisions_not_every_capital_letter(knowledge_dir):
+    """Check 4 сообщает о РЕАЛЬНЫХ коллизиях (один тег в разных написаниях), а не
+    о каждой заглавной букве.
+
+    До v1.54.2 проверка была `raw_tags != lower_tags`, то есть требовала от ВСЕХ
+    тегов нижнего регистра и ругалась на MAX, ПУЭ, LG, QR-код — правильные имена и
+    аббревиатуры. На живой базе это давало 32 ложных пункта из 41, а fix их
+    «нормализовал», то есть портил. Коллизия же реальна: search_by_tag и чипы
+    /api/tags разводят MAX и max по разным ведёркам.
+    """
+    from memory_compiler.handlers import lint
+    _article(knowledge_dir, "coll_a.md", "**Теги:** MAX, api")
+    _article(knowledge_dir, "coll_b.md", "**Теги:** max, docker")
+    _article(knowledge_dir, "unique_caps.md", "**Теги:** ПУЭ, УЗО, ESPHome")
+
+    out = asyncio.run(lint(project="testproj"))
+    text = out[0].text
+
+    assert "max" in text.lower() and "коллизи" in text.lower(), \
+        f"реальная коллизия MAX/max не найдена в выдаче:\n{text}"
+    # ПОЗИТИВНЫЙ КОНТРОЛЬ наоборот: уникальные заглавные не должны попадать в отчёт
+    assert "ПУЭ" not in text and "ESPHome" not in text, \
+        f"lint ругается на уникальные заглавные теги:\n{text}"
 
 
 def test_auto_lint_loop_is_report_only():
