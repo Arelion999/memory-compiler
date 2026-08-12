@@ -571,6 +571,18 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
 # ─── lint ────────────────────────────────────────────────────────────────────
 
 
+# Файлы РЕПОЗИТОРИЯ, а не статьи базы: README-пара, публичные доки, внутренний
+# регламент. Check 9 ищет цель в каталоге проекта knowledge/, где их нет и быть не
+# должно, поэтому без этого списка две ссылки висели «битыми» вечно — а fix вырезал
+# бы из статьи само указание на файл. Сверять с раскладкой доков в CLAUDE.md.
+_REPO_DOC_FILES = {
+    "readme.md", "readme.ru.md", "changelog.md", "claude.md",
+    "security.md", "security.ru.md",
+    "claude-desktop-setup.md", "claude-desktop-setup.en.md",
+    "release-process.md", "description.md",
+}
+
+
 async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -> list[TextContent]:
     """Check knowledge base health."""
     issues = []
@@ -764,6 +776,14 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
             dead_matches = []  # list of (match, display) for fix pass
             for m in md_link.finditer(atext):
                 cross_proj, target = m.group(1), m.group(2)
+                # Внешняя цель (файл репозитория или чужой каталог) — не потерянная
+                # связь между статьями, а ссылка наружу. Проверять её здесь нечем.
+                # Каталог проверяем ФАКТОМ существования, а не списком PROJECTS: он
+                # импортирован по значению и в тестах (да и после add_project)
+                # отстаёт — на этом сразу упал кросс-проектный сторож.
+                if target.lower() in _REPO_DOC_FILES or (
+                        cross_proj and not (KNOWLEDGE_DIR / cross_proj).is_dir()):
+                    continue
                 if cross_proj:
                     target_path = KNOWLEDGE_DIR / cross_proj / target
                     display = f"../{cross_proj}/{target}"

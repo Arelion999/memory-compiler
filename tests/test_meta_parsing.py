@@ -121,6 +121,35 @@ def test_lint_reports_case_collisions_not_every_capital_letter(knowledge_dir):
         f"lint ругается на уникальные заглавные теги:\n{text}"
 
 
+def test_lint_ignores_links_to_repository_docs(knowledge_dir):
+    """Ссылка на файл РЕПОЗИТОРИЯ (README-пара, docs/*) — не потерянная связь между
+    статьями: таких файлов в knowledge/ нет и быть не должно, а Check 9 ищет цель в
+    каталоге проекта базы. До v1.54.4 они вечно висели как dead reference, причём
+    fix вырезал бы из статьи само указание на файл.
+
+    ПОЗИТИВНЫЙ КОНТРОЛЬ обязателен: настоящая битая ссылка на статью должна ловиться
+    по-прежнему, иначе проверка просто ослепла.
+    """
+    from memory_compiler.handlers import lint
+    p = knowledge_dir / "testproj"
+    p.mkdir(exist_ok=True)
+    (p / "doc_ref.md").write_text(
+        "# Док\n\n**Дата:** 2026-01-01 10:00\n**Проект:** testproj\n\n## Записи\n\n"
+        "### 2026-01-01 10:00\nПереключатель языка: [Русский](README.ru.md), "
+        "политика — [security.md](security.md).\n", encoding="utf-8")
+    (p / "broken_ref.md").write_text(
+        "# Битая\n\n**Дата:** 2026-01-01 10:00\n**Проект:** testproj\n\n## Записи\n\n"
+        "### 2026-01-01 10:00\nСм. [соседняя](не_существует_статья.md).\n",
+        encoding="utf-8")
+
+    text = asyncio.run(lint(project="testproj"))[0].text
+
+    assert "README.ru.md" not in text and "security.md" not in text, \
+        f"ссылки на файлы репозитория снова считаются битыми:\n{text}"
+    assert "не_существует_статья.md" in text, \
+        f"настоящая битая ссылка перестала ловиться — проверка ослепла:\n{text}"
+
+
 def test_auto_lint_loop_is_report_only():
     """Фоновая задача не должна молча писать в базу: она правила 1800 статей раз в
     неделю и не оставляла следа в аудите (audit_log пишется только на MCP-пути)."""
