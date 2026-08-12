@@ -114,6 +114,42 @@ def test_double_tail_tags_not_duplicated():
     assert fixed.count("sqns") == 1
 
 
+def test_open_tail_without_anchor_healed(knowledge_dir=None):
+    """Форма БЕЗ якоря '</content>' (v1.54.3): параметр закрыт корректно, а следом
+    с новой строки въехал незакрытый '<parameter name="tags">'. 216 живых статей."""
+    text = ("# С\n\n**Теги:** старый\n\n## Записи\n\n### 2026-08-11 10:00\n"
+            "Реле приедут первыми, очередь работ задаёт координатор.\n"
+            '<parameter name="tags">["roadmap", "zigbee"]\n')
+    fixed, stats = m.heal_leaked_call_text(text)
+    assert "<parameter" not in fixed
+    assert "Реле приедут первыми, очередь работ задаёт координатор." in fixed
+    assert "**Теги:** старый, roadmap, zigbee\n" in fixed
+    assert stats["open_tails"] == 1
+
+
+def test_open_tail_mixed_closed_and_unclosed():
+    """Живой случай: предыдущее поле закрыто СВОИМ тегом, последнее не закрыто вовсе."""
+    text = ("# С\n\n## Записи\n\n### 2026-08-11 10:00\n"
+            "Суть решения.\n"
+            '<parameter name="open_questions">Осталось выбрать реле.</open_questions>\n'
+            '<parameter name="tags">["zigbee"]\n')
+    fixed, _ = m.heal_leaked_call_text(text)
+    assert "<parameter" not in fixed and "</open_questions>" not in fixed
+    assert "Открытые вопросы: Осталось выбрать реле." in fixed
+    assert "Теги: zigbee" in fixed
+
+
+def test_open_tail_does_not_swallow_text_up_to_later_close(knowledge_dir=None):
+    """Незакрытый блок не должен «дотянуться» до чужого закрытия ниже по статье:
+    без границы он съел бы весь абзац между ними."""
+    text = ("# С\n\n## Записи\n\n### 2026-08-11 10:00\n"
+            'Текст.\n<parameter name="tags">["a"]\n\n'
+            "СОДЕРЖАТЕЛЬНЫЙ_АБЗАЦ который нельзя терять.\n"
+            "конец записи</parameter>\n")
+    fixed, _ = m.heal_leaked_call_text(text)
+    assert "СОДЕРЖАТЕЛЬНЫЙ_АБЗАЦ который нельзя терять." in fixed
+
+
 def test_standalone_equivalent_to_canonical():
     """scripts/heal_leaked_standalone.py (запуск на NAS, python3.8 без пакета) —
     копия heal_leaked_call_text. Меняешь грамматику в одном — правь второй."""
@@ -139,6 +175,14 @@ def test_standalone_equivalent_to_canonical():
         ("# С\n\n## Записи\n\n### x\nтекст.</content>\n"
          "<open_questions>вопрос\nна две строки</open_questions>\n</invoke>\n"),
         ("# С\n\n## Записи\n\n### x\nтекст.</content>\n<tags>[не json</tags>\n</invoke>\n"),
+        # v1.54.3: хвост БЕЗ якоря — незакрытый блок и смешанная форма
+        ("# С\n\n**Теги:** старый\n\n## Записи\n\n### x\nтекст.\n"
+         '<parameter name="tags">["новый"]\n'),
+        ("# С\n\n## Записи\n\n### x\nтекст.\n"
+         '<parameter name="open_questions">вопрос</open_questions>\n'
+         '<parameter name="tags">["t"]\n'),
+        ("# С\n\n## Записи\n\n### x\nтекст.\n"
+         '<parameter name="tags">["a"]\n\nабзац.\nхвост</parameter>\n'),
     ]
     for text in cases:
         assert st.heal_leaked_call_text(text) == m.heal_leaked_call_text(text), text[:60]

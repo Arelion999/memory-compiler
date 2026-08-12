@@ -69,6 +69,57 @@ def test_heal_trailing_block_without_anchor_rolled_back():
     assert healed == []
 
 
+# ─── форма БЕЗ якоря </content> (v1.54.3) ────────────────────────────────────
+# Замер 2026-08-12: 216 живых статей вне daily/, свежайшая — того же дня, то есть
+# порча шла ПОСЛЕ чистки v1.51.0. Здесь content закрыт нормально, а следом с НОВОЙ
+# строки въезжают блоки '<parameter name="q">…', причём последний обычно не закрыт
+# вовсе. Прежний guard требовал якорь на конце и такой хвост не трогал.
+# Потеряно полей: tags 177, session_summary 69, open_questions 38.
+
+
+def test_heal_unclosed_parameter_tail():
+    """Главная форма с прода: незакрытый '<parameter name="tags">' в конце."""
+    content = ("Реле физически приедут первыми, очередь работ задаёт координатор.\n"
+               '<parameter name="tags">["roadmap", "zigbee", "закупки"]')
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("save_lesson"))
+    assert args["content"] == "Реле физически приедут первыми, очередь работ задаёт координатор."
+    assert args["tags"] == ["roadmap", "zigbee", "закупки"]
+    assert "content" in healed
+
+
+def test_heal_mixed_closed_and_unclosed_tail():
+    """Живой случай: предыдущее поле закрыто своим тегом, последнее — не закрыто."""
+    content = ("Суть решения.\n"
+               '<parameter name="open_questions">Осталось выбрать реле.</open_questions>\n'
+               '<parameter name="tags">["zigbee"]')
+    args, _ = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("finish_task"))
+    assert args["content"] == "Суть решения."
+    assert args["open_questions"] == "Осталось выбрать реле."
+    assert args["tags"] == ["zigbee"]
+
+
+def test_heal_example_inside_code_fence_untouched():
+    """НЕГАТИВНЫЙ КОНТРОЛЬ: статья про сам баг показывает форму в блоке кода.
+    Отрезав хвост, guard разорвал бы fenced-блок и съел содержательный пример."""
+    content = ("Порча выглядит так:\n\n```\n"
+               'текст статьи\n<parameter name="tags">["a", "b"]\n'
+               "```")
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("save_lesson"))
+    assert args["content"] == content
+    assert healed == []
+
+
+def test_heal_unclosed_tail_mid_line_untouched():
+    """Упоминание в СЕРЕДИНЕ строки — не хвост вызова, а проза про него."""
+    content = 'в конце статьи оказался <parameter name="tags">["a"] — вот так это выглядит'
+    args, healed = t.heal_arguments({"content": content}, _props("finish_task"))
+    assert args["content"] == content
+    assert healed == []
+
+
 def test_heal_explicit_arg_not_overridden():
     content = ("суть.</content>\n"
                "<session_summary>из хвоста</session_summary>\n</invoke>")

@@ -1,5 +1,6 @@
 """MCP tool definitions and dispatch."""
 import json
+import re
 import time
 
 from mcp.server import Server
@@ -1061,6 +1062,37 @@ def _trailing_field(work: str, others: set) -> tuple | None:
     return None
 
 
+_PARAM_OPEN_RE = re.compile(r'^<parameter name="([A-Za-z_][A-Za-z0-9_]*)">(.*)$', re.S)
+
+
+def _trailing_open_field(work: str, others: set) -> tuple | None:
+    """Замыкающая СТРОКА вида '<parameter name="q">…' — форма, где клиент не дописал
+    закрывающий тег вовсе (v1.54.3).
+
+    Отличается от _trailing_field тем, что блок НЕ ЗАКРЫТ: content закрыт нормально,
+    а следом с новой строки въехали поля. Замер 2026-08-12: 216 живых статей вне
+    daily/, свежайшая — того же дня; потеряно tags 177, session_summary 69,
+    open_questions 38.
+
+    Якорь строгий — блок обязан начинаться С НАЧАЛА СТРОКИ. Ровно это отличает хвост
+    вызова от прозы про него: в статьях о самом баге разметка стоит внутри фразы.
+    """
+    head, sep, last = work.rpartition("\n")
+    if not sep:
+        return None
+    m = _PARAM_OPEN_RE.match(last)
+    if not m:
+        return None
+    q, raw = m.group(1), m.group(2)
+    if q not in others:
+        return None
+    for close in (f"</{q}>", _PARAM_CLOSE):
+        if raw.endswith(close):
+            raw = raw[:-len(close)]
+            break
+    return q, raw.strip(), head.rstrip()
+
+
 def _parse_leaked(raw: str, prop: dict):
     """Значение утёкшего поля по типу из схемы. Непарсибельное — None (поле
     не восстанавливаем: содержимое уже мусор, а падать нельзя)."""
@@ -1093,8 +1125,13 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
             touched = True
         fields: dict = {}
         work = text
+        open_tail = False
         while True:
             hit = _trailing_field(work, set(props) - {key})
+            if not hit:
+                hit = _trailing_open_field(work, set(props) - {key})
+                if hit:
+                    open_tail = True
             if not hit:
                 break
             q, raw, work = hit
@@ -1102,6 +1139,12 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
         anchor = next((a for a in (f"</{key}>", _PARAM_CLOSE) if work.endswith(a)), None)
         if anchor:
             out[key] = work[:-len(anchor)].rstrip()
+        elif open_tail and work.count("```") % 2 == 0:
+            # Хвост БЕЗ якоря: параметр закрыт корректно, а следом с новой строки
+            # въехали чужие поля. Чётность ``` — защита от статьи, которая ПОКАЗЫВАЕТ
+            # эту форму внутри блока кода: отрезав хвост, guard разорвал бы блок и
+            # съел содержательный пример.
+            out[key] = work.rstrip()
         elif touched:
             out[key] = text        # без якоря блоки не трогаем — только срез </invoke>
             fields = {}
