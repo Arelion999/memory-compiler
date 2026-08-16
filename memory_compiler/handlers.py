@@ -568,6 +568,12 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
         return [TextContent(type="text", text=summary)]
 
 
+# Заглушка, оставшаяся после выноса значения в зашифрованный секрет, опознаётся по
+# сигнатуре отсылки: вызов read_article с именем secret_*. Признак узкий — по всей
+# базе (2656 статей) под него попадают только сами заглушки, а содержательные статьи,
+# упоминающие секрет по имени файла, — нет.
+SECRET_POINTER_RE = re.compile(r"read_article\([^)]*secret_[^)]*\)")
+
 # ─── lint ────────────────────────────────────────────────────────────────────
 
 
@@ -601,6 +607,8 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
         articles = list(proj_path.glob("*.md"))
         if not articles:
             continue
+        # Статьи-указатели на вынесенный секрет: собираем здесь, исключаем в Check 5.
+        secret_pointers: set[str] = set()
 
         for a in articles:
             # Service files (_*.md, tracking_*.md) lack yaml metadata
@@ -612,6 +620,15 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
             # у 79 статей не отрабатывал Check 3 и у 92 — Check 4. Инструмент
             # здоровья базы врал именно на самых новых статьях.
             lines = _parse_frontmatter(text)[1].splitlines()
+
+            # Когда значение выносят в зашифрованный секрет, на месте статьи остаётся
+            # заглушка из одного шаблона: «вынесено в секрет, смотреть там-то». Такие
+            # заглушки похожи друг на друга ПО ПОСТРОЕНИЮ — ровно как сами секреты,
+            # уже исключённые в Check 5. На проде это дало ложный дубль sim=0.92 между
+            # «Ключ для WINDOWS» и «Строка подключения к GIT»: статьи о разном, общей
+            # была только обвязка.
+            if SECRET_POINTER_RE.search(text):
+                secret_pointers.add(a.name)
 
             if not is_service:
                 # Check 1: Empty or minimal
@@ -705,7 +722,8 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
         # шесть «дублей» подряд со схожестью 0.90–0.96, и все ложные: сравнивались маски.
         proj_embeddings = {k: v for k, v in _search.snapshot_embeddings().items()
                           if k.startswith(f"{proj}/") and "#chunk" not in k
-                          and not k.split("/", 1)[-1].startswith(("_", "tracking_", "secret_"))}
+                          and not k.split("/", 1)[-1].startswith(("_", "tracking_", "secret_"))
+                          and k.split("/", 1)[-1] not in secret_pointers}
         keys = list(proj_embeddings.keys())
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):

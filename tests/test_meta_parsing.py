@@ -150,6 +150,72 @@ def test_lint_ignores_links_to_repository_docs(knowledge_dir):
         f"настоящая битая ссылка перестала ловиться — проверка ослепла:\n{text}"
 
 
+def test_lint_does_not_pair_stubs_of_extracted_secrets(knowledge_dir, monkeypatch):
+    """Заглушки от вынесенных секретов — не дубли друг друга.
+
+    Когда значение уносят в зашифрованный секрет, на месте статьи остаётся шаблон
+    «вынесено в секрет, смотреть read_article(...)». Тело почти целиком из этой
+    обвязки, поэтому такие заглушки похожи ПО ПОСТРОЕНИЮ — тот же случай, что уже
+    исключён для самих секретов и служебных файлов. На проде это дало sim=0.92 между
+    «Ключ для WINDOWS» и «Строка подключения к GIT» — статьями о совершенно разном.
+
+    ПОЗИТИВНЫЙ КОНТРОЛЬ обязателен: обычная похожая пара обязана ловиться, иначе
+    Check 5 просто ослеп бы вместе с ложным срабатыванием.
+    """
+    import numpy as np
+    from memory_compiler import handlers as h
+    from memory_compiler.handlers import lint
+    p = knowledge_dir / "stubproj"
+    p.mkdir(exist_ok=True)
+    head = "**Дата:** 2026-01-01 10:00\n**Проект:** stubproj\n**Теги:** test\n"
+
+    def write(name, body):
+        (p / name).write_text(
+            f"# {name}\n\n{head}\n## Записи\n\n### 2026-01-01 10:00\n{body}\n",
+            encoding="utf-8")
+
+    write("stub_key.md", 'Значение вынесено в зашифрованный секрет 12.08.2026.\n'
+                         'Смотреть: `read_article("stubproj", "secret_key.md")`.')
+    write("stub_conn.md", 'Значение вынесено в зашифрованный секрет 12.08.2026.\n'
+                          'Смотреть: `read_article("stubproj", "secret_conn.md")`.')
+    write("plain_a.md", "Обычная статья про развёртывание на NAS.")
+    write("plain_b.md", "Обычная статья про развёртывание на NAS, вторая.")
+
+    # Пары внутри каждой двойки одинаково «похожи» — разводит их только фильтр.
+    near = np.array([0.9987, 0.05], dtype=float)
+    base = np.array([1.0, 0.0], dtype=float)
+    monkeypatch.setattr(h._search, "snapshot_embeddings", lambda: {
+        "stubproj/stub_key.md": base, "stubproj/stub_conn.md": near,
+        "stubproj/plain_a.md": base, "stubproj/plain_b.md": near,
+    })
+
+    def dup_lines(txt):
+        return [ln for ln in txt.splitlines() if "Возможный дубль" in ln]
+
+    def stub_pairs(txt):
+        return [ln for ln in dup_lines(txt)
+                if "stub_key.md" in ln or "stub_conn.md" in ln]
+
+    # Контроль на сам тест: с обезвреженной сигнатурой заглушки ОБЯЗАНЫ дать пару.
+    # Без этого шага тест зеленел бы и от того, что векторы разошлись, а не от фильтра.
+    import re as _re
+    orig_re = h.SECRET_POINTER_RE
+    monkeypatch.setattr(h, "SECRET_POINTER_RE", _re.compile(r"(?!x)x"))
+    without_filter = asyncio.run(lint(project="stubproj"))[0].text
+    assert stub_pairs(without_filter), \
+        f"тест не воспроизводит исходную поломку — проверять нечего:\n{without_filter}"
+
+    # Возвращаем ТОЛЬКО сигнатуру: monkeypatch.undo() снял бы и патч эмбеддингов,
+    # и позитивный контроль ниже проверял бы пустой снимок вместо пары plain_*.
+    monkeypatch.setattr(h, "SECRET_POINTER_RE", orig_re)
+    text = asyncio.run(lint(project="stubproj"))[0].text
+
+    assert not stub_pairs(text), \
+        f"заглушки от вынесенных секретов снова считаются дублями:\n{text}"
+    assert "plain_a.md ↔ plain_b.md" in text, \
+        f"обычные дубли перестали ловиться — Check 5 ослеп:\n{text}"
+
+
 def test_auto_lint_loop_is_report_only():
     """Фоновая задача не должна молча писать в базу: она правила 1800 статей раз в
     неделю и не оставляла следа в аудите (audit_log пишется только на MCP-пути)."""
