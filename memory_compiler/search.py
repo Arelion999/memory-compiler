@@ -959,17 +959,65 @@ def _parse_article(text: str, filename: str, project: str) -> dict:
     return dict(title=title, tags=tags, body=text, preview=preview, project=project, path=f"{project}/{filename}")
 
 
+def _quarantine_corrupt_index(reason: str) -> None:
+    """Увести битый индекс в сторону и подготовить чистый каталог под пересбор.
+
+    Битый индекс ЭКВИВАЛЕНТЕН отсутствующему (инцидент 2026-08-19: обрезанный
+    _MAIN_*.toc в knowledge/.whoosh_index — whoosh кидает из exists_in/open_dir
+    не EmptyIndexError, а TypeError «ord() expected a character» / UnpicklingError /
+    struct.error / OSError, и сервер падал в crash-loop под restart=always).
+    Каталог НЕ удаляем, а переименовываем в .whoosh_index.corrupt-<дата> — материал
+    для post-mortem; индекс — производное от knowledge/, пересбор ничего не теряет.
+
+    Вызывать ВНЕ except-блока: traceback исключения whoosh держит его открытый
+    файл, и на Windows rename каталога упёрся бы в незакрытый handle.
+    """
+    import datetime as _dt
+    import gc as _gc
+    import shutil as _shutil
+    from memory_compiler import obs
+
+    target = INDEX_DIR.with_name(
+        f"{INDEX_DIR.name}.corrupt-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
+    moved = None
+    if INDEX_DIR.exists():
+        # Whoosh-объекты (mmap сегментов, StructFile) умирают через циклы ссылок,
+        # то есть НЕ на refcount, а на сборщике; Windows не переименует каталог,
+        # пока внутри жив хоть один handle. На старте процесса это no-op.
+        _gc.collect()
+        try:
+            INDEX_DIR.rename(target)
+            moved = str(target)
+        except OSError:
+            # Не переименовался (файл держит чужой процесс?) — рабочий сервер
+            # дороже post-mortem: сносим, иначе битый TOC переживёт и пересбор.
+            _shutil.rmtree(str(INDEX_DIR), ignore_errors=True)
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    obs.get_logger("index").error(
+        "битый whoosh-индекс уведён в карантин, пересобираю",
+        extra={"reason": reason, "quarantined_to": moved},
+    )
+
+
 def get_index() -> whoosh_index.Index:
     """Get or create whoosh index."""
     global _ix
     if _ix is not None:
         return _ix
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    if whoosh_index.exists_in(str(INDEX_DIR)):
-        _ix = whoosh_index.open_dir(str(INDEX_DIR))
-    else:
-        _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
-        rebuild_index()
+    corrupt = None
+    try:
+        if whoosh_index.exists_in(str(INDEX_DIR)):
+            _ix = whoosh_index.open_dir(str(INDEX_DIR))
+            return _ix
+    except Exception as e:
+        # Битый TOC (см. _quarantine_corrupt_index) — эквивалентен отсутствующему.
+        corrupt = repr(e)
+    if corrupt is not None:
+        _quarantine_corrupt_index(corrupt)
+    _ix = whoosh_index.create_in(str(INDEX_DIR), SCHEMA)
+    rebuild_index()
     return _ix
 
 
@@ -1095,7 +1143,17 @@ def startup_prepare_index() -> int:
     при расхождении набора полей — деструктивный пересбор."""
     global _ix
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    if whoosh_index.exists_in(str(INDEX_DIR)):
+    corrupt = None
+    on_disk = False
+    try:
+        on_disk = whoosh_index.exists_in(str(INDEX_DIR))
+    except Exception as e:
+        # Битый TOC: exists_in не возвращает False, а кидает (инцидент 2026-08-19,
+        # crash-loop сервера). Эквивалентен отсутствующему — карантин ниже.
+        corrupt = repr(e)
+    if corrupt is not None:
+        _quarantine_corrupt_index(corrupt)
+    if on_disk:
         schema_ok = None
         try:
             ix = get_index()  # open_dir существующего индекса
@@ -1118,6 +1176,17 @@ def startup_prepare_index() -> int:
                 _ix = None
             _shutil.rmtree(str(INDEX_DIR), ignore_errors=True)
             INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        return rebuild_index()
+    except Exception as e:
+        # Индекс ОТКРЫЛСЯ (TOC цел), но чтение упало — битые сегменты: struct.error
+        # «unpack requires a buffer of 4 bytes» / OSError из reader. Тот же класс
+        # порчи, что и битый TOC, только глубже.
+        corrupt = repr(e)
+    with _index_lock:
+        _ix = None
+    _quarantine_corrupt_index(corrupt)
+    # Чистый пересбор с нуля; повторный провал — уже не порча индекса, пусть летит.
     return rebuild_index()
 
 
