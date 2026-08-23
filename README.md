@@ -434,6 +434,12 @@ The default is 32000 and the documented maximum is 64000; it takes effect when t
 
 ⚠️ Count what actually goes into the call, not the readable text. JSON accepts non-Latin characters both literally and as `\uXXXX` escape sequences — in the latter case a single letter occupies six characters, so the same text exhausts the budget six times faster. The `raw` tells them apart: readable text is the ordinary case, an unbroken ribbon of `\uXXXX` is the escaped form, where the content limit drops to roughly 400 characters. If a retry with the same text in meaning goes through, the form changed, not the length.
 
+## Support
+
+memory-compiler is built in the evenings. If it saved you a few hours, you can buy the author a coffee on [Boosty](https://boosty.to/arelion) — no paywalls and no obligations, just thanks. Stars and bug reports are appreciated too.
+
+[![Boosty](https://img.shields.io/badge/Boosty-buy_me_a_coffee-F15F2C?logo=boosty&logoColor=white)](https://boosty.to/arelion)
+
 ## License
 
 [MIT](LICENSE)
