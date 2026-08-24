@@ -652,11 +652,11 @@ async function onProjectChange(){
 let graphRaw=null,gNodes=[],gEdges=[],gMap={},gAdj={},gAnim=null,gRO=null,gCtx=null;
 let gZoom=1,gCamX=0,gCamY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
 let gAlpha=0,gDirty=true,gDpr=1,gW=0,gH=0,gRunning=false,gHi="",gFilterProject="";
-let gPointers=new Map(),gPinch=0,gDownAt=null;
+let gPointers=new Map(),gPinch=0,gDownAt=null,gGlowR=99;
 let gDim=0,gDimTo=0,gFollow=false,gTick=0;  // gDim — плавное затухание при наведении
 // Камера живёт ЦЕЛЬЮ: колесо и кнопки двигают цель, а текущее значение догоняет её
 // по кадрам. Раньше зум менялся скачком, и никакого движения на экране не было.
-let gZoomT=1,gCamXT=0,gCamYT=0,gFade=1,gHoverA=0,gGlideX=0,gGlideY=0,gPulse=0;
+let gZoomT=1,gCamXT=0,gCamYT=0,gFade=1,gHoverA=0,gGlideX=0,gGlideY=0,gPulse=0,gSpark=0;
 // Замер на корпусе прода (2818 нод, 12191 ребро): THETA 0.85 -> 1.15 срезает
 // раскладку с 3.6 до 2.6 с при том же зазоре между нодами (медиана 16.2 -> 15.8).
 const G_ALPHA_MIN=0.005,G_VDECAY=0.72,G_REP=2600,G_LEN=90;
@@ -719,6 +719,10 @@ function filterGraph(){
     n.orphan=deg===0;
     n.r=Math.max(2.6,Math.min(9,2.6+Math.sqrt(deg)*1.35+Math.sqrt(n.access_count||0)*0.25));
   });
+  // Порог свечения — ПЕРЦЕНТИЛЬ, а не абсолютное число: связей у всех примерно
+  // до восьми (top-K на сервере), и порог «r >= 5.6» зажигал три четверти графа.
+  const rs=gNodes.map(n=>n.r).sort(function(a,b){return a-b;});
+  gGlowR=rs.length?rs[Math.floor(rs.length*0.88)]:99;
   renderLegend(projs,cnt);
   graphResize();
   if(loadLayout()){
@@ -727,10 +731,15 @@ function filterGraph(){
     gAlpha=0.06;gFollow=true;graphStats();
     graphFit(false,true);
     gFade=0;gZoom*=0.82;gCamX=gCamXT;gCamY=gCamYT;
-    graphWake();
+    simStart();
     return;
   }
   gAlpha=1;gFade=0;
+  if(!gWorkerOff&&typeof Worker!=="undefined"&&typeof Blob!=="undefined"){
+    // Воркер разложит сам, не занимая кадр отрисовки — прогрев в UI-потоке не нужен
+    graphStats();graphFit(false,true);simStart();
+    return;
+  }
   warmupGraph(0);
 }
 
@@ -770,6 +779,7 @@ function graphStats(){
 // Прогрев кусками по кадрам: раскладка успевает сойтись до первого показа, но
 // вкладка при этом не висит — иначе браузер объявляет страницу зависшей.
 function warmupGraph(done){
+  if(!gSim)buildSim();
   const TOTAL=G_HEAVY?26:18;
   const t0=performance.now();
   let i=0;
@@ -783,66 +793,223 @@ function warmupGraph(done){
   graphStats();
   // Дальше граф оседает НА ГЛАЗАХ, а камера едет за ним: прогрев снимает только
   // первый бесформенный ком, остальное — часть картинки.
-  gAlpha=0.55;gFollow=true;graphFit(false,true);graphWake();
+  gAlpha=0.55;gFollow=true;graphFit(false,true);simStart();
 }
 
-// ── Barnes-Hut quadtree ────────────────────────────────────────────────────
-function bhCell(x,y,s){return{x:x,y:y,s:s,m:0,cx:0,cy:0,kids:null,pt:null};}
-function bhInsert(q,n,depth){
-  q.m++;q.cx+=n.x;q.cy+=n.y;
-  if(q.kids){const h=q.s/2;bhInsert(q.kids[(n.x>=q.x+h?1:0)+(n.y>=q.y+h?2:0)],n,depth+1);return;}
-  if(!q.pt){q.pt=n;return;}
-  if(depth>=18)return;                       // совпавшие точки: дальше не дробим
-  const h=q.s/2,old=q.pt;q.pt=null;
-  q.kids=[bhCell(q.x,q.y,h),bhCell(q.x+h,q.y,h),bhCell(q.x,q.y+h,h),bhCell(q.x+h,q.y+h,h)];
-  bhInsert(q.kids[(old.x>=q.x+h?1:0)+(old.y>=q.y+h?2:0)],old,depth+1);
-  bhInsert(q.kids[(n.x>=q.x+h?1:0)+(n.y>=q.y+h?2:0)],n,depth+1);
-}
-function bhApply(q,n,k){
-  if(q.m===0||(q.pt===n&&q.m===1))return;
-  const mx=q.cx/q.m,my=q.cy/q.m;
-  let dx=n.x-mx,dy=n.y-my,d2=dx*dx+dy*dy;
-  if(q.kids&&q.s*q.s>G_THETA*G_THETA*d2){
-    bhApply(q.kids[0],n,k);bhApply(q.kids[1],n,k);bhApply(q.kids[2],n,k);bhApply(q.kids[3],n,k);
-    return;
-  }
-  if(d2<25){                                  // разводим совпавшие узлы детерминированно
-    const a=n.i*2.399963;dx=Math.cos(a)*5;dy=Math.sin(a)*5;d2=25;
-  }
-  const f=G_REP*q.m*k/(d2*Math.sqrt(d2));
-  n.vx+=dx*f;n.vy+=dy*f;
-}
-
-function simStep(){
-  const N=gNodes.length;
+// ── Ядро физики ────────────────────────────────────────────────────────────
+// САМОДОСТАТОЧНО: не читает ничего из внешней области. На этом держится вынос в
+// Web Worker — исходник уезжает туда через toString(), поэтому реализация одна
+// и на воркер, и на запасной синхронный путь. Тронешь внешнюю переменную —
+// воркер молча сломается (ReferenceError внутри потока никто не увидит).
+// Quadtree на плоских массивах: объекты-ячейки на 2800 узлах порождали
+// несколько тысяч короткоживущих объектов КАЖДЫЙ кадр.
+function simCore(S){
+  const N=S.n;
   if(!N)return;
-  const k=gAlpha;
+  const px=S.px,py=S.py,vx=S.vx,vy=S.vy;
+  const k=S.alpha,REP=S.rep,LEN=S.len,TH2=S.theta*S.theta;
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-  for(let i=0;i<N;i++){const n=gNodes[i];
-    if(n.x<minX)minX=n.x;if(n.y<minY)minY=n.y;
-    if(n.x>maxX)maxX=n.x;if(n.y>maxY)maxY=n.y;}
-  const root=bhCell(minX,minY,Math.max(maxX-minX,maxY-minY,1)*1.02+2);
-  for(let i=0;i<N;i++)bhInsert(root,gNodes[i],0);
-  for(let i=0;i<N;i++)bhApply(root,gNodes[i],k);
-  for(let e=0;e<gEdges.length;e++){
-    const ed=gEdges[e],s=ed.s,d=ed.d;
-    let dx=d.x-s.x,dy=d.y-s.y,dist=Math.sqrt(dx*dx+dy*dy)||1;
-    const f=(dist-G_LEN)*0.04*ed.weight*k/dist;
-    const fx=dx*f,fy=dy*f;
-    s.vx+=fx;s.vy+=fy;d.vx-=fx;d.vy-=fy;
+  for(let i=0;i<N;i++){
+    const x=px[i],y=py[i];
+    if(x<minX)minX=x;if(y<minY)minY=y;
+    if(x>maxX)maxX=x;if(y>maxY)maxY=y;
   }
-  const grav=0.010*k;
+  const size=Math.max(maxX-minX,maxY-minY,1)*1.02+2;
+  // ёмкость дерева: на равномерном распределении хватает ~2N ячеек, берём запас
+  const cap=Math.max(64,N*4);
+  if(!S.qx||S.qx.length<cap){
+    S.qx=new Float64Array(cap);S.qy=new Float64Array(cap);S.qs=new Float64Array(cap);
+    S.qm=new Float64Array(cap);S.qcx=new Float64Array(cap);S.qcy=new Float64Array(cap);
+    S.qk=new Int32Array(cap);S.qp=new Int32Array(cap);
+  }
+  const qx=S.qx,qy=S.qy,qs=S.qs,qm=S.qm,qcx=S.qcx,qcy=S.qcy,qk=S.qk,qp=S.qp;
+  qx[0]=minX;qy[0]=minY;qs[0]=size;qm[0]=0;qcx[0]=0;qcy[0]=0;qk[0]=-1;qp[0]=-1;
+  let used=1;
+  for(let i=0;i<N;i++){
+    const x=px[i],y=py[i];
+    let q=0,depth=0;
+    for(;;){
+      qm[q]++;qcx[q]+=x;qcy[q]+=y;
+      if(qk[q]>=0){
+        const h=qs[q]/2;
+        q=qk[q]+(x>=qx[q]+h?1:0)+(y>=qy[q]+h?2:0);depth++;continue;
+      }
+      if(qp[q]<0){qp[q]=i;break;}
+      if(depth>=18)break;                  // совпавшие точки: дальше не дробим
+      if(used+4>cap)break;                 // дерево не влезло — редкий край, не роняем кадр
+      const h=qs[q]/2,old=qp[q],base=used;
+      used+=4;qp[q]=-1;qk[q]=base;
+      for(let c=0;c<4;c++){
+        qx[base+c]=qx[q]+(c&1?h:0);qy[base+c]=qy[q]+(c&2?h:0);qs[base+c]=h;
+        qm[base+c]=0;qcx[base+c]=0;qcy[base+c]=0;qk[base+c]=-1;qp[base+c]=-1;
+      }
+      const oi=base+(px[old]>=qx[q]+h?1:0)+(py[old]>=qy[q]+h?2:0);
+      qm[oi]++;qcx[oi]+=px[old];qcy[oi]+=py[old];qp[oi]=old;
+      q=qk[q]+(x>=qx[q]+h?1:0)+(y>=qy[q]+h?2:0);depth++;
+    }
+  }
+  // Отталкивание: обход дерева стеком, рекурсия на 2800 узлах стоила заметно дороже
+  const stack=S.stack&&S.stack.length>=64?S.stack:(S.stack=new Int32Array(256));
+  for(let i=0;i<N;i++){
+    const x=px[i],y=py[i];
+    let sp=0;stack[sp++]=0;
+    let ax=0,ay=0;
+    while(sp>0){
+      const q=stack[--sp];
+      const m=qm[q];
+      if(m===0)continue;
+      if(qp[q]===i&&m===1)continue;
+      let dx=x-qcx[q]/m,dy=y-qcy[q]/m,d2=dx*dx+dy*dy;
+      if(qk[q]>=0&&qs[q]*qs[q]>TH2*d2){
+        const b=qk[q];
+        if(sp+4<=stack.length){stack[sp++]=b;stack[sp++]=b+1;stack[sp++]=b+2;stack[sp++]=b+3;}
+        continue;
+      }
+      if(d2<25){                            // разводим совпавшие узлы детерминированно
+        const a=i*2.399963;dx=Math.cos(a)*5;dy=Math.sin(a)*5;d2=25;
+      }
+      const f=REP*m*k/(d2*Math.sqrt(d2));
+      ax+=dx*f;ay+=dy*f;
+    }
+    vx[i]+=ax;vy[i]+=ay;
+  }
+  const ei=S.ei,ej=S.ej,ew=S.ew,E=S.e;
+  for(let e=0;e<E;e++){
+    const a=ei[e],b=ej[e];
+    let dx=px[b]-px[a],dy=py[b]-py[a];
+    const dist=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=(dist-LEN)*0.04*ew[e]*k/dist;
+    const fx=dx*f,fy=dy*f;
+    vx[a]+=fx;vy[a]+=fy;vx[b]-=fx;vy[b]-=fy;
+  }
   // Сцена шире, чем выше — тянем раскладку по той же пропорции, иначе круглый
   // ком оставляет половину площади пустой.
-  const ar=Math.sqrt(Math.max(1,Math.min(2.6,(gW||1)/(gH||1))));
-  const gx=grav/ar,gy=grav*ar;
+  const grav=0.010*k,ar=S.ar,gx=grav/ar,gy=grav*ar,vd=S.vdecay,drag=S.drag;
   for(let i=0;i<N;i++){
-    const n=gNodes[i];
-    if(n===gDrag){n.vx=0;n.vy=0;continue;}
-    n.vx-=n.x*gx;n.vy-=n.y*gy;
-    n.vx*=G_VDECAY;n.vy*=G_VDECAY;
-    n.x+=n.vx;n.y+=n.vy;
+    if(i===drag){vx[i]=0;vy[i]=0;px[i]=S.dragX;py[i]=S.dragY;continue;}
+    vx[i]-=px[i]*gx;vy[i]-=py[i]*gy;
+    vx[i]*=vd;vy[i]*=vd;
+    px[i]+=vx[i];py[i]+=vy[i];
   }
+}
+
+// Тело воркера — тоже самодостаточное, уезжает через toString() вместе с simCore.
+function simWorkerBody(){
+  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0;
+  function tick(){
+    timer=0;
+    if(!S)return;
+    const t0=Date.now();
+    // Несколько шагов за подход, если кадры редкие: раскладка не должна
+    // растягиваться на минуту из-за троттлинга фонового потока.
+    let steps=0;
+    while(S.alpha>alphaMin&&steps<4&&Date.now()-t0<12){
+      simCore(S);S.alpha*=(1-decay);steps++;
+    }
+    if(S.drag>=0&&steps===0){simCore(S);steps=1;}
+    const now=Date.now();
+    if(steps&&now-lastSend>=15){
+      lastSend=now;
+      postMessage({t:"pos",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
+    }
+    if(S.alpha>alphaMin||S.drag>=0)timer=setTimeout(tick,8);
+    else postMessage({t:"done",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
+  }
+  function wake(){if(!timer&&S)timer=setTimeout(tick,0);}
+  onmessage=function(ev){
+    const m=ev.data;
+    if(m.t==="init"){
+      S={n:m.n,e:m.e,px:m.px,py:m.py,
+         vx:new Float64Array(m.n),vy:new Float64Array(m.n),
+         ei:m.ei,ej:m.ej,ew:m.ew,
+         alpha:m.alpha,rep:m.rep,len:m.len,theta:m.theta,
+         ar:m.ar,vdecay:m.vdecay,drag:-1,dragX:0,dragY:0};
+      decay=m.decay;wake();return;
+    }
+    if(!S)return;
+    if(m.t==="reheat"){S.alpha=Math.max(S.alpha,m.alpha);wake();return;}
+    if(m.t==="drag"){S.drag=m.i;S.dragX=m.x;S.dragY=m.y;S.alpha=Math.max(S.alpha,m.alpha||0.2);wake();return;}
+    if(m.t==="release"){S.drag=-1;wake();return;}
+    if(m.t==="ar"){S.ar=m.ar;return;}
+    if(m.t==="stop"){S.alpha=0;S.drag=-1;if(timer){clearTimeout(timer);timer=0;}return;}
+  };
+}
+
+// ── Мост к физике: воркер, если доступен; иначе тот же simCore синхронно ────
+let gSim=null,gWorker=null,gWorkerOff=false;
+function buildSim(){
+  const N=gNodes.length,E=gEdges.length;
+  const px=new Float64Array(N),py=new Float64Array(N);
+  for(let i=0;i<N;i++){px[i]=gNodes[i].x;py[i]=gNodes[i].y;}
+  const ei=new Int32Array(E),ej=new Int32Array(E),ew=new Float64Array(E);
+  for(let e=0;e<E;e++){ei[e]=gEdges[e].s.i;ej[e]=gEdges[e].d.i;ew[e]=gEdges[e].weight;}
+  gSim={n:N,e:E,px:px,py:py,vx:new Float64Array(N),vy:new Float64Array(N),
+        ei:ei,ej:ej,ew:ew,alpha:gAlpha,rep:G_REP,len:G_LEN,theta:G_THETA,
+        ar:simAspect(),vdecay:G_VDECAY,drag:-1,dragX:0,dragY:0};
+}
+function simAspect(){return Math.sqrt(Math.max(1,Math.min(2.6,(gW||1)/(gH||1))));}
+function pullPositions(px,py){
+  const N=Math.min(gNodes.length,px.length);
+  for(let i=0;i<N;i++){const n=gNodes[i];n.x=px[i];n.y=py[i];}
+}
+function simStart(){
+  if(gWorker){gWorker.terminate();gWorker=null;}
+  buildSim();
+  if(gWorkerOff||typeof Worker==="undefined"||typeof Blob==="undefined"){graphWake();return;}
+  try{
+    // Исходник воркера собирается ИЗ ТЕХ ЖЕ функций — копии алгоритма нет,
+    // разойтись с запасным путём физически не может.
+    // Склейка через fromCharCode(10): ui.py — обычная Python-строка, и литерал
+    // с backslash-n в ней превращается в НАСТОЯЩИЙ перевод строки, разрывая код.
+    const src=[simCore.toString(),simWorkerBody.toString(),"simWorkerBody();"]
+      .join(String.fromCharCode(10));
+    const url=URL.createObjectURL(new Blob([src],{type:"text/javascript"}));
+    gWorker=new Worker(url);
+    URL.revokeObjectURL(url);
+    gWorker.onerror=function(){gWorkerOff=true;if(gWorker){gWorker.terminate();gWorker=null;}graphWake();};
+    gWorker.onmessage=function(ev){
+      const m=ev.data;
+      if(m.t!=="pos"&&m.t!=="done")return;
+      pullPositions(m.px,m.py);
+      gAlpha=m.alpha;
+      if(gFollow)graphFit(true);
+      gDirty=true;
+      if(m.t==="done"){gAlpha=0;saveLayout();}
+      graphWake();
+    };
+    gWorker.postMessage({t:"init",n:gSim.n,e:gSim.e,px:gSim.px,py:gSim.py,
+      ei:gSim.ei,ej:gSim.ej,ew:gSim.ew,alpha:gAlpha,rep:G_REP,len:G_LEN,
+      theta:G_THETA,ar:gSim.ar,vdecay:G_VDECAY,decay:G_DECAY});
+  }catch(e){gWorkerOff=true;gWorker=null;}
+  graphWake();
+}
+function simReheat(a){
+  gAlpha=Math.max(gAlpha,a);
+  if(gWorker)gWorker.postMessage({t:"reheat",alpha:gAlpha});
+  else if(gSim)gSim.alpha=gAlpha;
+  graphWake();
+}
+function simDrag(node,x,y){
+  node.x=x;node.y=y;
+  if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y,alpha:0.3});
+  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.3);}
+  gAlpha=Math.max(gAlpha,0.3);graphWake();
+}
+function simRelease(){
+  if(gWorker)gWorker.postMessage({t:"release"});
+  else if(gSim)gSim.drag=-1;
+}
+function simResized(){
+  const ar=simAspect();
+  if(gWorker)gWorker.postMessage({t:"ar",ar:ar});
+  if(gSim)gSim.ar=ar;
+}
+// Запасной путь: воркера нет — считаем тот же simCore в кадре отрисовки
+function simStep(){
+  if(!gSim)return;
+  gSim.alpha=gAlpha;
+  simCore(gSim);
+  pullPositions(gSim.px,gSim.py);
 }
 
 // ── Камера и адаптивная сцена ──────────────────────────────────────────────
@@ -857,6 +1024,7 @@ function graphResize(){
   const c=$("graph-canvas");
   c.width=Math.round(w*gDpr);c.height=Math.round(h*gDpr);
   gCtx=c.getContext("2d");
+  simResized();
   gDirty=true;graphWake();
 }
 function graphFit(smooth,instant){
@@ -943,13 +1111,17 @@ function graphWake(){
 function graphLoop(){
   if($("view-graph").style.display==="none"){gRunning=false;return;}
   let live=false;
-  if(gAlpha>G_ALPHA_MIN){
+  if(gWorker){
+    // Физику считает воркер, кадры приходят сообщениями — здесь только рисуем.
+    if(gAlpha>G_ALPHA_MIN)live=true;
+  }else if(gAlpha>G_ALPHA_MIN){
     gAlpha*=(1-G_DECAY);simStep();gDirty=true;live=true;
     if(gFollow&&(gTick++&3)===0)graphFit(true);
   }
   if(stepCamera())live=true;
   if(gFade<1){gFade=Math.min(1,gFade+0.055);gDirty=true;live=true;}
   if(gHi&&!G_HEAVY){gPulse+=0.09;gDirty=true;live=true;}
+  if(gHover){gSpark=(gSpark+0.012)%1;gDirty=true;live=true;}
   const hoverTo=gHover?1:0;
   if(Math.abs(gHoverA-hoverTo)>0.01){gHoverA+=(hoverTo-gHoverA)*0.25;gDirty=true;live=true;}
   else if(gHoverA!==hoverTo){gHoverA=hoverTo;gDirty=true;}
@@ -996,17 +1168,35 @@ function renderGraph(){
     ctx.stroke();
   });
   if(hov){
-    ctx.globalAlpha=fade*0.85*gDim;ctx.strokeStyle="#58a6ff";ctx.lineWidth=1.6;ctx.beginPath();
     const hx=hov.x*z+ox,hy=hov.y*z+oy;
-    gAdj[hov.id].forEach(function(o){
-      const tx=o.x*z+ox,ty=o.y*z+oy;
+    const near=gAdj[hov.id];
+    ctx.globalAlpha=fade*0.85*gDim;ctx.strokeStyle="#58a6ff";ctx.lineWidth=1.6;ctx.beginPath();
+    for(let i=0;i<near.length;i++){
+      const o=near[i],tx=o.x*z+ox,ty=o.y*z+oy;
       // лёгкая дуга вместо прямой спицы: пучок связей читается как связи, а не сетка
-      const mx=(hx+tx)/2,my=(hy+ty)/2,dx=tx-hx,dy=ty-hy;
-      ctx.moveTo(hx,hy);ctx.quadraticCurveTo(mx-dy*0.08,my+dx*0.08,tx,ty);});
+      const dx=tx-hx,dy=ty-hy;
+      ctx.moveTo(hx,hy);ctx.quadraticCurveTo((hx+tx)/2-dy*0.08,(hy+ty)/2+dx*0.08,tx,ty);
+    }
     ctx.stroke();
+    // По подсвеченным связям бегут искры — их немного (соседи одного узла),
+    // поэтому дёшево даже на большом графе.
+    if(near.length<=64){
+      ctx.globalAlpha=fade*gDim;ctx.fillStyle=light?"#0969da":"#a5d6ff";
+      ctx.beginPath();
+      for(let i=0;i<near.length;i++){
+        const o=near[i],tx=o.x*z+ox,ty=o.y*z+oy;
+        const dx=tx-hx,dy=ty-hy;
+        const t=(gSpark+i*0.17)%1;
+        const u=1-t,cx2=(hx+tx)/2-dy*0.08,cy2=(hy+ty)/2+dx*0.08;
+        const sx=u*u*hx+2*u*t*cx2+t*t*tx, sy=u*u*hy+2*u*t*cy2+t*t*ty;
+        const r=1.6+1.2*Math.sin(t*3.14159);
+        ctx.moveTo(sx+r,sy);ctx.arc(sx,sy,r,0,6.2832);
+      }
+      ctx.fill();
+    }
   }
   // Ноды: батч по цвету — один fill() на проект вместо тысяч
-  const buckets={},labels=[];
+  const buckets={},glow={},labels=[];
   for(let i=0;i<gNodes.length;i++){
     const n=gNodes[i];
     const sx=n.x*z+ox,sy=n.y*z+oy;
@@ -1017,23 +1207,14 @@ function renderGraph(){
     const dim=hov&&n!==hov&&!nb.has(n.id);
     const key=(dim?"d|":"n|")+(n.orphan?(light?"#aab3bf":"#5b6572"):muteColor(n.color,light));
     (buckets[key]||(buckets[key]=[])).push(sx,sy,r);
+    // Светятся только ХАБЫ: порог по мировому радиусу (то есть по числу связей),
+    // а не по экранному — иначе на приближении начинает светиться вообще всё,
+    // и картинка превращается в общее зарево.
+    if(!dim&&n.r>=gGlowR)(glow[key]||(glow[key]=[])).push(sx,sy,r);
     if(!dim)labels.push(n);
   }
-  // Свечение: широкий полупрозрачный круг того же цвета под нодой. Отдельным
-  // проходом на цвет — shadowBlur на каждой ноде стоил бы кадра.
   const keys=Object.keys(buckets);
-  if(!G_HEAVY)keys.forEach(function(key){
-    if(key.charAt(0)==="d")return;
-    const arr=buckets[key];
-    ctx.globalAlpha=fade*(light?0.05:0.10)*(1-gDim*0.55);ctx.fillStyle=key.slice(2);
-    ctx.beginPath();
-    let any=false;
-    for(let i=0;i<arr.length;i+=3){
-      if(arr[i+2]<4)continue;                  // мелкие точки не светятся
-      const gr=arr[i+2]*1.55;any=true;
-      ctx.moveTo(arr[i]+gr,arr[i+1]);ctx.arc(arr[i],arr[i+1],gr,0,6.2832);}
-    if(any)ctx.fill();
-  });
+  drawBloom(glow,Object.keys(glow),light,fade);
   ctx.lineWidth=Math.min(2,1+z*0.3);ctx.strokeStyle=bg;
   keys.forEach(function(key){
     const arr=buckets[key],dim=key.charAt(0)==="d";
@@ -1067,6 +1248,46 @@ function renderGraph(){
   }
   drawLabels(labels,hov,nb,light,z,fade);
   ctx.globalAlpha=1;
+}
+
+// Свечение делается КАК В ГРАФИКЕ: яркие пятна рисуются на отдельный холст,
+// размываются и подмешиваются обратно в режиме сложения. Полупрозрачный круг
+// под нодой (прежний приём) давал плоское пятно, а не свет. Холст вдвое меньше
+// по стороне — размытие по нему вчетверо дешевле, а мягкости на глаз хватает.
+let gGlowCv=null,gGlowCtx=null;
+function drawBloom(buckets,keys,light,fade){
+  if(G_HEAVY&&gZoom<0.6)return;            // на общем плане большого графа не окупается
+  const S=0.5,w=Math.max(1,Math.round(gW*S)),h=Math.max(1,Math.round(gH*S));
+  if(!gGlowCv){gGlowCv=document.createElement("canvas");gGlowCtx=gGlowCv.getContext("2d");}
+  if(gGlowCv.width!==w||gGlowCv.height!==h){gGlowCv.width=w;gGlowCv.height=h;}
+  const g=gGlowCtx;
+  g.setTransform(1,0,0,1,0,0);
+  g.clearRect(0,0,w,h);
+  g.setTransform(S,0,0,S,0,0);
+  let any=false;
+  keys.forEach(function(key){
+    const arr=buckets[key];
+    if(!arr||!arr.length)return;
+    g.fillStyle=key.slice(2);
+    g.beginPath();
+    for(let i=0;i<arr.length;i+=3){
+      const gr=arr[i+2]*1.3;
+      g.moveTo(arr[i]+gr,arr[i+1]);g.arc(arr[i],arr[i+1],gr,0,6.2832);
+    }
+    g.fill();any=true;
+  });
+  if(!any)return;
+  const prev=gCtx.globalCompositeOperation;
+  gCtx.globalCompositeOperation="lighter";
+  gCtx.globalAlpha=fade*(light?0.22:0.38)*(1-gDim*0.55);
+  if("filter" in gCtx){
+    gCtx.filter="blur(7px)";
+    gCtx.drawImage(gGlowCv,0,0,gW,gH);
+    gCtx.filter="none";
+  }else{
+    gCtx.drawImage(gGlowCv,0,0,gW,gH);     // без фильтра сойдёт мягкий апскейл
+  }
+  gCtx.globalCompositeOperation=prev;
 }
 
 // Подписи — самая дорогая часть рендера и главный источник каши на экране:
@@ -1163,7 +1384,7 @@ function setupGraphEvents(){
       gPinch=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);gPanning=false;gDrag=null;return;
     }
     const pt=loc(ev),n=graphPick(pt[0],pt[1]);
-    if(n){gDrag=n;gDownAt=[n.sx,n.sy];gAlpha=Math.max(gAlpha,0.34);gFollow=false;gGlideX=0;gGlideY=0;}
+    if(n){gDrag=n;gDownAt=[n.sx,n.sy];gFollow=false;gGlideX=0;gGlideY=0;simReheat(0.34);}
     else{
       gPanning=true;gFollow=false;gGlideX=0;gGlideY=0;
       gPanStart=[pt[0],pt[1],gCamX,gCamY,pt[0],pt[1]];
@@ -1181,8 +1402,8 @@ function setupGraphEvents(){
       return;
     }
     if(gDrag){
-      gDrag.x=(px-gW/2)/gZoom+gCamX;gDrag.y=(py-gH/2)/gZoom+gCamY;
-      gDrag.vx=0;gDrag.vy=0;gDirty=true;graphWake();return;
+      simDrag(gDrag,(px-gW/2)/gZoom+gCamX,(py-gH/2)/gZoom+gCamY);
+      gDirty=true;graphWake();return;
     }
     if(gPanning&&gPanStart){
       // За пальцем/курсором идём БЕЗ сглаживания — иначе рука опережает картинку.
@@ -1206,7 +1427,7 @@ function setupGraphEvents(){
       if(gDownAt&&Math.hypot(gDrag.sx-gDownAt[0],gDrag.sy-gDownAt[1])<5){
         gCamXT=gDrag.x;gCamYT=gDrag.y;gFollow=false;
       }
-      gDrag=null;gAlpha=Math.max(gAlpha,0.12);graphWake();
+      gDrag=null;simRelease();simReheat(0.12);
     }
     gDownAt=null;
     gPanning=false;gPanStart=null;cont.classList.remove("grabbing");
