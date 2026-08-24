@@ -136,6 +136,23 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .ask-src .secret-btn{background:none;border:1px solid var(--border);border-radius:5px;color:var(--text2);cursor:pointer;font-size:0.9em;padding:1px 7px;margin-left:6px}
 .ask-src .secret-btn:hover{color:var(--accent);border-color:var(--accent)}
 .ask-src .src{color:var(--text2);font-size:0.72em;margin-top:6px}
+/* Граф: широкая вкладка, адаптивная сцена, панель управления */
+body.wide{max-width:min(1600px,100%)}
+.graph-bar{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
+.graph-bar select{padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:13px}
+.graph-bar input{flex:1;min-width:140px;max-width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:13px}
+.graph-bar .info{color:var(--text2);font-size:13px;margin-left:auto;white-space:nowrap}
+#graph-container{position:relative;width:100%;height:clamp(400px,78vh,1000px);border:1px solid var(--border);border-radius:12px;background:var(--bg);overflow:hidden;touch-action:none;cursor:grab}
+#graph-container.grabbing{cursor:grabbing}
+#graph-container:fullscreen{height:100vh;border-radius:0}
+#graph-canvas{display:block;width:100%;height:100%}
+.graph-ctl{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:6px}
+.graph-ctl button{width:32px;height:32px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text2);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.85}
+.graph-ctl button:hover{color:var(--accent);border-color:var(--accent);opacity:1}
+.graph-legend{position:absolute;left:10px;bottom:10px;display:flex;flex-wrap:wrap;gap:4px 10px;max-width:calc(100% - 70px);font-size:11px;color:var(--text2);pointer-events:none}
+.graph-legend span{display:flex;align-items:center;gap:4px}
+.graph-legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
+@media(max-width:640px){#graph-container{height:min(64vh,560px)}.graph-bar .info{margin-left:0;width:100%}.graph-legend{display:none}}
 /*PYGMENTS_CSS*/
 </style>
 </head>
@@ -182,14 +199,23 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 <button class="btn-save" onclick="doSave()" data-i18n="btn.save">Сохранить</button>
 </div>
 <div id="view-graph" style="display:none">
-<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-<select id="graph-project" onchange="filterGraph()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:13px">
+<div class="graph-bar">
+<select id="graph-project" onchange="filterGraph()">
 <option value="" data-i18n="lbl.allProjects">Все проекты</option>
 </select>
-<span id="graph-info" style="color:var(--text2);font-size:13px;padding:6px 0"></span>
+<input id="graph-search" oninput="graphHighlight(this.value)" data-i18n-ph="ph.graphSearch" placeholder="Подсветить...">
+<span id="graph-info" class="info"></span>
 </div>
-<div id="graph-container" style="width:100%;height:600px;border:1px solid var(--border);border-radius:8px;background:var(--bg);position:relative;overflow:hidden">
+<div id="graph-container">
 <canvas id="graph-canvas"></canvas>
+<div class="graph-legend" id="graph-legend"></div>
+<div class="graph-ctl">
+<button onclick="graphZoom(1.35)" data-i18n-title="graph.zoomIn" title="Приблизить">+</button>
+<button onclick="graphZoom(0.74)" data-i18n-title="graph.zoomOut" title="Отдалить">&minus;</button>
+<button onclick="graphFit()" data-i18n-title="graph.fit" title="Вписать">&#9633;</button>
+<button onclick="graphReload()" data-i18n-title="graph.reload" title="Обновить данные">&#8635;</button>
+<button onclick="graphFullscreen()" data-i18n-title="graph.fullscreen" title="Во весь экран">&#10530;</button>
+</div>
 </div>
 </div>
 <div id="view-compile" style="display:none">
@@ -280,6 +306,13 @@ var I18N={
     "graph.articles":"статей",
     "graph.links":"связей",
     "graph.orphans":"без связей",
+    "graph.zoomIn":"Приблизить",
+    "graph.zoomOut":"Отдалить",
+    "graph.fit":"Вписать в экран",
+    "graph.fullscreen":"Во весь экран",
+    "graph.reload":"Обновить данные",
+    "graph.layout":"Раскладка...",
+    "ph.graphSearch":"Подсветить...",
     "analytics.stats":"Статистика",
     "analytics.totalArticles":"Всего статей",
     "analytics.tracked":"Отслеживается",
@@ -354,6 +387,13 @@ var I18N={
     "graph.articles":"articles",
     "graph.links":"links",
     "graph.orphans":"orphaned",
+    "graph.zoomIn":"Zoom in",
+    "graph.zoomOut":"Zoom out",
+    "graph.fit":"Fit to screen",
+    "graph.fullscreen":"Fullscreen",
+    "graph.reload":"Reload data",
+    "graph.layout":"Laying out...",
+    "ph.graphSearch":"Highlight...",
     "analytics.stats":"Statistics",
     "analytics.totalArticles":"Total articles",
     "analytics.tracked":"Tracked",
@@ -419,6 +459,7 @@ function showTab(t){
     $("view-"+v).style.display=v===t?"block":"none";
     $("tab-"+v).className=v===t?"active":"";
   });
+  document.body.classList.toggle("wide",t==="graph");
   if(t==="graph")loadGraph();
   if(t==="analytics")loadAnalytics();
   if(t==="audit")loadAudit();
@@ -565,6 +606,7 @@ function toggleTheme(){
   const cur=document.documentElement.getAttribute("data-theme");
   const next=cur==="light"?"dark":"light";
   document.documentElement.setAttribute("data-theme",next==="dark"?"":"light");
+  if(typeof graphRepaint==="function")graphRepaint();
   localStorage.setItem("theme",next);
 }
 (function(){const t=localStorage.getItem("theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
@@ -602,200 +644,480 @@ async function onProjectChange(){
   }else{$("results").innerHTML="";}
 }
 
-// Animated graph (Obsidian-style) with zoom, pan, drag
-let graphRaw=null,graphNodes=[],graphEdges=[],graphNmap={},graphAnim=null;
-let gZoom=1,gPanX=0,gPanY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
-let gFilterProject="";
+// ── Граф статей: Barnes-Hut раскладка + камера + LOD-рендер ────────────────
+// Физика считается в МИРОВЫХ координатах (центр 0,0), камера отдельно — поэтому
+// ресайз окна и полноэкранный режим не пересчитывают раскладку, а только вид.
+// Отталкивание через quadtree: наивный двойной цикл на 2800 нодах — это 4 млн
+// пар КАЖДЫЙ кадр, ровно от него граф и стоял колом.
+let graphRaw=null,gNodes=[],gEdges=[],gMap={},gAdj={},gAnim=null,gRO=null,gCtx=null;
+let gZoom=1,gCamX=0,gCamY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
+let gAlpha=0,gDirty=true,gDpr=1,gW=0,gH=0,gRunning=false,gHi="",gFilterProject="";
+let gPointers=new Map(),gPinch=0;
+let gDim=0,gDimTo=0,gFollow=false;   // gDim — плавное затухание фона при наведении
+// Замер на корпусе прода (2818 нод, 12191 ребро): THETA 0.85 -> 1.15 срезает
+// раскладку с 3.6 до 2.6 с при том же зазоре между нодами (медиана 16.2 -> 15.8).
+const G_ALPHA_MIN=0.005,G_DECAY=0.02,G_VDECAY=0.72,G_REP=2600,G_LEN=90,G_THETA=1.15;
+
 async function loadGraph(){
   $("graph-info").textContent=t("msg.loading");
-  const r=await fetch("/api/graph");
-  graphRaw=await r.json();
-  // Populate project filter
-  const sel=$("graph-project");
-  const projs=[...new Set(graphRaw.nodes.map(n=>n.project))].sort();
-  sel.innerHTML='<option value="">'+t("lbl.allProjects")+'</option>'+projs.map(p=>'<option value="'+p+'">'+p+'</option>').join("");
+  if(!graphRaw){
+    const r=await fetch("/api/graph");
+    graphRaw=await r.json();
+    const sel=$("graph-project");
+    const projs=[...new Set(graphRaw.nodes.map(n=>n.project))].sort();
+    sel.innerHTML='<option value="">'+t("lbl.allProjects")+'</option>'+projs.map(p=>'<option value="'+p+'">'+p+'</option>').join("");
+    setupGraphEvents();
+  }
   filterGraph();
 }
+
 function filterGraph(){
   gFilterProject=$("graph-project").value;
   const filtered=gFilterProject?graphRaw.nodes.filter(n=>n.project===gFilterProject):graphRaw.nodes;
   const ids=new Set(filtered.map(n=>n.id));
-  graphEdges=graphRaw.edges.filter(e=>ids.has(e.source)&&ids.has(e.target));
-  const c=$("graph-canvas");const cont=c.parentElement;
-  const W=cont.clientWidth;const H=cont.clientHeight||600;
-  c.width=W*2;c.height=H*2;c.style.width=W+"px";c.style.height=H+"px";
-  // Init positions — spread by project clusters
-  const projIdx={};let pi=0;
-  graphNodes=filtered.map((n,i)=>{
-    if(!(n.project in projIdx))projIdx[n.project]=pi++;
-    const cl=projIdx[n.project];const a=cl*2.4+i*0.15;
-    const cx=W+Math.cos(a)*(200+cl*80);const cy=H+Math.sin(a)*(200+cl*80);
-    return{...n,x:cx+(Math.random()-0.5)*100,y:cy+(Math.random()-0.5)*100,vx:0,vy:0};
+  gEdges=graphRaw.edges.filter(e=>ids.has(e.source)&&ids.has(e.target));
+  // Кластерная затравка: центры проектов по кругу, ноды — диском вокруг своего.
+  // Хорошая затравка экономит сотни итераций физики.
+  const cnt={};filtered.forEach(n=>{cnt[n.project]=(cnt[n.project]||0)+1;});
+  const projs=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]);
+  const ring=Math.max(260,Math.sqrt(filtered.length)*34);
+  const ctr={},seen={};
+  projs.forEach((p,i)=>{
+    const a=i*2.399963;const rr=ring*Math.sqrt((i+0.5)/projs.length);
+    ctr[p]=[Math.cos(a)*rr,Math.sin(a)*rr];seen[p]=0;
   });
-  graphNmap={};graphNodes.forEach(n=>graphNmap[n.id]=n);
-  gZoom=1;gPanX=0;gPanY=0;
-  const orphans=graphNodes.filter(n=>n.orphan).length;
-  $("graph-info").textContent=graphNodes.length+" "+t("graph.articles")+", "+graphEdges.length+" "+t("graph.links")+(orphans?" · "+orphans+" "+t("graph.orphans"):"");
-  if(graphAnim)cancelAnimationFrame(graphAnim);
-  tickGraph();
-  setupGraphEvents();
+  gNodes=filtered.map(n=>{
+    const k=seen[n.project]++;const c=ctr[n.project];
+    const a=k*2.399963,rr=Math.sqrt(k+0.5)*11;
+    return{...n,x:c[0]+Math.cos(a)*rr,y:c[1]+Math.sin(a)*rr,vx:0,vy:0,r:4,lt:null,lw:0};
+  });
+  gMap={};gNodes.forEach((n,i)=>{n.i=i;gMap[n.id]=n;});
+  // Список соседей заранее: при наведении проверка «сосед ли» была перебором всех
+  // 12 тысяч рёбер ВНУТРИ цикла по нодам — 34 млн операций на кадр.
+  gAdj={};gNodes.forEach(n=>{gAdj[n.id]=[];});
+  gEdges=gEdges.filter(e=>{
+    const s=gMap[e.source],d=gMap[e.target];
+    if(!s||!d)return false;
+    e.s=s;e.d=d;gAdj[e.source].push(d);gAdj[e.target].push(s);return true;
+  });
+  // Размер ноды — по числу связей (как в Obsidian): хаб виден сразу. Открытия
+  // статьи добавляют лишь малую поправку, иначе размер начинает означать две вещи.
+  gNodes.forEach(n=>{
+    const deg=gAdj[n.id].length;
+    n.orphan=deg===0;
+    n.r=Math.max(2.6,Math.min(9,2.6+Math.sqrt(deg)*1.35+Math.sqrt(n.access_count||0)*0.25));
+  });
+  renderLegend(projs,cnt);
+  graphResize();
+  gAlpha=1;
+  warmupGraph(0);
 }
-function tickGraph(){
-  const alpha=0.3;const N=graphNodes.length;
-  // Repulsion (Barnes-Hut simplified)
+
+function graphStats(){
+  const orphans=gNodes.filter(n=>n.orphan).length;
+  $("graph-info").textContent=gNodes.length+" "+t("graph.articles")+", "+gEdges.length+" "+t("graph.links")+(orphans?" · "+orphans+" "+t("graph.orphans"):"");
+}
+
+// Прогрев кусками по кадрам: раскладка успевает сойтись до первого показа, но
+// вкладка при этом не висит — иначе браузер объявляет страницу зависшей.
+function warmupGraph(done){
+  const TOTAL=42;
+  const t0=performance.now();
+  let i=0;
+  while(done+i<TOTAL&&(i<8||performance.now()-t0<80)){simStep();i++;}
+  done+=i;
+  if(done<TOTAL&&gNodes.length>1){
+    $("graph-info").textContent=t("graph.layout")+" "+Math.round(done*100/TOTAL)+"%";
+    requestAnimationFrame(function(){warmupGraph(done);});
+    return;
+  }
+  graphStats();
+  // Дальше граф оседает НА ГЛАЗАХ, а камера едет за ним: прогрев снимает только
+  // первый бесформенный ком, остальное — часть картинки.
+  gAlpha=0.55;gFollow=true;graphFit();graphWake();
+}
+
+// ── Barnes-Hut quadtree ────────────────────────────────────────────────────
+function bhCell(x,y,s){return{x:x,y:y,s:s,m:0,cx:0,cy:0,kids:null,pt:null};}
+function bhInsert(q,n,depth){
+  q.m++;q.cx+=n.x;q.cy+=n.y;
+  if(q.kids){const h=q.s/2;bhInsert(q.kids[(n.x>=q.x+h?1:0)+(n.y>=q.y+h?2:0)],n,depth+1);return;}
+  if(!q.pt){q.pt=n;return;}
+  if(depth>=18)return;                       // совпавшие точки: дальше не дробим
+  const h=q.s/2,old=q.pt;q.pt=null;
+  q.kids=[bhCell(q.x,q.y,h),bhCell(q.x+h,q.y,h),bhCell(q.x,q.y+h,h),bhCell(q.x+h,q.y+h,h)];
+  bhInsert(q.kids[(old.x>=q.x+h?1:0)+(old.y>=q.y+h?2:0)],old,depth+1);
+  bhInsert(q.kids[(n.x>=q.x+h?1:0)+(n.y>=q.y+h?2:0)],n,depth+1);
+}
+function bhApply(q,n,k){
+  if(q.m===0||(q.pt===n&&q.m===1))return;
+  const mx=q.cx/q.m,my=q.cy/q.m;
+  let dx=n.x-mx,dy=n.y-my,d2=dx*dx+dy*dy;
+  if(q.kids&&q.s*q.s>G_THETA*G_THETA*d2){
+    bhApply(q.kids[0],n,k);bhApply(q.kids[1],n,k);bhApply(q.kids[2],n,k);bhApply(q.kids[3],n,k);
+    return;
+  }
+  if(d2<25){                                  // разводим совпавшие узлы детерминированно
+    const a=n.i*2.399963;dx=Math.cos(a)*5;dy=Math.sin(a)*5;d2=25;
+  }
+  const f=G_REP*q.m*k/(d2*Math.sqrt(d2));
+  n.vx+=dx*f;n.vy+=dy*f;
+}
+
+function simStep(){
+  const N=gNodes.length;
+  if(!N)return;
+  const k=gAlpha;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(let i=0;i<N;i++){const n=gNodes[i];
+    if(n.x<minX)minX=n.x;if(n.y<minY)minY=n.y;
+    if(n.x>maxX)maxX=n.x;if(n.y>maxY)maxY=n.y;}
+  const root=bhCell(minX,minY,Math.max(maxX-minX,maxY-minY,1)*1.02+2);
+  for(let i=0;i<N;i++)bhInsert(root,gNodes[i],0);
+  for(let i=0;i<N;i++)bhApply(root,gNodes[i],k);
+  for(let e=0;e<gEdges.length;e++){
+    const ed=gEdges[e],s=ed.s,d=ed.d;
+    let dx=d.x-s.x,dy=d.y-s.y,dist=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=(dist-G_LEN)*0.04*ed.weight*k/dist;
+    const fx=dx*f,fy=dy*f;
+    s.vx+=fx;s.vy+=fy;d.vx-=fx;d.vy-=fy;
+  }
+  const grav=0.010*k;
+  // Сцена шире, чем выше — тянем раскладку по той же пропорции, иначе круглый
+  // ком оставляет половину площади пустой.
+  const ar=Math.sqrt(Math.max(1,Math.min(2.6,(gW||1)/(gH||1))));
+  const gx=grav/ar,gy=grav*ar;
   for(let i=0;i<N;i++){
-    const a=graphNodes[i];
-    for(let j=i+1;j<N;j++){
-      const b=graphNodes[j];
-      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;
-      if(d2<1)d2=1;
-      const d=Math.sqrt(d2);
-      const rep=Math.min(2000/d2,3)*alpha;
-      a.vx+=dx/d*rep;a.vy+=dy/d*rep;
-      b.vx-=dx/d*rep;b.vy-=dy/d*rep;
-    }
-  }
-  // Attraction (springs)
-  graphEdges.forEach(e=>{
-    const s=graphNmap[e.source],t=graphNmap[e.target];
-    if(!s||!t)return;
-    let dx=t.x-s.x,dy=t.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
-    const f=(d-200)*0.002*e.weight*alpha;
-    s.vx+=dx/d*f;s.vy+=dy/d*f;t.vx-=dx/d*f;t.vy-=dy/d*f;
-  });
-  // Center gravity
-  const c=$("graph-canvas");const cx=c.width/2,cy=c.height/2;
-  graphNodes.forEach(n=>{
-    if(n===gDrag)return;
-    n.vx+=(cx-n.x)*0.0005*alpha;n.vy+=(cy-n.y)*0.0005*alpha;
-    n.vx*=0.85;n.vy*=0.85;
+    const n=gNodes[i];
+    if(n===gDrag){n.vx=0;n.vy=0;continue;}
+    n.vx-=n.x*gx;n.vy-=n.y*gy;
+    n.vx*=G_VDECAY;n.vy*=G_VDECAY;
     n.x+=n.vx;n.y+=n.vy;
-  });
-  renderGraph();
-  graphAnim=requestAnimationFrame(tickGraph);
+  }
 }
+
+// ── Камера и адаптивная сцена ──────────────────────────────────────────────
+function graphResize(){
+  const cont=$("graph-container");if(!cont)return;
+  const w=cont.clientWidth,h=cont.clientHeight;
+  if(!w||!h)return;
+  gW=w;gH=h;gDpr=Math.min(window.devicePixelRatio||1,2);
+  const c=$("graph-canvas");
+  c.width=Math.round(w*gDpr);c.height=Math.round(h*gDpr);
+  gCtx=c.getContext("2d");
+  gDirty=true;graphWake();
+}
+function graphFit(smooth){
+  if(!gNodes.length)return;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  gNodes.forEach(function(n){
+    if(n.x<minX)minX=n.x;if(n.y<minY)minY=n.y;
+    if(n.x>maxX)maxX=n.x;if(n.y>maxY)maxY=n.y;});
+  const cx=(minX+maxX)/2,cy=(minY+maxY)/2,pad=54;
+  const z=Math.max(0.05,Math.min(3,Math.min((gW-pad)/Math.max(maxX-minX,1),(gH-pad)/Math.max(maxY-minY,1))));
+  if(smooth){const e=0.12;gCamX+=(cx-gCamX)*e;gCamY+=(cy-gCamY)*e;gZoom+=(z-gZoom)*e;}
+  else{gCamX=cx;gCamY=cy;gZoom=z;}
+  gDirty=true;graphWake();
+}
+function graphZoom(f,px,py){
+  gFollow=false;
+  const cx=px===undefined?gW/2:px,cy=py===undefined?gH/2:py;
+  const wx=(cx-gW/2)/gZoom+gCamX,wy=(cy-gH/2)/gZoom+gCamY;
+  gZoom=Math.max(0.05,Math.min(8,gZoom*f));
+  gCamX=wx-(cx-gW/2)/gZoom;gCamY=wy-(cy-gH/2)/gZoom;
+  gDirty=true;graphWake();
+}
+function graphFullscreen(){
+  const el=$("graph-container");
+  if(document.fullscreenElement)document.exitFullscreen();
+  else if(el.requestFullscreen)el.requestFullscreen();
+}
+function graphHighlight(v){gHi=(v||"").trim().toLowerCase();gDirty=true;graphWake();}
+const gMuteCache={};
+function muteColor(hex,light){
+  const k=hex+(light?"L":"D");
+  if(gMuteCache[k])return gMuteCache[k];
+  const v=parseInt(hex.slice(1),16);
+  let r=(v>>16)&255,g=(v>>8)&255,b=v&255;
+  const to=light?[124,134,148]:[152,164,180],m=light?0.5:0.58;
+  r=Math.round(r+(to[0]-r)*m);g=Math.round(g+(to[1]-g)*m);b=Math.round(b+(to[2]-b)*m);
+  return gMuteCache[k]="rgb("+r+","+g+","+b+")";
+}
+// Данные графа кэшируются: /api/graph считает попарные близости по всей базе и стоит
+// секунд, а вкладка переключается часто. Обновление — по кнопке.
+function graphReload(){graphRaw=null;gFollow=true;loadGraph();}
+function graphRepaint(){gDirty=true;if(gNodes.length)graphWake();}
+function renderLegend(projs,cnt){
+  const box=$("graph-legend");if(!box)return;
+  if(gFilterProject||projs.length<2){box.innerHTML="";return;}
+  const seen={};gNodes.forEach(function(n){seen[n.project]=n.color;});
+  box.innerHTML=projs.slice(0,10).map(function(p){
+    return '<span><i style="background:'+(seen[p]||"#6B7280")+'"></i>'+p+" "+cnt[p]+"</span>";}).join("");
+}
+
+// Цикл живёт ТОЛЬКО пока есть что считать или рисовать: устоявшийся граф не
+// должен жечь процессор, а прежняя версия крутила физику вечно.
+function graphWake(){
+  if(gRunning)return;
+  gRunning=true;gAnim=requestAnimationFrame(graphLoop);
+}
+function graphLoop(){
+  if($("view-graph").style.display==="none"){gRunning=false;return;}
+  let live=false;
+  if(gAlpha>G_ALPHA_MIN){
+    gAlpha*=(1-G_DECAY);simStep();gDirty=true;live=true;
+    if(gFollow)graphFit(true);
+  }
+  if(Math.abs(gDim-gDimTo)>0.01){gDim+=(gDimTo-gDim)*0.22;gDirty=true;live=true;}
+  else if(gDim!==gDimTo){gDim=gDimTo;gDirty=true;}
+  if(gDirty){renderGraph();gDirty=false;live=true;}
+  if(!live&&!gDrag){gRunning=false;return;}
+  gAnim=requestAnimationFrame(graphLoop);
+}
+
+// ── Рендер ────────────────────────────────────────────────────────────────
 function renderGraph(){
-  const c=$("graph-canvas");const ctx=c.getContext("2d");
-  ctx.clearRect(0,0,c.width,c.height);
-  ctx.save();
-  ctx.translate(c.width/2+gPanX*2,c.height/2+gPanY*2);
-  ctx.scale(gZoom,gZoom);
-  ctx.translate(-c.width/2,-c.height/2);
-  // Edges
-  ctx.globalAlpha=0.15;
-  graphEdges.forEach(e=>{
-    const s=graphNmap[e.source],t=graphNmap[e.target];
-    if(!s||!t)return;
-    ctx.strokeStyle="#58a6ff";ctx.lineWidth=Math.max(1,e.weight*3);
-    ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();
-  });
-  // Highlight hovered node connections
-  if(gHover){
-    ctx.globalAlpha=0.6;ctx.strokeStyle="#58a6ff";ctx.lineWidth=2;
-    graphEdges.forEach(e=>{
-      if(e.source!==gHover.id&&e.target!==gHover.id)return;
-      const s=graphNmap[e.source],t=graphNmap[e.target];
-      if(!s||!t)return;
-      ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();
-    });
+  const ctx=gCtx;if(!ctx)return;
+  const bg=getComputedStyle(document.body).getPropertyValue("--bg").trim()||"#0d1117";
+  const light=document.documentElement.getAttribute("data-theme")==="light";
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,gW*gDpr,gH*gDpr);
+  ctx.setTransform(gDpr,0,0,gDpr,0,0);
+  ctx.fillStyle=light?"#fbfcfd":"#0b0f14";ctx.fillRect(0,0,gW,gH);
+  const z=gZoom,ox=gW/2-gCamX*z,oy=gH/2-gCamY*z;
+  const M=140;                                  // запас за краем: линии не обрубаются
+  const hov=gHover,nb=hov?new Set(gAdj[hov.id].map(function(n){return n.id;})):null;
+  // Рёбра одним путём на группу: 12 тысяч отдельных stroke() — это и был рендер-лаг
+  ctx.lineCap="round";
+  const strong=[],weak=[];
+  for(let i=0;i<gEdges.length;i++){
+    const e=gEdges[i],s=e.s,d=e.d;
+    const sx=s.x*z+ox,sy=s.y*z+oy,dx=d.x*z+ox,dy=d.y*z+oy;
+    if((sx<-M&&dx<-M)||(sx>gW+M&&dx>gW+M)||(sy<-M&&dy<-M)||(sy>gH+M&&dy>gH+M))continue;
+    if(hov&&(e.source===hov.id||e.target===hov.id))continue;
+    (e.weight>=0.6?strong:weak).push(sx,sy,dx,dy);
   }
-  ctx.globalAlpha=1;
-  // Nodes
-  graphNodes.forEach(n=>{
-    const baseR=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
-    const r=n.orphan?baseR*0.6:baseR;
-    const isActive=gHover&&(gHover.id===n.id||graphEdges.some(e=>(e.source===gHover.id&&e.target===n.id)||(e.target===gHover.id&&e.source===n.id)));
-    const dimmed=gHover&&!isActive;
-    ctx.globalAlpha=dimmed?0.2:(n.orphan?0.5:1);
-    ctx.fillStyle=n.orphan?"#6B7280":n.color;ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fill();
-    if(n===gHover||n===gDrag){ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();}
-    // Label
-    const fontSize=Math.max(10,Math.min(14,11/gZoom));
-    ctx.font=fontSize+"px -apple-system,sans-serif";ctx.textAlign="center";
-    ctx.fillStyle=dimmed?"rgba(200,200,200,0.2)":"rgba(200,210,220,0.9)";
-    const label=n.title.length>35?n.title.substring(0,33)+"…":n.title;
-    ctx.fillText(label,n.x,n.y-r-6);
+  const line=light?"#aab4c0":"#59636f";
+  [[weak,0.8,light?0.38:0.34],[strong,1.15,light?0.55:0.5]].forEach(function(grp){
+    const arr=grp[0];if(!arr.length)return;
+    ctx.globalAlpha=grp[2]*(1-gDim*0.72);ctx.strokeStyle=line;ctx.lineWidth=grp[1];
+    ctx.beginPath();
+    for(let i=0;i<arr.length;i+=4){ctx.moveTo(arr[i],arr[i+1]);ctx.lineTo(arr[i+2],arr[i+3]);}
+    ctx.stroke();
   });
-  ctx.globalAlpha=1;
-  // Tooltip for hovered node
-  if(gHover){
-    const r=Math.max(6,Math.min(16,5+(gHover.access_count||0)*0.5));
-    const lines=[gHover.title,gHover.project+(gHover.tags?" · "+gHover.tags.substring(0,40):"")];
-    const tw=Math.max(...lines.map(l=>l.length))*7+16;
-    const tx=gHover.x-tw/2,ty=gHover.y+r+12;
-    ctx.fillStyle="rgba(30,40,55,0.95)";ctx.strokeStyle="#58a6ff";ctx.lineWidth=1;
-    ctx.beginPath();ctx.roundRect(tx,ty,tw,lines.length*18+12,6);ctx.fill();ctx.stroke();
-    ctx.fillStyle="#c9d1d9";ctx.font="12px -apple-system,sans-serif";ctx.textAlign="left";
-    lines.forEach((l,i)=>ctx.fillText(l,tx+8,ty+16+i*18));
+  if(hov){
+    ctx.globalAlpha=0.85*gDim;ctx.strokeStyle="#58a6ff";ctx.lineWidth=1.6;ctx.beginPath();
+    gAdj[hov.id].forEach(function(o){
+      ctx.moveTo(hov.x*z+ox,hov.y*z+oy);ctx.lineTo(o.x*z+ox,o.y*z+oy);});
+    ctx.stroke();
   }
-  ctx.restore();
+  // Ноды: батч по цвету — один fill() на проект вместо тысяч
+  const buckets={},labels=[];
+  for(let i=0;i<gNodes.length;i++){
+    const n=gNodes[i];
+    const sx=n.x*z+ox,sy=n.y*z+oy;
+    n.sx=sx;n.sy=sy;
+    if(sx<-M||sx>gW+M||sy<-M||sy>gH+M){n.sr=0;continue;}
+    const r=Math.max(1.1,Math.min(n.r*1.7,n.r*z))*(n.orphan?0.6:1);
+    n.sr=r;
+    const dim=hov&&n!==hov&&!nb.has(n.id);
+    const key=(dim?"d|":"n|")+(n.orphan?(light?"#aab3bf":"#5b6572"):muteColor(n.color,light));
+    (buckets[key]||(buckets[key]=[])).push(sx,sy,r);
+    if(!dim)labels.push(n);
+  }
+  // Свечение: широкий полупрозрачный круг того же цвета под нодой. Отдельным
+  // проходом на цвет — shadowBlur на каждой ноде стоил бы кадра.
+  const keys=Object.keys(buckets);
+  keys.forEach(function(key){
+    if(key.charAt(0)==="d")return;
+    const arr=buckets[key];
+    ctx.globalAlpha=(light?0.05:0.10)*(1-gDim*0.55);ctx.fillStyle=key.slice(2);
+    ctx.beginPath();
+    let any=false;
+    for(let i=0;i<arr.length;i+=3){
+      if(arr[i+2]<4)continue;                  // мелкие точки не светятся
+      const gr=arr[i+2]*1.55;any=true;
+      ctx.moveTo(arr[i]+gr,arr[i+1]);ctx.arc(arr[i],arr[i+1],gr,0,6.2832);}
+    if(any)ctx.fill();
+  });
+  ctx.lineWidth=Math.min(2,1+z*0.3);ctx.strokeStyle=bg;
+  keys.forEach(function(key){
+    const arr=buckets[key],dim=key.charAt(0)==="d";
+    ctx.globalAlpha=dim?0.98-gDim*0.84:0.98;ctx.fillStyle=key.slice(2);
+    ctx.beginPath();
+    for(let i=0;i<arr.length;i+=3){
+      ctx.moveTo(arr[i]+arr[i+2],arr[i+1]);ctx.arc(arr[i],arr[i+1],arr[i+2],0,6.2832);}
+    ctx.fill();
+    if(!dim&&z>0.45)ctx.stroke();
+  });
+  // Совпадение с поиском — заметное кольцо
+  if(gHi){
+    ctx.globalAlpha=1;ctx.strokeStyle=light?"#bf8700":"#f0b849";ctx.lineWidth=2.2;
+    ctx.beginPath();
+    for(let i=0;i<gNodes.length;i++){
+      const n=gNodes[i];
+      if(!n.sr||n.title.toLowerCase().indexOf(gHi)<0)continue;
+      ctx.moveTo(n.sx+n.sr+3.5,n.sy);ctx.arc(n.sx,n.sy,n.sr+3.5,0,6.2832);}
+    ctx.stroke();
+  }
+  if(hov){
+    ctx.globalAlpha=1;ctx.shadowColor="#58a6ff";ctx.shadowBlur=18;
+    ctx.fillStyle=hov.color;
+    ctx.beginPath();ctx.arc(hov.sx,hov.sy,hov.sr||6,0,6.2832);ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle=light?"#24292f":"#fff";ctx.lineWidth=2;ctx.stroke();
+  }
+  drawLabels(labels,hov,nb,light,z);
+  ctx.globalAlpha=1;
+}
+
+// Подписи — самая дорогая часть рендера и главный источник каши на экране:
+// прежняя версия печатала имя КАЖДОЙ из 2800 статей поверх соседних.
+function drawLabels(labels,hov,nb,light,z){
+  const ctx=gCtx;
+  ctx.font="500 11.5px -apple-system,system-ui,sans-serif";
+  // Кандидаты берутся крупными вперёд и укладываются по ФАКТИЧЕСКОМУ пересечению
+  // рамок: разрежение сеткой пропускало пары по разные стороны границы ячейки.
+  function place(cands,budget,boxes){
+    const out=[];
+    cands.sort(function(a,b){return b.sr-a.sr;});
+    for(let i=0;i<cands.length&&out.length<budget;i++){
+      const n=cands[i];
+      if(!n.sr)continue;
+      if(!n.lt)n.lt=n.title.length>34?n.title.slice(0,32)+"…":n.title;
+      if(!n.lw)n.lw=ctx.measureText(n.lt).width;
+      const x0=n.sx-n.lw/2-3,x1=n.sx+n.lw/2+3,y1=n.sy-n.sr-4,y0=y1-13;
+      let hit=false;
+      for(let b=0;b<boxes.length;b++){
+        const o=boxes[b];
+        if(x0<o[2]&&x1>o[0]&&y0<o[3]&&y1>o[1]){hit=true;break;}
+      }
+      if(hit)continue;
+      boxes.push([x0,y0,x1,y1]);out.push(n);
+    }
+    return out;
+  }
+  let show;
+  if(hov){
+    // Место сначала резервирует сама наведённая нода — её подпись не подвинуть
+    if(!hov.lt)hov.lt=hov.title.length>34?hov.title.slice(0,32)+"…":hov.title;
+    if(!hov.lw)hov.lw=ctx.measureText(hov.lt).width;
+    const hr=hov.sr||6;
+    // Вторая строка (проект и теги) шире заголовка — бронируем по ЕЁ ширине,
+    // иначе сосед встаёт вплотную и надписи сливаются.
+    hov.sub=hov.project+(hov.tags?" · "+hov.tags.slice(0,46):"");
+    ctx.font="11px -apple-system,system-ui,sans-serif";
+    const sw=Math.max(hov.lw,ctx.measureText(hov.sub).width);
+    ctx.font="500 11.5px -apple-system,system-ui,sans-serif";
+    const boxes=[[hov.sx-hov.lw/2-3,hov.sy-hr-17,hov.sx+hov.lw/2+3,hov.sy-hr-4],
+                 [hov.sx-sw/2-3,hov.sy+hr+3,hov.sx+sw/2+3,hov.sy+hr+19]];
+    show=place(gAdj[hov.id].slice(),24,boxes);
+  }else{
+    const budget=z<0.95?0:(z<1.5?40:(z<2.3?90:170));
+    show=budget?place(labels,budget,[]):[];
+  }
+  ctx.globalAlpha=1;ctx.textAlign="center";ctx.textBaseline="bottom";
+  ctx.lineJoin="round";ctx.miterLimit=2;
+  // Подписи проявляются с зумом, а не возникают скачком
+  ctx.globalAlpha=Math.max(0.4,Math.min(1,(z-0.9)*2.2));
+  ctx.font="500 11.5px -apple-system,system-ui,sans-serif";
+  ctx.strokeStyle=light?"rgba(255,255,255,0.9)":"rgba(6,10,16,0.9)";
+  ctx.lineWidth=3.2;
+  show.forEach(function(n){
+    if(!n.lt)n.lt=n.title.length>34?n.title.slice(0,32)+"…":n.title;
+    ctx.strokeText(n.lt,n.sx,n.sy-n.sr-5);});
+  ctx.fillStyle=light?"#3c4450":"#b6c2ce";
+  show.forEach(function(n){ctx.fillText(n.lt,n.sx,n.sy-n.sr-5);});
+  ctx.globalAlpha=1;
+  if(!hov)return;
+  const hr=hov.sr||6;
+  ctx.font="600 12.5px -apple-system,system-ui,sans-serif";
+  ctx.strokeText(hov.lt,hov.sx,hov.sy-hr-5);
+  ctx.fillStyle=light?"#0969da":"#79c0ff";
+  ctx.fillText(hov.lt,hov.sx,hov.sy-hr-5);
+  const sub=hov.sub||hov.project;
+  ctx.font="11px -apple-system,system-ui,sans-serif";ctx.textBaseline="top";
+  ctx.strokeText(sub,hov.sx,hov.sy+hr+5);
+  ctx.fillStyle=light?"#57606a":"#8b949e";
+  ctx.fillText(sub,hov.sx,hov.sy+hr+5);
+}
+
+// ── Ввод: указатели (мышь и тач одним кодом) ───────────────────────────────
+function graphPick(px,py){
+  const z=gZoom,ox=gW/2-gCamX*z,oy=gH/2-gCamY*z;
+  let best=null,bd=Infinity;
+  for(let i=0;i<gNodes.length;i++){
+    const n=gNodes[i];
+    const dx=n.x*z+ox-px,dy=n.y*z+oy-py,d=dx*dx+dy*dy;
+    const rr=(n.sr||n.r)+9;
+    if(d<rr*rr&&d<bd){bd=d;best=n;}
+  }
+  return best;
 }
 function setupGraphEvents(){
-  const c=$("graph-canvas");
-  function canvasXY(ev){
-    const rect=c.getBoundingClientRect();
-    const sx=(ev.clientX-rect.left)*2,sy=(ev.clientY-rect.top)*2;
-    const wx=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;
-    const wy=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;
-    return[wx,wy];
-  }
-  function findNode(wx,wy){
-    for(const n of graphNodes){
-      const r=Math.max(6,Math.min(16,5+(n.access_count||0)*0.5));
-      if(Math.hypot(n.x-wx,n.y-wy)<r+8)return n;
-    }return null;
-  }
-  c.onmousedown=function(ev){
-    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
-    if(n){gDrag=n;gDrag.vx=0;gDrag.vy=0;c.style.cursor="grabbing";}
-    else{gPanning=true;gPanStart={x:ev.clientX-gPanX,y:ev.clientY-gPanY};c.style.cursor="move";}
-  };
-  c.onmousemove=function(ev){
-    if(gDrag){const[wx,wy]=canvasXY(ev);gDrag.x=wx;gDrag.y=wy;gDrag.vx=0;gDrag.vy=0;return;}
-    if(gPanning&&gPanStart){gPanX=ev.clientX-gPanStart.x;gPanY=ev.clientY-gPanStart.y;return;}
-    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
-    gHover=n;c.style.cursor=n?"pointer":"default";
-  };
-  c.onmouseup=function(){
-    if(gDrag){gDrag=null;c.style.cursor="default";}
-    gPanning=false;gPanStart=null;
-  };
-  c.ondblclick=function(ev){
-    const[wx,wy]=canvasXY(ev);const n=findNode(wx,wy);
-    if(n){const[proj]=n.id.split("/",2);showTab("search");loadProject(proj);}
-  };
-  c.onwheel=function(ev){
-    ev.preventDefault();
-    const delta=ev.deltaY>0?0.9:1.1;
-    gZoom=Math.max(0.2,Math.min(5,gZoom*delta));
-  };
-  // Touch support
-  let touchDist=0;
-  c.ontouchstart=function(ev){
-    if(ev.touches.length===1){
-      const t=ev.touches[0];const rect=c.getBoundingClientRect();
-      const sx=(t.clientX-rect.left)*2,sy=(t.clientY-rect.top)*2;
-      const wx=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;
-      const wy=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;
-      const n=findNode(wx,wy);
-      if(n){gDrag=n;}else{gPanning=true;gPanStart={x:t.clientX-gPanX,y:t.clientY-gPanY};}
-    }else if(ev.touches.length===2){
-      touchDist=Math.hypot(ev.touches[0].clientX-ev.touches[1].clientX,ev.touches[0].clientY-ev.touches[1].clientY);
+  const c=$("graph-canvas"),cont=$("graph-container");
+  const loc=function(ev){const b=c.getBoundingClientRect();return[ev.clientX-b.left,ev.clientY-b.top];};
+  c.addEventListener("pointerdown",function(ev){
+    c.setPointerCapture(ev.pointerId);
+    gPointers.set(ev.pointerId,loc(ev));
+    if(gPointers.size===2){
+      const p=[...gPointers.values()];
+      gPinch=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);gPanning=false;gDrag=null;return;
     }
-  };
-  c.ontouchmove=function(ev){
-    ev.preventDefault();
-    if(ev.touches.length===2&&touchDist){
-      const d=Math.hypot(ev.touches[0].clientX-ev.touches[1].clientX,ev.touches[0].clientY-ev.touches[1].clientY);
-      gZoom=Math.max(0.2,Math.min(5,gZoom*(d/touchDist)));touchDist=d;return;
+    const pt=loc(ev),n=graphPick(pt[0],pt[1]);
+    if(n){gDrag=n;gAlpha=Math.max(gAlpha,0.28);gFollow=false;}
+    else{gPanning=true;gFollow=false;gPanStart=[pt[0],pt[1],gCamX,gCamY];cont.classList.add("grabbing");}
+    graphWake();
+  });
+  c.addEventListener("pointermove",function(ev){
+    const pt=loc(ev),px=pt[0],py=pt[1];
+    if(gPointers.has(ev.pointerId))gPointers.set(ev.pointerId,pt);
+    if(gPointers.size===2&&gPinch){
+      const p=[...gPointers.values()];
+      const d=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);
+      if(d>4){graphZoom(d/gPinch,(p[0][0]+p[1][0])/2,(p[0][1]+p[1][1])/2);gPinch=d;}
+      return;
     }
-    if(ev.touches.length!==1)return;
-    const t=ev.touches[0];
-    if(gDrag){const rect=c.getBoundingClientRect();const sx=(t.clientX-rect.left)*2,sy=(t.clientY-rect.top)*2;
-      gDrag.x=(sx-c.width/2-gPanX*2)/gZoom+c.width/2;gDrag.y=(sy-c.height/2-gPanY*2)/gZoom+c.height/2;gDrag.vx=0;gDrag.vy=0;}
-    else if(gPanning&&gPanStart){gPanX=t.clientX-gPanStart.x;gPanY=t.clientY-gPanStart.y;}
+    if(gDrag){
+      gDrag.x=(px-gW/2)/gZoom+gCamX;gDrag.y=(py-gH/2)/gZoom+gCamY;
+      gDrag.vx=0;gDrag.vy=0;gDirty=true;graphWake();return;
+    }
+    if(gPanning&&gPanStart){
+      gCamX=gPanStart[2]-(px-gPanStart[0])/gZoom;
+      gCamY=gPanStart[3]-(py-gPanStart[1])/gZoom;
+      gDirty=true;graphWake();return;
+    }
+    const n=graphPick(px,py);
+    if(n!==gHover){gHover=n;gDimTo=n?1:0;c.style.cursor=n?"pointer":"";gDirty=true;graphWake();}
+  });
+  const release=function(ev){
+    gPointers.delete(ev.pointerId);
+    if(gPointers.size<2)gPinch=0;
+    if(gDrag){gDrag=null;gAlpha=Math.max(gAlpha,0.12);graphWake();}
+    gPanning=false;gPanStart=null;cont.classList.remove("grabbing");
   };
-  c.ontouchend=function(){gDrag=null;gPanning=false;gPanStart=null;touchDist=0;};
+  c.addEventListener("pointerup",release);
+  c.addEventListener("pointercancel",release);
+  c.addEventListener("pointerleave",function(){
+    if(gHover){gHover=null;gDimTo=0;gDirty=true;graphWake();}});
+  c.addEventListener("wheel",function(ev){
+    ev.preventDefault();
+    const pt=loc(ev);
+    graphZoom(ev.deltaY>0?0.86:1.16,pt[0],pt[1]);
+  },{passive:false});
+  c.addEventListener("dblclick",function(ev){
+    const pt=loc(ev),n=graphPick(pt[0],pt[1]);
+    if(!n)return;
+    const i=n.id.indexOf("/");
+    openArticle(n.id.slice(0,i),n.id.slice(i+1),n.title);
+  });
+  // Сцена подстраивается под контейнер, а не наоборот: смена вкладки, поворот
+  // телефона и полноэкранный режим меняют только вид, раскладка остаётся.
+  if(window.ResizeObserver&&!gRO){
+    gRO=new ResizeObserver(function(){graphResize();});
+    gRO.observe(cont);
+  }
+  window.addEventListener("orientationchange",function(){setTimeout(graphResize,120);});
 }
 
 // Compile
