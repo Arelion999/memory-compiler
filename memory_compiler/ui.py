@@ -895,7 +895,7 @@ function simCore(S){
 
 // Тело воркера — тоже самодостаточное, уезжает через toString() вместе с simCore.
 function simWorkerBody(){
-  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.25;
+  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.17;
   function tick(){
     timer=0;
     if(!S)return;
@@ -977,7 +977,7 @@ function acceptPositions(px,py){
 function applyLerp(){
   if(!gLerpNX)return false;
   const N=Math.min(gNodes.length,gLerpNX.length);
-  const k=0.25;
+  const k=0.17;
   let moving=false;
   for(let i=0;i<N;i++){
     const n=gNodes[i];
@@ -1034,8 +1034,8 @@ function simReheat(a){
 function simDrag(node,x,y){
   node.x=x;node.y=y;
   if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y});
-  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.25);}
-  gAlpha=Math.max(gAlpha,0.25);graphWake();
+  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.17);}
+  gAlpha=Math.max(gAlpha,0.17);graphWake();
 }
 function simRelease(){
   if(gWorker)gWorker.postMessage({t:"release"});
