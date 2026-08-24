@@ -895,7 +895,7 @@ function simCore(S){
 
 // Тело воркера — тоже самодостаточное, уезжает через toString() вместе с simCore.
 function simWorkerBody(){
-  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.45;
+  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.25;
   function tick(){
     timer=0;
     if(!S)return;
@@ -909,7 +909,7 @@ function simWorkerBody(){
     if(S.alpha>alphaMin){simCore(S);S.alpha*=(1-decay);steps=1;}
     else if(S.drag>=0){simCore(S);steps=1;}
     const now=Date.now();
-    if(steps&&now-lastSend>=8){
+    if(steps&&now-lastSend>=15){
       lastSend=now;
       postMessage({t:"pos",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
     }
@@ -964,36 +964,35 @@ function pullPositions(px,py){
 // ИНТЕРПОЛЯЦИЕЙ — приём из игр (фиксированный шаг симуляции + сглаживание при
 // отрисовке). Без него движение дёргается независимо от того, как быстро считает
 // физика.
-let gLerpPX=null,gLerpPY=null,gLerpNX=null,gLerpNY=null,gLerpT0=0,gLerpDt=16;
+let gLerpNX=null,gLerpNY=null;
 function acceptPositions(px,py){
-  const N=gNodes.length;
-  if(!gLerpPX||gLerpPX.length!==N){
-    gLerpPX=new Float64Array(N);gLerpPY=new Float64Array(N);
-  }
-  for(let i=0;i<N;i++){const n=gNodes[i];gLerpPX[i]=n.x;gLerpPY[i]=n.y;}
   gLerpNX=px;gLerpNY=py;
-  const now=performance.now();
-  // интервал между посылками сглаживаем: одиночный сбой таймера не должен
-  // растягивать или рвать движение
-  if(gLerpT0)gLerpDt=Math.max(8,Math.min(80,(now-gLerpT0)*0.25+gLerpDt*0.75));
-  gLerpT0=now;
 }
+// Узлы догоняют присланную позицию долей расстояния за КАДР. Прежняя версия
+// интерполировала по времени между посылками — и вырождалась: воркер шлёт чаще,
+// чем рисуется кадр, поэтому доля пути всегда получалась больше единицы, а цель
+// успевала смениться дважды. Выходил скачок на два шага физики вместо плавного
+// хода. Доля за кадр от частоты посылок не зависит вообще: сколько бы их ни
+// пришло, за кадр узел проходит четверть остатка — движение гладкое всегда.
 function applyLerp(){
   if(!gLerpNX)return false;
-  const t=Math.min(1,(performance.now()-gLerpT0)/gLerpDt);
   const N=Math.min(gNodes.length,gLerpNX.length);
+  const k=0.25;
+  let moving=false;
   for(let i=0;i<N;i++){
     const n=gNodes[i];
     if(n===gDrag)continue;                  // тащим руками — этот узел под курсором
-    n.x=gLerpPX[i]+(gLerpNX[i]-gLerpPX[i])*t;
-    n.y=gLerpPY[i]+(gLerpNY[i]-gLerpPY[i])*t;
+    const dx=gLerpNX[i]-n.x,dy=gLerpNY[i]-n.y;
+    if(dx*dx+dy*dy>0.0004){moving=true;}
+    else{n.x=gLerpNX[i];n.y=gLerpNY[i];continue;}
+    n.x+=dx*k;n.y+=dy*k;
   }
-  gDirty=true;
-  return t<1;
+  if(moving)gDirty=true;
+  return moving;
 }
 function simStart(){
   if(gWorker){gWorker.terminate();gWorker=null;}
-  gLerpNX=null;gLerpNY=null;gLerpPX=null;gLerpPY=null;gLerpT0=0;
+  gLerpNX=null;gLerpNY=null;
   buildSim();
   if(gWorkerOff||typeof Worker==="undefined"||typeof Blob==="undefined"){graphWake();return;}
   try{
@@ -1035,8 +1034,8 @@ function simReheat(a){
 function simDrag(node,x,y){
   node.x=x;node.y=y;
   if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y});
-  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.45);}
-  gAlpha=Math.max(gAlpha,0.45);graphWake();
+  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.25);}
+  gAlpha=Math.max(gAlpha,0.25);graphWake();
 }
 function simRelease(){
   if(gWorker)gWorker.postMessage({t:"release"});
