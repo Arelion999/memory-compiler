@@ -652,8 +652,11 @@ async function onProjectChange(){
 let graphRaw=null,gNodes=[],gEdges=[],gMap={},gAdj={},gAnim=null,gRO=null,gCtx=null;
 let gZoom=1,gCamX=0,gCamY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
 let gAlpha=0,gDirty=true,gDpr=1,gW=0,gH=0,gRunning=false,gHi="",gFilterProject="";
-let gPointers=new Map(),gPinch=0;
+let gPointers=new Map(),gPinch=0,gDownAt=null;
 let gDim=0,gDimTo=0,gFollow=false,gTick=0;  // gDim — плавное затухание при наведении
+// Камера живёт ЦЕЛЬЮ: колесо и кнопки двигают цель, а текущее значение догоняет её
+// по кадрам. Раньше зум менялся скачком, и никакого движения на экране не было.
+let gZoomT=1,gCamXT=0,gCamYT=0,gFade=1,gHoverA=0,gGlideX=0,gGlideY=0,gPulse=0;
 // Замер на корпусе прода (2818 нод, 12191 ребро): THETA 0.85 -> 1.15 срезает
 // раскладку с 3.6 до 2.6 с при том же зазоре между нодами (медиана 16.2 -> 15.8).
 const G_ALPHA_MIN=0.005,G_VDECAY=0.72,G_REP=2600,G_LEN=90;
@@ -719,11 +722,15 @@ function filterGraph(){
   renderLegend(projs,cnt);
   graphResize();
   if(loadLayout()){
-    // Готовая раскладка: лёгкая доводка вместо полного пересчёта
-    gAlpha=0.06;gFollow=true;graphStats();graphFit();graphWake();
+    // Готовая раскладка: лёгкая доводка вместо полного пересчёта. Появление всё
+    // равно анимируем — иначе граф просто возникает на экране рывком.
+    gAlpha=0.06;gFollow=true;graphStats();
+    graphFit(false,true);
+    gFade=0;gZoom*=0.82;gCamX=gCamXT;gCamY=gCamYT;
+    graphWake();
     return;
   }
-  gAlpha=1;
+  gAlpha=1;gFade=0;
   warmupGraph(0);
 }
 
@@ -763,7 +770,7 @@ function graphStats(){
 // Прогрев кусками по кадрам: раскладка успевает сойтись до первого показа, но
 // вкладка при этом не висит — иначе браузер объявляет страницу зависшей.
 function warmupGraph(done){
-  const TOTAL=42;
+  const TOTAL=G_HEAVY?26:18;
   const t0=performance.now();
   let i=0;
   while(done+i<TOTAL&&(i<8||performance.now()-t0<80)){simStep();i++;}
@@ -776,7 +783,7 @@ function warmupGraph(done){
   graphStats();
   // Дальше граф оседает НА ГЛАЗАХ, а камера едет за ним: прогрев снимает только
   // первый бесформенный ком, остальное — часть картинки.
-  gAlpha=0.55;gFollow=true;graphFit();graphWake();
+  gAlpha=0.55;gFollow=true;graphFit(false,true);graphWake();
 }
 
 // ── Barnes-Hut quadtree ────────────────────────────────────────────────────
@@ -852,7 +859,7 @@ function graphResize(){
   gCtx=c.getContext("2d");
   gDirty=true;graphWake();
 }
-function graphFit(smooth){
+function graphFit(smooth,instant){
   if(!gNodes.length)return;
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   gNodes.forEach(function(n){
@@ -860,17 +867,41 @@ function graphFit(smooth){
     if(n.x>maxX)maxX=n.x;if(n.y>maxY)maxY=n.y;});
   const cx=(minX+maxX)/2,cy=(minY+maxY)/2,pad=54;
   const z=Math.max(0.05,Math.min(3,Math.min((gW-pad)/Math.max(maxX-minX,1),(gH-pad)/Math.max(maxY-minY,1))));
-  if(smooth){const e=0.12;gCamX+=(cx-gCamX)*e;gCamY+=(cy-gCamY)*e;gZoom+=(z-gZoom)*e;}
-  else{gCamX=cx;gCamY=cy;gZoom=z;}
+  gCamXT=cx;gCamYT=cy;gZoomT=z;
+  if(!smooth&&instant){gCamX=cx;gCamY=cy;gZoom=z;}
   gDirty=true;graphWake();
 }
-function graphZoom(f,px,py){
+function graphZoom(f,px,py,instant){
   gFollow=false;
   const cx=px===undefined?gW/2:px,cy=py===undefined?gH/2:py;
-  const wx=(cx-gW/2)/gZoom+gCamX,wy=(cy-gH/2)/gZoom+gCamY;
-  gZoom=Math.max(0.05,Math.min(8,gZoom*f));
-  gCamX=wx-(cx-gW/2)/gZoom;gCamY=wy-(cy-gH/2)/gZoom;
+  // считаем от ЦЕЛИ, а не от текущего зума: быстрые прокрутки колесом
+  // складываются в одно движение вместо того, чтобы гасить друг друга
+  const z0=gZoomT,z1=Math.max(0.05,Math.min(8,z0*f));
+  const wx=(cx-gW/2)/z0+gCamXT,wy=(cy-gH/2)/z0+gCamYT;
+  gZoomT=z1;gCamXT=wx-(cx-gW/2)/z1;gCamYT=wy-(cy-gH/2)/z1;
+  if(instant){gZoom=z1;gCamX=gCamXT;gCamY=gCamYT;}
   gDirty=true;graphWake();
+}
+
+// Камера догоняет цель, панорама доезжает по инерции. Возвращает true, пока
+// движение продолжается — цикл на этом и держится.
+function stepCamera(){
+  let moving=false;
+  if(gGlideX||gGlideY){
+    gCamXT-=gGlideX/gZoomT;gCamYT-=gGlideY/gZoomT;
+    gGlideX*=0.86;gGlideY*=0.86;
+    if(Math.abs(gGlideX)<0.12&&Math.abs(gGlideY)<0.12){gGlideX=0;gGlideY=0;}
+    moving=true;
+  }
+  const dz=gZoomT-gZoom,dx=gCamXT-gCamX,dy=gCamYT-gCamY;
+  const near=Math.abs(dz)<gZoomT*0.002&&Math.abs(dx)*gZoom<0.3&&Math.abs(dy)*gZoom<0.3;
+  if(near){
+    if(dz||dx||dy){gZoom=gZoomT;gCamX=gCamXT;gCamY=gCamYT;gDirty=true;}
+    return moving;
+  }
+  const e=0.18;
+  gZoom+=dz*e;gCamX+=dx*e;gCamY+=dy*e;gDirty=true;
+  return true;
 }
 function graphFullscreen(){
   const el=$("graph-container");
@@ -916,6 +947,12 @@ function graphLoop(){
     gAlpha*=(1-G_DECAY);simStep();gDirty=true;live=true;
     if(gFollow&&(gTick++&3)===0)graphFit(true);
   }
+  if(stepCamera())live=true;
+  if(gFade<1){gFade=Math.min(1,gFade+0.055);gDirty=true;live=true;}
+  if(gHi&&!G_HEAVY){gPulse+=0.09;gDirty=true;live=true;}
+  const hoverTo=gHover?1:0;
+  if(Math.abs(gHoverA-hoverTo)>0.01){gHoverA+=(hoverTo-gHoverA)*0.25;gDirty=true;live=true;}
+  else if(gHoverA!==hoverTo){gHoverA=hoverTo;gDirty=true;}
   if(Math.abs(gDim-gDimTo)>0.01){gDim+=(gDimTo-gDim)*0.22;gDirty=true;live=true;}
   else if(gDim!==gDimTo){gDim=gDimTo;gDirty=true;}
   if(gDirty){renderGraph();gDirty=false;live=true;}
@@ -937,6 +974,7 @@ function renderGraph(){
   ctx.setTransform(gDpr,0,0,gDpr,0,0);
   ctx.fillStyle=light?"#fbfcfd":"#0b0f14";ctx.fillRect(0,0,gW,gH);
   const z=gZoom,ox=gW/2-gCamX*z,oy=gH/2-gCamY*z;
+  const fade=gFade<1?gFade*gFade*(3-2*gFade):1;   // плавный вход, без рывка
   const M=140;                                  // запас за краем: линии не обрубаются
   const hov=gHover,nb=hov?new Set(gAdj[hov.id].map(function(n){return n.id;})):null;
   // Рёбра одним путём на группу: 12 тысяч отдельных stroke() — это и был рендер-лаг
@@ -952,15 +990,19 @@ function renderGraph(){
   const line=light?"#aab4c0":"#59636f";
   [[weak,0.8,light?0.38:0.34],[strong,1.15,light?0.55:0.5]].forEach(function(grp){
     const arr=grp[0];if(!arr.length)return;
-    ctx.globalAlpha=grp[2]*(1-gDim*0.72);ctx.strokeStyle=line;ctx.lineWidth=grp[1];
+    ctx.globalAlpha=fade*grp[2]*(1-gDim*0.72);ctx.strokeStyle=line;ctx.lineWidth=grp[1];
     ctx.beginPath();
     for(let i=0;i<arr.length;i+=4){ctx.moveTo(arr[i],arr[i+1]);ctx.lineTo(arr[i+2],arr[i+3]);}
     ctx.stroke();
   });
   if(hov){
-    ctx.globalAlpha=0.85*gDim;ctx.strokeStyle="#58a6ff";ctx.lineWidth=1.6;ctx.beginPath();
+    ctx.globalAlpha=fade*0.85*gDim;ctx.strokeStyle="#58a6ff";ctx.lineWidth=1.6;ctx.beginPath();
+    const hx=hov.x*z+ox,hy=hov.y*z+oy;
     gAdj[hov.id].forEach(function(o){
-      ctx.moveTo(hov.x*z+ox,hov.y*z+oy);ctx.lineTo(o.x*z+ox,o.y*z+oy);});
+      const tx=o.x*z+ox,ty=o.y*z+oy;
+      // лёгкая дуга вместо прямой спицы: пучок связей читается как связи, а не сетка
+      const mx=(hx+tx)/2,my=(hy+ty)/2,dx=tx-hx,dy=ty-hy;
+      ctx.moveTo(hx,hy);ctx.quadraticCurveTo(mx-dy*0.08,my+dx*0.08,tx,ty);});
     ctx.stroke();
   }
   // Ноды: батч по цвету — один fill() на проект вместо тысяч
@@ -983,7 +1025,7 @@ function renderGraph(){
   if(!G_HEAVY)keys.forEach(function(key){
     if(key.charAt(0)==="d")return;
     const arr=buckets[key];
-    ctx.globalAlpha=(light?0.05:0.10)*(1-gDim*0.55);ctx.fillStyle=key.slice(2);
+    ctx.globalAlpha=fade*(light?0.05:0.10)*(1-gDim*0.55);ctx.fillStyle=key.slice(2);
     ctx.beginPath();
     let any=false;
     for(let i=0;i<arr.length;i+=3){
@@ -995,7 +1037,7 @@ function renderGraph(){
   ctx.lineWidth=Math.min(2,1+z*0.3);ctx.strokeStyle=bg;
   keys.forEach(function(key){
     const arr=buckets[key],dim=key.charAt(0)==="d";
-    ctx.globalAlpha=dim?0.98-gDim*0.84:0.98;ctx.fillStyle=key.slice(2);
+    ctx.globalAlpha=fade*(dim?0.98-gDim*0.84:0.98);ctx.fillStyle=key.slice(2);
     ctx.beginPath();
     for(let i=0;i<arr.length;i+=3){
       ctx.moveTo(arr[i]+arr[i+2],arr[i+1]);ctx.arc(arr[i],arr[i+1],arr[i+2],0,6.2832);}
@@ -1004,28 +1046,32 @@ function renderGraph(){
   });
   // Совпадение с поиском — заметное кольцо
   if(gHi){
-    ctx.globalAlpha=1;ctx.strokeStyle=light?"#bf8700":"#f0b849";ctx.lineWidth=2.2;
+    const puls=G_HEAVY?0:Math.sin(gPulse)*0.5+0.5;
+    ctx.globalAlpha=fade*(0.75+0.25*puls);
+    ctx.strokeStyle=light?"#bf8700":"#f0b849";ctx.lineWidth=2.2;
     ctx.beginPath();
     for(let i=0;i<gNodes.length;i++){
       const n=gNodes[i];
       if(!n.sr||n.title.toLowerCase().indexOf(gHi)<0)continue;
-      ctx.moveTo(n.sx+n.sr+3.5,n.sy);ctx.arc(n.sx,n.sy,n.sr+3.5,0,6.2832);}
+      const rr=n.sr+3.5+2*puls;
+      ctx.moveTo(n.sx+rr,n.sy);ctx.arc(n.sx,n.sy,rr,0,6.2832);}
     ctx.stroke();
   }
   if(hov){
-    ctx.globalAlpha=1;ctx.shadowColor="#58a6ff";ctx.shadowBlur=18;
+    const hr=(hov.sr||6)*(1+0.45*gHoverA);        // отклик на наведение
+    ctx.globalAlpha=fade;ctx.shadowColor="#58a6ff";ctx.shadowBlur=10+14*gHoverA;
     ctx.fillStyle=hov.color;
-    ctx.beginPath();ctx.arc(hov.sx,hov.sy,hov.sr||6,0,6.2832);ctx.fill();
+    ctx.beginPath();ctx.arc(hov.sx,hov.sy,hr,0,6.2832);ctx.fill();
     ctx.shadowBlur=0;
     ctx.strokeStyle=light?"#24292f":"#fff";ctx.lineWidth=2;ctx.stroke();
   }
-  drawLabels(labels,hov,nb,light,z);
+  drawLabels(labels,hov,nb,light,z,fade);
   ctx.globalAlpha=1;
 }
 
 // Подписи — самая дорогая часть рендера и главный источник каши на экране:
 // прежняя версия печатала имя КАЖДОЙ из 2800 статей поверх соседних.
-function drawLabels(labels,hov,nb,light,z){
+function drawLabels(labels,hov,nb,light,z,fade){
   const ctx=gCtx;
   ctx.font="500 11.5px -apple-system,system-ui,sans-serif";
   // Кандидаты берутся крупными вперёд и укладываются по ФАКТИЧЕСКОМУ пересечению
@@ -1054,7 +1100,7 @@ function drawLabels(labels,hov,nb,light,z){
     // Место сначала резервирует сама наведённая нода — её подпись не подвинуть
     if(!hov.lt)hov.lt=hov.title.length>34?hov.title.slice(0,32)+"…":hov.title;
     if(!hov.lw)hov.lw=ctx.measureText(hov.lt).width;
-    const hr=hov.sr||6;
+    const hr=(hov.sr||6)*(1+0.45*gHoverA);
     // Вторая строка (проект и теги) шире заголовка — бронируем по ЕЁ ширине,
     // иначе сосед встаёт вплотную и надписи сливаются.
     hov.sub=hov.project+(hov.tags?" · "+hov.tags.slice(0,46):"");
@@ -1068,10 +1114,10 @@ function drawLabels(labels,hov,nb,light,z){
     const budget=z<0.95?0:(z<1.5?40:(z<2.3?90:170));
     show=budget?place(labels,budget,[]):[];
   }
-  ctx.globalAlpha=1;ctx.textAlign="center";ctx.textBaseline="bottom";
+  ctx.globalAlpha=fade;ctx.textAlign="center";ctx.textBaseline="bottom";
   ctx.lineJoin="round";ctx.miterLimit=2;
   // Подписи проявляются с зумом, а не возникают скачком
-  ctx.globalAlpha=Math.max(0.4,Math.min(1,(z-0.9)*2.2));
+  ctx.globalAlpha=fade*Math.max(0.4,Math.min(1,(z-0.9)*2.2));
   ctx.font="500 11.5px -apple-system,system-ui,sans-serif";
   ctx.strokeStyle=light?"rgba(255,255,255,0.9)":"rgba(6,10,16,0.9)";
   ctx.lineWidth=3.2;
@@ -1080,9 +1126,9 @@ function drawLabels(labels,hov,nb,light,z){
     ctx.strokeText(n.lt,n.sx,n.sy-n.sr-5);});
   ctx.fillStyle=light?"#3c4450":"#b6c2ce";
   show.forEach(function(n){ctx.fillText(n.lt,n.sx,n.sy-n.sr-5);});
-  ctx.globalAlpha=1;
+  ctx.globalAlpha=fade;
   if(!hov)return;
-  const hr=hov.sr||6;
+  const hr=(hov.sr||6)*(1+0.45*gHoverA);
   ctx.font="600 12.5px -apple-system,system-ui,sans-serif";
   ctx.strokeText(hov.lt,hov.sx,hov.sy-hr-5);
   ctx.fillStyle=light?"#0969da":"#79c0ff";
@@ -1117,8 +1163,12 @@ function setupGraphEvents(){
       gPinch=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);gPanning=false;gDrag=null;return;
     }
     const pt=loc(ev),n=graphPick(pt[0],pt[1]);
-    if(n){gDrag=n;gAlpha=Math.max(gAlpha,0.28);gFollow=false;}
-    else{gPanning=true;gFollow=false;gPanStart=[pt[0],pt[1],gCamX,gCamY];cont.classList.add("grabbing");}
+    if(n){gDrag=n;gDownAt=[n.sx,n.sy];gAlpha=Math.max(gAlpha,0.34);gFollow=false;gGlideX=0;gGlideY=0;}
+    else{
+      gPanning=true;gFollow=false;gGlideX=0;gGlideY=0;
+      gPanStart=[pt[0],pt[1],gCamX,gCamY,pt[0],pt[1]];
+      gZoomT=gZoom;cont.classList.add("grabbing");
+    }
     graphWake();
   });
   c.addEventListener("pointermove",function(ev){
@@ -1135,8 +1185,14 @@ function setupGraphEvents(){
       gDrag.vx=0;gDrag.vy=0;gDirty=true;graphWake();return;
     }
     if(gPanning&&gPanStart){
-      gCamX=gPanStart[2]-(px-gPanStart[0])/gZoom;
-      gCamY=gPanStart[3]-(py-gPanStart[1])/gZoom;
+      // За пальцем/курсором идём БЕЗ сглаживания — иначе рука опережает картинку.
+      // Сглаживание тут только в проскальзывании после отпускания.
+      const nx=gPanStart[2]-(px-gPanStart[0])/gZoom;
+      const ny=gPanStart[3]-(py-gPanStart[1])/gZoom;
+      gGlideX=(px-(gPanStart[4]!==undefined?gPanStart[4]:px))*0.55;
+      gGlideY=(py-(gPanStart[5]!==undefined?gPanStart[5]:py))*0.55;
+      gPanStart[4]=px;gPanStart[5]=py;
+      gCamX=gCamXT=nx;gCamY=gCamYT=ny;
       gDirty=true;graphWake();return;
     }
     const n=graphPick(px,py);
@@ -1145,7 +1201,14 @@ function setupGraphEvents(){
   const release=function(ev){
     gPointers.delete(ev.pointerId);
     if(gPointers.size<2)gPinch=0;
-    if(gDrag){gDrag=null;gAlpha=Math.max(gAlpha,0.12);graphWake();}
+    if(gDrag){
+      // Клик без перетаскивания — подлетаем к узлу, а не оставляем всё как было
+      if(gDownAt&&Math.hypot(gDrag.sx-gDownAt[0],gDrag.sy-gDownAt[1])<5){
+        gCamXT=gDrag.x;gCamYT=gDrag.y;gFollow=false;
+      }
+      gDrag=null;gAlpha=Math.max(gAlpha,0.12);graphWake();
+    }
+    gDownAt=null;
     gPanning=false;gPanStart=null;cont.classList.remove("grabbing");
   };
   c.addEventListener("pointerup",release);
