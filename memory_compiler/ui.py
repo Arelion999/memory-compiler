@@ -653,10 +653,18 @@ let graphRaw=null,gNodes=[],gEdges=[],gMap={},gAdj={},gAnim=null,gRO=null,gCtx=n
 let gZoom=1,gCamX=0,gCamY=0,gDrag=null,gHover=null,gPanning=false,gPanStart=null;
 let gAlpha=0,gDirty=true,gDpr=1,gW=0,gH=0,gRunning=false,gHi="",gFilterProject="";
 let gPointers=new Map(),gPinch=0;
-let gDim=0,gDimTo=0,gFollow=false;   // gDim — плавное затухание фона при наведении
+let gDim=0,gDimTo=0,gFollow=false,gTick=0;  // gDim — плавное затухание при наведении
 // Замер на корпусе прода (2818 нод, 12191 ребро): THETA 0.85 -> 1.15 срезает
 // раскладку с 3.6 до 2.6 с при том же зазоре между нодами (медиана 16.2 -> 15.8).
-const G_ALPHA_MIN=0.005,G_DECAY=0.02,G_VDECAY=0.72,G_REP=2600,G_LEN=90,G_THETA=1.15;
+const G_ALPHA_MIN=0.005,G_VDECAY=0.72,G_REP=2600,G_LEN=90;
+// Большой граф считается и рисуется по УРЕЗАННОМУ профилю: на паре тысяч нод
+// цена кадра упирается в пиксели (DPR²) и в обход quadtree, а не в код вокруг.
+let G_DECAY=0.02,G_THETA=1.15,G_HEAVY=false;
+function graphProfile(n){
+  G_HEAVY=n>1200;
+  G_THETA=G_HEAVY?1.8:1.15;      // обход дерева примерно вдвое дешевле
+  G_DECAY=G_HEAVY?0.045:0.02;    // раскладка сходится за ~90 тиков вместо ~230
+}
 
 async function loadGraph(){
   $("graph-info").textContent=t("msg.loading");
@@ -700,6 +708,7 @@ function filterGraph(){
     if(!s||!d)return false;
     e.s=s;e.d=d;gAdj[e.source].push(d);gAdj[e.target].push(s);return true;
   });
+  graphProfile(gNodes.length);
   // Размер ноды — по числу связей (как в Obsidian): хаб виден сразу. Открытия
   // статьи добавляют лишь малую поправку, иначе размер начинает означать две вещи.
   gNodes.forEach(n=>{
@@ -709,8 +718,41 @@ function filterGraph(){
   });
   renderLegend(projs,cnt);
   graphResize();
+  if(loadLayout()){
+    // Готовая раскладка: лёгкая доводка вместо полного пересчёта
+    gAlpha=0.06;gFollow=true;graphStats();graphFit();graphWake();
+    return;
+  }
   gAlpha=1;
   warmupGraph(0);
+}
+
+// ── Кэш раскладки в localStorage ──────────────────────────────────────────
+// Разложить пару тысяч нод стоит секунды, а состав базы меняется медленно —
+// пересчитывать это на КАЖДОМ открытии вкладки незачем.
+function layoutKey(){return "mc.graph."+(gFilterProject||"*");}
+function saveLayout(){
+  try{
+    const pos={};
+    gNodes.forEach(function(n){pos[n.id]=[Math.round(n.x),Math.round(n.y)];});
+    localStorage.setItem(layoutKey(),JSON.stringify({pos:pos}));
+  }catch(e){}                      // квота или приватный режим — просто без кэша
+}
+function loadLayout(){
+  try{
+    const raw=localStorage.getItem(layoutKey());
+    if(!raw)return false;
+    const d=JSON.parse(raw);
+    if(!d||!d.pos)return false;
+    let hit=0;
+    gNodes.forEach(function(n){
+      const p=d.pos[n.id];
+      if(p){n.x=p[0];n.y=p[1];n.vx=0;n.vy=0;hit++;}
+    });
+    // Состав сильно разошёлся — раскладываем заново, иначе новые статьи повиснут
+    // кучей поверх старой картины
+    return hit>=gNodes.length*0.85;
+  }catch(e){return false;}
 }
 
 function graphStats(){
@@ -801,7 +843,10 @@ function graphResize(){
   const cont=$("graph-container");if(!cont)return;
   const w=cont.clientWidth,h=cont.clientHeight;
   if(!w||!h)return;
-  gW=w;gH=h;gDpr=Math.min(window.devicePixelRatio||1,2);
+  gW=w;gH=h;
+  // Ретина на большом графе учетверяет число пикселей на кадр — цена, которую
+  // видно как лаг; на общем плане ноды всё равно точки в 3-4 пикселя.
+  gDpr=Math.min(window.devicePixelRatio||1,G_HEAVY?1:2);
   const c=$("graph-canvas");
   c.width=Math.round(w*gDpr);c.height=Math.round(h*gDpr);
   gCtx=c.getContext("2d");
@@ -845,7 +890,10 @@ function muteColor(hex,light){
 }
 // Данные графа кэшируются: /api/graph считает попарные близости по всей базе и стоит
 // секунд, а вкладка переключается часто. Обновление — по кнопке.
-function graphReload(){graphRaw=null;gFollow=true;loadGraph();}
+function graphReload(){
+  try{localStorage.removeItem(layoutKey());}catch(e){}
+  graphRaw=null;gFollow=true;loadGraph();
+}
 function graphRepaint(){gDirty=true;if(gNodes.length)graphWake();}
 function renderLegend(projs,cnt){
   const box=$("graph-legend");if(!box)return;
@@ -866,12 +914,16 @@ function graphLoop(){
   let live=false;
   if(gAlpha>G_ALPHA_MIN){
     gAlpha*=(1-G_DECAY);simStep();gDirty=true;live=true;
-    if(gFollow)graphFit(true);
+    if(gFollow&&(gTick++&3)===0)graphFit(true);
   }
   if(Math.abs(gDim-gDimTo)>0.01){gDim+=(gDimTo-gDim)*0.22;gDirty=true;live=true;}
   else if(gDim!==gDimTo){gDim=gDimTo;gDirty=true;}
   if(gDirty){renderGraph();gDirty=false;live=true;}
-  if(!live&&!gDrag){gRunning=false;return;}
+  if(!live&&!gDrag){
+    gRunning=false;
+    if(gNodes.length)saveLayout();
+    return;
+  }
   gAnim=requestAnimationFrame(graphLoop);
 }
 
@@ -928,7 +980,7 @@ function renderGraph(){
   // Свечение: широкий полупрозрачный круг того же цвета под нодой. Отдельным
   // проходом на цвет — shadowBlur на каждой ноде стоил бы кадра.
   const keys=Object.keys(buckets);
-  keys.forEach(function(key){
+  if(!G_HEAVY)keys.forEach(function(key){
     if(key.charAt(0)==="d")return;
     const arr=buckets[key];
     ctx.globalAlpha=(light?0.05:0.10)*(1-gDim*0.55);ctx.fillStyle=key.slice(2);

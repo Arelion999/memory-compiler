@@ -22,6 +22,10 @@ MC = Path(__file__).resolve().parent.parent / "memory_compiler"
 # Функции, которые нельзя звать напрямую из event loop.
 # git_commit — subprocess `git add -A` по всей базе знаний (тысячи файлов).
 # regenerate_index / rebuild_* — полный обход и перезапись индекса.
+# _build_graph — чтение ВСЕХ статей + матрица близостей по всей базе; в async-хендлере
+# это вешало сервер на десятки секунд (v1.55.1), и список его тогда не знал: он
+# ИМЕННОЙ, то есть новую тяжёлую функцию ловит только после внесения сюда. Заводишь
+# такую — дописывай строку, иначе гейт про неё не знает.
 HEAVY = {
     "git_commit",
     "regenerate_index",
@@ -29,6 +33,7 @@ HEAVY = {
     "rebuild_embeddings",
     "whoosh_search",
     "rerank",
+    "_build_graph",
 }
 
 

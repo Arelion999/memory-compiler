@@ -378,10 +378,35 @@ async def web_version(request: Request):
     return JSONResponse({"version": VERSION})
 
 
+# Кэш готового графа: собрать его — это чтение ВСЕХ статей плюс попарные
+# близости по всей базе, то есть секунды даже после векторизации.
+_graph_cache: dict = {"ts": 0.0, "n": -1, "payload": None}
+_GRAPH_TTL = 90.0
+
+
 async def web_graph(request: Request):
-    """Knowledge graph -- nodes from filesystem, edges from embeddings."""
+    """Knowledge graph -- nodes from filesystem, edges from embeddings.
+
+    Сборка синхронная и ТЯЖЁЛАЯ (чтение 2800+ файлов + матрица близостей), поэтому
+    уходит в поток: в async-хендлере она вставала колом вместе со всем сервером —
+    UI и MCP-клиент не получали ответа десятки секунд. Тот же класс, что фиксы
+    v1.42.1; сторож — tests/test_no_blocking_calls.py.
+    """
+    now = _time.monotonic()
+    cached = _graph_cache["payload"]
+    if cached is not None and now - _graph_cache["ts"] < _GRAPH_TTL:
+        return JSONResponse(cached)
+    payload = await asyncio.to_thread(_build_graph)
+    _graph_cache["ts"] = _time.monotonic()
+    _graph_cache["payload"] = payload
+    return JSONResponse(payload)
+
+
+def _build_graph():
+    """Синхронная сборка графа. Вызывать ТОЛЬКО из потока (см. web_graph)."""
     nodes = []
     edges = []
+    MAX_EDGES_PER_NODE = 8
     palette = ["#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#F97316", "#6B7280", "#EF4444", "#14B8A6", "#A855F7"]
     # Refresh project list from filesystem (picks up projects created in other processes)
     current_projects = _discover_projects()
@@ -413,11 +438,39 @@ async def web_graph(request: Request):
     # rebuild может свопнуть _embeddings между проверкой членства и доступом (KeyError).
     emb = _search_mod.snapshot_embeddings()
     emb_keys = [k for k in all_keys if k in emb]
-    for i, k1 in enumerate(emb_keys):
-        for k2 in emb_keys[i+1:]:
-            sim = float(np.dot(emb[k1], emb[k2]))
-            if sim > 0.45:
-                edges.append({"source": k1, "target": k2, "weight": round(sim, 2)})
+    # Матрица вместо двойного цикла: на 2000 статьях это ~2 млн вызовов np.dot,
+    # 3.9 с против 0.11 с у одного матричного умножения (замер 2026-08-24).
+    if len(emb_keys) > 1:
+        matrix = np.asarray([emb[k] for k in emb_keys], dtype=np.float32)
+        n_emb = len(emb_keys)
+        # top-K берётся по ПОЛНОЙ строке, а не по её хвосту: ребро может быть
+        # слабым для одной ноды и входить в top-K другой. Обрезка хвоста (j>i)
+        # теряла такие — замер на плотном графе показал −9% итоговых рёбер.
+        # Блоками, чтобы не держать в памяти всю матрицу n² (3000 статей = 36 МБ).
+        BLOCK = 256
+        seen_pairs = set()
+        for start in range(0, n_emb, BLOCK):
+            block = matrix[start:start + BLOCK] @ matrix.T
+            for bi in range(block.shape[0]):
+                i = start + bi
+                row = block[bi]
+                row[i] = -1.0                       # сама с собой не связывается
+                hits = np.flatnonzero(row > 0.45)
+                if hits.size > MAX_EDGES_PER_NODE:
+                    # Отбор по ОКРУГЛЁННОМУ весу — тому же, что уходит в выдачу.
+                    # По точному отбирались чуть другие рёбра на ничьих сотых.
+                    weights = np.round(row[hits], 2)
+                    top = np.argpartition(-weights, MAX_EDGES_PER_NODE)[:MAX_EDGES_PER_NODE]
+                    hits = hits[top]
+                k1 = emb_keys[i]
+                for j in hits:
+                    j = int(j)
+                    pair = (i, j) if i < j else (j, i)
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+                    edges.append({"source": emb_keys[pair[0]], "target": emb_keys[pair[1]],
+                                  "weight": round(float(row[j]), 2)})
 
     # Tag-based edges — only for meaningful (non-meta) tags
     from collections import defaultdict
@@ -445,7 +498,6 @@ async def web_graph(request: Request):
                     edge_set.add((a, b))
 
     # Limit edges per node — keep only top-K strongest connections
-    MAX_EDGES_PER_NODE = 8
     node_edges = defaultdict(list)
     for e in edges:
         node_edges[e["source"]].append(e)
@@ -468,7 +520,7 @@ async def web_graph(request: Request):
     for n in nodes:
         n["orphan"] = n["id"] not in connected
 
-    return JSONResponse({"nodes": nodes, "edges": edges})
+    return {"nodes": nodes, "edges": edges}
 
 
 async def web_analytics(request: Request):
