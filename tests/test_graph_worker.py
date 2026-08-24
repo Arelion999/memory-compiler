@@ -27,6 +27,15 @@ WORKER_OK = {"Math", "Date", "Float64Array", "Int32Array", "Infinity", "postMess
              "onmessage", "setTimeout", "clearTimeout", "simCore", "simWorkerBody"}
 
 
+def strip_comments(js):
+    """Убрать //-комментарии: имена глобалов в них законны и не должны ловиться."""
+    out = []
+    for line in js.split(chr(10)):
+        cut = line.find("//")
+        out.append(line if cut < 0 else line[:cut])
+    return chr(10).join(out)
+
+
 def extract(name):
     """Тело функции верхнего уровня из ui.py — по балансу фигурных скобок.
 
@@ -90,3 +99,44 @@ def test_fallback_path_exists():
     assert "gWorkerOff" in SRC, "нет флага отключения воркера"
     assert re.search(r"function simStep\(\)\s*\{[^}]*simCore\(", SRC, re.S), (
         "запасной simStep() должен звать тот же simCore")
+
+
+def test_positions_are_interpolated_between_worker_messages():
+    """Позиции от воркера сглаживаются, а не применяются рывком.
+
+    Рисуем по requestAnimationFrame (60 Гц), физика тикает по setTimeout — таймеры
+    дрейфуют, и без сглаживания кадры то дублируются, то перескакивают через шаг.
+    Движение дёргается независимо от того, как быстро считает физика.
+    """
+    assert "function applyLerp()" in SRC, "нет интерполяции позиций между кадрами воркера"
+    assert "function acceptPositions(" in SRC, "нет приёма позиций с запоминанием предыдущих"
+    handler = SRC[SRC.index("gWorker.onmessage"):SRC.index("gWorker.postMessage")]
+    assert "acceptPositions(" in handler, (
+        "обработчик сообщений воркера обязан класть позиции через acceptPositions, "
+        "иначе сглаживание обходится стороной")
+
+
+def test_dragged_node_is_excluded_from_interpolation():
+    """Узел под курсором не сглаживается — он обязан идти за рукой без задержки.
+
+    Если его пустить через интерполяцию, он будет отставать от курсора на интервал
+    посылки и дёргаться назад к позиции, посчитанной воркером.
+    """
+    body = extract("applyLerp")
+    assert re.search(r"if\s*\(\s*n\s*===\s*gDrag\s*\)\s*continue", body), (
+        "applyLerp() должна пропускать перетаскиваемый узел (n===gDrag)")
+
+
+def test_worker_does_one_step_per_tick():
+    """Ровно один шаг физики за тик.
+
+    Прежняя версия догоняла время («сколько успеем за 12 мс, до 4 шагов каждые
+    8 мс») и давала до 500 шагов в секунду вместо 60: граф разлетался на глазах.
+    Скорость симуляции не должна зависеть от того, как быстро крутится поток.
+    """
+    body = extract("simWorkerBody")
+    code = strip_comments(body)
+    assert not re.search(r"while\s*\([^)]*steps\s*<", code), (
+        "в тике воркера снова появился цикл «сколько шагов успеем»")
+    assert "setTimeout(tick,16)" in code.replace(" ", ""), (
+        "тик воркера должен идти с частотой кадра (16 мс)")

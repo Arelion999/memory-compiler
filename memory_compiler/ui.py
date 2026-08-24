@@ -895,7 +895,7 @@ function simCore(S){
 
 // Тело воркера — тоже самодостаточное, уезжает через toString() вместе с simCore.
 function simWorkerBody(){
-  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.15;
+  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.45;
   function tick(){
     timer=0;
     if(!S)return;
@@ -909,7 +909,7 @@ function simWorkerBody(){
     if(S.alpha>alphaMin){simCore(S);S.alpha*=(1-decay);steps=1;}
     else if(S.drag>=0){simCore(S);steps=1;}
     const now=Date.now();
-    if(steps&&now-lastSend>=14){
+    if(steps&&now-lastSend>=8){
       lastSend=now;
       postMessage({t:"pos",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
     }
@@ -956,8 +956,44 @@ function pullPositions(px,py){
   const N=Math.min(gNodes.length,px.length);
   for(let i=0;i<N;i++){const n=gNodes[i];n.x=px[i];n.y=py[i];}
 }
+
+// ── Сглаживание кадров воркера ─────────────────────────────────────────────
+// Рисуем по requestAnimationFrame (ровно 60 Гц), а физика тикает по setTimeout,
+// и его дрейф съедает плавность: то два кадра подряд с одними и теми же
+// позициями, то скачок через шаг. Поэтому между посылками узлы едут
+// ИНТЕРПОЛЯЦИЕЙ — приём из игр (фиксированный шаг симуляции + сглаживание при
+// отрисовке). Без него движение дёргается независимо от того, как быстро считает
+// физика.
+let gLerpPX=null,gLerpPY=null,gLerpNX=null,gLerpNY=null,gLerpT0=0,gLerpDt=16;
+function acceptPositions(px,py){
+  const N=gNodes.length;
+  if(!gLerpPX||gLerpPX.length!==N){
+    gLerpPX=new Float64Array(N);gLerpPY=new Float64Array(N);
+  }
+  for(let i=0;i<N;i++){const n=gNodes[i];gLerpPX[i]=n.x;gLerpPY[i]=n.y;}
+  gLerpNX=px;gLerpNY=py;
+  const now=performance.now();
+  // интервал между посылками сглаживаем: одиночный сбой таймера не должен
+  // растягивать или рвать движение
+  if(gLerpT0)gLerpDt=Math.max(8,Math.min(80,(now-gLerpT0)*0.25+gLerpDt*0.75));
+  gLerpT0=now;
+}
+function applyLerp(){
+  if(!gLerpNX)return false;
+  const t=Math.min(1,(performance.now()-gLerpT0)/gLerpDt);
+  const N=Math.min(gNodes.length,gLerpNX.length);
+  for(let i=0;i<N;i++){
+    const n=gNodes[i];
+    if(n===gDrag)continue;                  // тащим руками — этот узел под курсором
+    n.x=gLerpPX[i]+(gLerpNX[i]-gLerpPX[i])*t;
+    n.y=gLerpPY[i]+(gLerpNY[i]-gLerpPY[i])*t;
+  }
+  gDirty=true;
+  return t<1;
+}
 function simStart(){
   if(gWorker){gWorker.terminate();gWorker=null;}
+  gLerpNX=null;gLerpNY=null;gLerpPX=null;gLerpPY=null;gLerpT0=0;
   buildSim();
   if(gWorkerOff||typeof Worker==="undefined"||typeof Blob==="undefined"){graphWake();return;}
   try{
@@ -974,11 +1010,14 @@ function simStart(){
     gWorker.onmessage=function(ev){
       const m=ev.data;
       if(m.t!=="pos"&&m.t!=="done")return;
-      pullPositions(m.px,m.py);
+      acceptPositions(m.px,m.py);
       gAlpha=m.alpha;
       if(gFollow)graphFit(true);
       gDirty=true;
-      if(m.t==="done"){gAlpha=0;saveLayout();}
+      if(m.t==="done"){
+        gAlpha=0;pullPositions(m.px,m.py);
+        gLerpNX=null;gLerpNY=null;saveLayout();
+      }
       graphWake();
     };
     gWorker.postMessage({t:"init",n:gSim.n,e:gSim.e,px:gSim.px,py:gSim.py,
@@ -996,8 +1035,8 @@ function simReheat(a){
 function simDrag(node,x,y){
   node.x=x;node.y=y;
   if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y});
-  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.15);}
-  gAlpha=Math.max(gAlpha,0.15);graphWake();
+  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.45);}
+  gAlpha=Math.max(gAlpha,0.45);graphWake();
 }
 function simRelease(){
   if(gWorker)gWorker.postMessage({t:"release"});
@@ -1116,8 +1155,9 @@ function graphLoop(){
   if($("view-graph").style.display==="none"){gRunning=false;return;}
   let live=false;
   if(gWorker){
-    // Физику считает воркер, кадры приходят сообщениями — здесь только рисуем.
-    if(gAlpha>G_ALPHA_MIN)live=true;
+    // Физику считает воркер; здесь узлы доезжают до присланных позиций плавно.
+    if(applyLerp())live=true;
+    if(gAlpha>G_ALPHA_MIN||gDrag)live=true;
   }else if(gAlpha>G_ALPHA_MIN){
     gAlpha*=(1-G_DECAY);simStep();gDirty=true;live=true;
     if(gFollow&&(gTick++&3)===0)graphFit(true);
