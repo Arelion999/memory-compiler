@@ -895,24 +895,25 @@ function simCore(S){
 
 // Тело воркера — тоже самодостаточное, уезжает через toString() вместе с simCore.
 function simWorkerBody(){
-  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0;
+  let S=null,timer=0,decay=0.02,alphaMin=0.005,lastSend=0,dragAlpha=0.15;
   function tick(){
     timer=0;
     if(!S)return;
-    const t0=Date.now();
-    // Несколько шагов за подход, если кадры редкие: раскладка не должна
-    // растягиваться на минуту из-за троттлинга фонового потока.
+    // РОВНО ОДИН шаг за тик, тик ~60 Гц. Прежняя версия догоняла время
+    // («сколько успеем за 12 мс, до 4 шагов каждые 8 мс») и давала до 500 шагов
+    // в секунду вместо 60: граф разлетался на глазах, а при перетаскивании
+    // соседи дёргались рывками. Скорость симуляции не должна зависеть от того,
+    // насколько быстро крутится поток.
     let steps=0;
-    while(S.alpha>alphaMin&&steps<4&&Date.now()-t0<12){
-      simCore(S);S.alpha*=(1-decay);steps++;
-    }
-    if(S.drag>=0&&steps===0){simCore(S);steps=1;}
+    if(S.drag>=0&&S.alpha<dragAlpha)S.alpha=dragAlpha;   // тянем — соседи мягко идут следом
+    if(S.alpha>alphaMin){simCore(S);S.alpha*=(1-decay);steps=1;}
+    else if(S.drag>=0){simCore(S);steps=1;}
     const now=Date.now();
-    if(steps&&now-lastSend>=15){
+    if(steps&&now-lastSend>=14){
       lastSend=now;
       postMessage({t:"pos",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
     }
-    if(S.alpha>alphaMin||S.drag>=0)timer=setTimeout(tick,8);
+    if(S.alpha>alphaMin||S.drag>=0)timer=setTimeout(tick,16);
     else postMessage({t:"done",px:S.px.slice(),py:S.py.slice(),alpha:S.alpha});
   }
   function wake(){if(!timer&&S)timer=setTimeout(tick,0);}
@@ -928,7 +929,10 @@ function simWorkerBody(){
     }
     if(!S)return;
     if(m.t==="reheat"){S.alpha=Math.max(S.alpha,m.alpha);wake();return;}
-    if(m.t==="drag"){S.drag=m.i;S.dragX=m.x;S.dragY=m.y;S.alpha=Math.max(S.alpha,m.alpha||0.2);wake();return;}
+    // Позиция узла обновляется БЕЗ разогрева: pointermove приходит до 120 раз в
+    // секунду, и разогрев на каждом держал alpha на максимуме всё время
+    // перетаскивания — граф не успокаивался вообще.
+    if(m.t==="drag"){S.drag=m.i;S.dragX=m.x;S.dragY=m.y;if(m.alpha)S.alpha=Math.max(S.alpha,m.alpha);wake();return;}
     if(m.t==="release"){S.drag=-1;wake();return;}
     if(m.t==="ar"){S.ar=m.ar;return;}
     if(m.t==="stop"){S.alpha=0;S.drag=-1;if(timer){clearTimeout(timer);timer=0;}return;}
@@ -991,9 +995,9 @@ function simReheat(a){
 }
 function simDrag(node,x,y){
   node.x=x;node.y=y;
-  if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y,alpha:0.3});
-  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.3);}
-  gAlpha=Math.max(gAlpha,0.3);graphWake();
+  if(gWorker)gWorker.postMessage({t:"drag",i:node.i,x:x,y:y});
+  else if(gSim){gSim.drag=node.i;gSim.dragX=x;gSim.dragY=y;gSim.alpha=Math.max(gSim.alpha,0.15);}
+  gAlpha=Math.max(gAlpha,0.15);graphWake();
 }
 function simRelease(){
   if(gWorker)gWorker.postMessage({t:"release"});
@@ -1384,7 +1388,7 @@ function setupGraphEvents(){
       gPinch=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);gPanning=false;gDrag=null;return;
     }
     const pt=loc(ev),n=graphPick(pt[0],pt[1]);
-    if(n){gDrag=n;gDownAt=[n.sx,n.sy];gFollow=false;gGlideX=0;gGlideY=0;simReheat(0.34);}
+    if(n){gDrag=n;gDownAt=[n.sx,n.sy];gFollow=false;gGlideX=0;gGlideY=0;simReheat(0.12);}
     else{
       gPanning=true;gFollow=false;gGlideX=0;gGlideY=0;
       gPanStart=[pt[0],pt[1],gCamX,gCamY,pt[0],pt[1]];
@@ -1427,7 +1431,7 @@ function setupGraphEvents(){
       if(gDownAt&&Math.hypot(gDrag.sx-gDownAt[0],gDrag.sy-gDownAt[1])<5){
         gCamXT=gDrag.x;gCamYT=gDrag.y;gFollow=false;
       }
-      gDrag=null;simRelease();simReheat(0.12);
+      gDrag=null;simRelease();simReheat(0.08);
     }
     gDownAt=null;
     gPanning=false;gPanStart=null;cont.classList.remove("grabbing");
