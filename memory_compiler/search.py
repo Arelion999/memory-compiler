@@ -96,6 +96,21 @@ def snapshot_embeddings() -> dict:
     with _index_lock:
         return dict(_embeddings)
 
+# Служебные файлы движка вне поискового индекса (v1.63.0). Они дублируют то,
+# что start_task и так показывает отдельными блоками (последняя сессия, факты,
+# открытые вопросы, лента действий), и на релевантном запросе конкурируют со
+# статьями: замер 2026-08-26 показал _reflections.md в выдаче с оценкой 88.1
+# рядом со статьёй, содержащей тот же текст.
+#
+# ⚠️ СПИСОК ТОЧНЫХ ИМЁН, А НЕ МАСКА `_*`: под маску попадают ОБЫЧНЫЕ статьи,
+# чьи заголовки начинаются с подчёркивания («_гайд по быстрой прокачке…»,
+# «_как выполнить текстовый фрагмент кода…») — их выбрасывать нельзя.
+SERVICE_FILES = {
+    "_active_context.md", "_log.md", "_log.archive.md", "_session.md",
+    "_reflections.md", "_questions.md", "_compact_history.md",
+}
+
+
 # ─── Semantic search ─────────────────────────────────────────────────────────
 
 EMBEDDINGS_PATH = KNOWLEDGE_DIR / ".embeddings.pkl"
@@ -638,6 +653,8 @@ def rebuild_embeddings():
         if not p.exists():
             continue
         for md in p.glob("*.md"):
+            if md.name in SERVICE_FILES:
+                continue                      # служебное движка — не статья
             try:
                 text = md.read_text(encoding="utf-8")
             except Exception:
@@ -1091,6 +1108,8 @@ def rebuild_index():
             # glob, НЕ rglob — сознательно: daily/archive/ вне индекса (см. коммент
             # к сбору daily ниже и tests/test_daily_archive_stays_out_of_index).
             for md in dir_path.glob("*.md"):
+                if md.name in SERVICE_FILES:
+                    continue                  # служебное движка — не статья
                 # _index_safe_text: секрет (маркер '**Секрет:** да') не становится
                 # searchable — тело маскируется плейсхолдером (симметрично для daily).
                 text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)

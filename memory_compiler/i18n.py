@@ -72,7 +72,7 @@ TOOLS_EN: dict[str, dict] = {
             'project': 'Project name',
             'summary': 'What was done in this session',
             'decisions': 'Decisions made',
-            'open_questions': 'What remains / open questions',
+            'open_questions': ('What is still UNCLEAR — a specific unresolved question. Not a list of planned work: the task list belongs in the session summary, this field is for what needs an answer'),
         },
     },
     'load_session': {
@@ -232,7 +232,7 @@ TOOLS_EN: dict[str, dict] = {
             'content': 'Problem + solution + key facts',
             'project': 'Project name',
             'session_summary': 'What was done in the session',
-            'open_questions': 'What remains / open questions',
+            'open_questions': ('What is still UNCLEAR — a specific unresolved question. Not a list of planned work: the task list belongs in the session summary, this field is for what needs an answer'),
         },
     },
     'search_snippets': {

@@ -241,7 +241,7 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "description": "Имя проекта"},
                     "summary": {"type": "string", "description": "Что сделано в этой сессии"},
                     "decisions": {"type": "string", "description": "Принятые решения"},
-                    "open_questions": {"type": "string", "description": "Что осталось / открытые вопросы"}
+                    "open_questions": {"type": "string", "description": "Что осталось НЕЯСНЫМ — конкретный нерешённый вопрос. Не список запланированных работ: перечень задач живёт в итоге сессии, а сюда идёт то, на что нужен ответ"}
                 },
                 "required": ["project", "summary"]
             }
@@ -469,7 +469,7 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "session_summary": {"type": "string", "description": "Что сделано в сессии"},
-                    "open_questions": {"type": "string", "description": "Что осталось / открытые вопросы"}
+                    "open_questions": {"type": "string", "description": "Что осталось НЕЯСНЫМ — конкретный нерешённый вопрос. Не список запланированных работ: перечень задач живёт в итоге сессии, а сюда идёт то, на что нужен ответ"}
                 },
                 "required": ["topic", "content", "project"]
             }

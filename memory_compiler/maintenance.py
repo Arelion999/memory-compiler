@@ -420,6 +420,42 @@ def seed_questions_from_sessions(dry_run: bool = True):
     return seeded
 
 
+
+def drop_service_from_index(dry_run: bool = True):
+    """Убрать служебные файлы движка из уже собранных индексов.
+
+    Точечная чистка вместо полной пересборки: whoosh собирается 93 с, а
+    эмбеддинги с нуля — больше получаса. Здесь достаточно удалить ключи.
+    """
+    from memory_compiler.search import (SERVICE_FILES, get_index, _index_lock,
+                                        _embeddings, _embed_texts, _chunk_hashes,
+                                        persist_embeddings)
+    removed_ix = 0
+    ix = get_index()
+    with ix.searcher() as s:
+        victims = [d['path'] for d in s.documents()
+                   if d.get('path', '').split('/')[-1] in SERVICE_FILES]
+    if victims and not dry_run:
+        w = ix.writer()
+        for path in victims:
+            w.delete_by_term('path', path)
+        w.commit()
+    removed_ix = len(victims)
+
+    keys = [k for k in list(_embeddings)
+            if k.split('#')[0].split('/')[-1] in SERVICE_FILES]
+    if keys and not dry_run:
+        with _index_lock:
+            for k in keys:
+                _embeddings.pop(k, None)
+                _chunk_hashes.pop(k, None)
+                _embed_texts.pop(k.split('#')[0], None)
+        persist_embeddings()
+
+    print("whoosh: %d документов, эмбеддинги: %d ключей%s" % (
+        removed_ix, len(keys), " [dry-run]" if dry_run else " — удалено"))
+    return removed_ix, len(keys)
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
     if "--heal-markup" in sys.argv:
@@ -428,5 +464,7 @@ if __name__ == "__main__":
         heal_leaked_markup(dry_run=dry)
     elif "--seed-questions" in sys.argv:
         seed_questions_from_sessions(dry_run=dry)
+    elif "--drop-service-index" in sys.argv:
+        drop_service_from_index(dry_run=dry)
     else:
         dedupe_all_articles(dry_run=dry)
