@@ -43,11 +43,18 @@ def test_commit_disables_auto_maintenance(monkeypatch):
 
 
 def test_gc_packs_without_detaching(monkeypatch):
-    """git_gc пакует по порогу самого git и НЕ отсоединяется (иначе зомби вернутся)."""
+    """git_gc на лёгком репозитории отдаёт решение git и НЕ отсоединяется.
+
+    Команду ищем среди вызовов, а не берём первую: с v1.59.1 перед gc идёт
+    `git count-objects -v` — вес рыхлых объектов решает, звать ли полную упаковку
+    (порог `--auto` считает штуки и на крупных блобах не срабатывал).
+    """
     calls = _spy(monkeypatch)
     st.git_gc()
 
-    cmd, kwargs = calls[0]
-    assert "gc" in cmd and "--auto" in cmd, cmd
+    gc_calls = [(cmd, kw) for cmd, kw in calls if "gc" in cmd]
+    assert gc_calls, "gc не вызван вовсе: %s" % [c for c, _ in calls]
+    cmd, kwargs = gc_calls[-1]
+    assert "--auto" in cmd, cmd          # спай не отдаёт вес → репозиторий считаем лёгким
     assert "gc.autoDetach=false" in cmd, cmd
     assert kwargs.get("timeout"), "нужен таймаут: полная упаковка идёт минутами"

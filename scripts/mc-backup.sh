@@ -8,7 +8,7 @@
 # Paths (override via env if needed)
 KB_DIR="${KB_DIR:-/path/to/memory-compiler/knowledge}"
 BACKUP_DIR="${BACKUP_DIR:-/path/to/memory-compiler/backups}"
-LOG="/var/log/mc-backup.log"
+LOG="${MC_BACKUP_LOG:-/var/log/mc-backup.log}"   # переопределяется в тестах
 KEEP_DAYS=7
 
 mkdir -p "$BACKUP_DIR"
@@ -16,10 +16,18 @@ mkdir -p "$BACKUP_DIR"
 date=$(date +%Y-%m-%d)
 archive="$BACKUP_DIR/knowledge-$date.tar.gz"
 
-# Create archive (exclude .whoosh_index and .embeddings.pkl — they're rebuilt)
+# Индексы в архив не кладём — они пересобираются из статей.
+#
+# ⚠️ ШАБЛОНЫ СО ЗВЁЗДОЧКОЙ, а не точные имена. Прежние `.whoosh_index` и
+# `.embeddings.pkl` не покрывали соседние реальные имена: `.whoosh_index.corrupt-
+# 20260819/` (44 МБ битого индекса) и `.embeddings.pkl.bak-v1180` уезжали в
+# КАЖДЫЙ ежедневный архив. Та же дыра была в .gitignore базы и стоила 590 МБ
+# истории — вычищено 2026-08-26, архив упал с 493 МБ.
 tar -czf "$archive" \
-    --exclude=".whoosh_index" \
-    --exclude=".embeddings.pkl" \
+    --exclude=".whoosh_index*" \
+    --exclude=".embeddings.pkl*" \
+    --exclude=".embeddings_*" \
+    --exclude=".git.old*" \
     -C "$(dirname "$KB_DIR")" \
     "$(basename "$KB_DIR")" 2>>"$LOG"
 

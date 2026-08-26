@@ -613,18 +613,45 @@ def git_commit(message: str):
         pass  # git not available — silently skip
 
 
+GC_LOOSE_MB = 150   # выше этого веса рыхлых объектов пакуем принудительно
+
+
+def loose_objects_mb() -> float:
+    """Вес НЕупакованных объектов knowledge-репо, МБ. 0.0 — если git недоступен."""
+    try:
+        out = subprocess.run(["git", "count-objects", "-v"], cwd=str(KNOWLEDGE_DIR),
+                             capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return 0.0
+    for line in out.splitlines():
+        if line.startswith("size:"):          # git отдаёт в килобайтах
+            try:
+                return int(line.split(":", 1)[1].strip()) / 1024.0
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
 def git_gc():
-    """Упаковать knowledge-репо, если git считает это нужным (--auto).
+    """Упаковать knowledge-репо.
 
     Нужна отдельная точка вызова, потому что git_commit зовётся с gc.auto=0:
     на пути записи автообслуживания больше нет, и loose-объекты иначе копились бы
     без предела. autoDetach=false обязателен — иначе gc снова отсоединится
     (fork+setsid) и осиротеет к PID 1. Зовётся из фонового цикла (api.py), не из
-    обработчика запроса: --auto обычно no-op, но при срабатывании порога
-    (6700 loose / 50 паков) полная упаковка идёт минутами."""
+    обработчика запроса: при срабатывании порога упаковка идёт минутами.
+
+    ⚠️ ПОРОГ `--auto` СЧИТАЕТ ШТУКИ, А НЕ БАЙТЫ, и на этой базе он не спасал.
+    Замер 2026-08-26: 4294 рыхлых объекта весом 514 МБ — до порога в 6700 штук
+    далеко, поэтому еженедельный проход был no-op, а `.git` разросся до 590 МБ
+    при 23 МБ статей. Причина веса — крупные блобы (`_audit.log` 3.5 МБ, по
+    версии на каждое сохранение). Поэтому сначала смотрим ВЕС: выше GC_LOOSE_MB
+    пакуем принудительно, ниже — отдаём решение git'у, как раньше."""
+    heavy = loose_objects_mb() >= GC_LOOSE_MB
+    args = ["gc", "--quiet"] if heavy else ["gc", "--auto", "--quiet"]
     try:
         subprocess.run(
-            ["git", "-c", "gc.autoDetach=false", "gc", "--auto", "--quiet"],
+            ["git", "-c", "gc.autoDetach=false"] + args,
             cwd=str(KNOWLEDGE_DIR), capture_output=True, timeout=1800
         )
     except Exception:
