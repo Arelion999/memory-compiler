@@ -322,8 +322,9 @@ var I18N={
     "quality.title":"Качество памяти (7 дней)",
     "quality.searches":"Поисков",
     "quality.misses":"Впустую",
-    "quality.useful":"Выдача пригодилась",
-    "quality.reform":"Переформулировок подряд",
+    "quality.useful":"Привело к действию",
+    "quality.reform":"За поиском сразу поиск",
+    "quality.volume":"Съедено контекста",
     "quality.writes":"Записей в базу",
     "quality.missList":"Запросы, не давшие ничего",
     "quality.hint":"Пусто у поиска = пробел базы или ранжирования: завести статью либо добавить запрос в golden-набор.",
@@ -411,8 +412,9 @@ var I18N={
     "quality.title":"Memory quality (7 days)",
     "quality.searches":"Searches",
     "quality.misses":"Empty",
-    "quality.useful":"Results used",
-    "quality.reform":"Consecutive reformulations",
+    "quality.useful":"Led to an action",
+    "quality.reform":"Search followed by search",
+    "quality.volume":"Context consumed",
     "quality.writes":"Writes to base",
     "quality.missList":"Queries that returned nothing",
     "quality.hint":"An empty search means a gap in the base or in ranking: add an article or put the query into the golden set.",
@@ -1550,9 +1552,11 @@ async function loadAnalytics(){
     h+='<div class="card"><h3>'+t('quality.title')+'</h3><pre>'
       +t('quality.searches')+': '+q.searches+NL
       +t('quality.misses')+': '+q.misses+' ('+pct(q.miss_rate)+')'+NL
-      +t('quality.useful')+': '+q.followed+' ('+pct(q.follow_rate)+')'+NL
-      +t('quality.reform')+': '+q.reformulations+NL
-      +t('quality.writes')+': '+q.writes+'</pre>';
+      +t('quality.useful')+': '+q.acted+' ('+pct(q.act_rate)+')'+NL
+      +t('quality.reform')+': '+q.chained+NL
+      +t('quality.writes')+': '+q.writes+NL
+      +t('quality.volume')+': '+Math.round((q.context_total||0)/1000)+' k'+NL
+      +(q.context_bytes||[]).map(x=>'  '+x[0]+': '+Math.round(x[1]/1000)+' k').join(NL)+'</pre>';
     if(q.miss_queries&&q.miss_queries.length){
       h+='<h4 style="margin:8px 0 4px">'+t('quality.missList')+'</h4>';
       q.miss_queries.forEach(m=>{

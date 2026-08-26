@@ -76,19 +76,58 @@ def _read_rows(hours: float) -> list[dict]:
 
 
 def quality(hours: float = 168.0) -> dict:
-    """Сводка качества за период. Вызывать в потоке, а не в event loop."""
+    """Сводка качества за период. Вызывать в потоке, а не в event loop.
+
+    ⚠️ МЕТРИКА ПОЛЬЗЫ СЧИТАЕТ ДЕЙСТВИЕ, А НЕ ТОЛЬКО ЧТЕНИЕ (v1.66.0). Прежний
+    `follow_rate` засчитывал успех лишь при `read_article` — и объявлял провалом
+    самый частый удачный исход: ответ нашёлся прямо в превью, и сессия пошла
+    ПИСАТЬ. Выдача поиска весит 13 КБ (медиана по боевому логу), там он и
+    находится. Замер 26.08.2026, 525 поисков за месяц: чтение 51%, запись 17%,
+    ещё поиск 22%, ничего 9% — то есть к действию ведут 68%, а не 51%.
+
+    ⚠️ «ПЕРЕФОРМУЛИРОВОК» БОЛЬШЕ НЕТ, и возвращать их нельзя. Метрика считала
+    переформулировкой ЛЮБОЙ следующий поиск в окне: из 116 таких пар текстово
+    похожи (Jaccard ≥ 0.4) лишь 6 — остальное сбор контекста по РАЗНЫМ
+    подтемам, то есть нормальная работа. Завышение в 19 раз, и на нём строился
+    вердикт «смотреть ранжирование», к которому данные отношения не имели.
+    Порог по схожести не спасает: распределение Jaccard монотонно убывает
+    (50% пар вовсе без общих слов) — естественной границы нет, а подбирать её
+    по тому, как красивее выглядит метрика, значит калибровать измерение под
+    ответ. Остаётся наблюдаемый факт: `chained` — за поиском сразу поиск.
+    """
     rows = _read_rows(hours)
     searches = [r for r in rows if r.get("tool") in SEARCH_TOOLS]
-    reads = [r["_ts"] for r in rows if r.get("tool") == "read_article"]
 
-    misses, followed, reformulations = [], 0, 0
-    for i, s in enumerate(searches):
+    # ⚠️ ИСХОД ОПРЕДЕЛЯЕТ ПЕРВОЕ СОБЫТИЕ ПОСЛЕ ПОИСКА, а не наличие действия в
+    # окне. Прежнее `any(...)` засчитывало одно чтение сразу нескольким поискам:
+    # поиск, за которым сразу пошёл другой поиск, получал зачёт за чтение,
+    # случившееся уже после второго. Сверка на боевом логе (525 поисков за
+    # месяц): по окну выходило 85% полезных, по первому событию — 68%, то есть
+    # 88 поисков были засчитаны за чужой счёт.
+    pos = {id(r): i for i, r in enumerate(rows)}
+    misses, acted, chained = [], 0, 0
+    for s in searches:
         if int(s.get("size") or 0) < MISS_SIZE:
             misses.append(s)
-        if any(0 <= t - s["_ts"] <= FOLLOW_SEC for t in reads):
-            followed += 1
-        elif i + 1 < len(searches) and 0 <= searches[i + 1]["_ts"] - s["_ts"] <= FOLLOW_SEC:
-            reformulations += 1
+        for nxt in rows[pos[id(s)] + 1:]:
+            if nxt["_ts"] - s["_ts"] > FOLLOW_SEC:
+                break
+            tool = nxt.get("tool")
+            if tool == "read_article" or tool in WRITE_TOOLS:
+                acted += 1
+                break
+            if tool in SEARCH_TOOLS:
+                chained += 1
+                break
+
+    # Кто съедает контекст. Без этой строки приоритеты ставились вслепую: замер
+    # показал, что 64% всех отданных символов приходится на search, а вовсе не
+    # на стартовый контекст, который до того и оптимизировали.
+    volume: dict[str, int] = {}
+    for r in rows:
+        size = r.get("size")
+        if isinstance(size, int) and size > 0:
+            volume[r.get("tool") or "?"] = volume.get(r.get("tool") or "?", 0) + size
 
     writes = [r for r in rows if r.get("tool") in WRITE_TOOLS]
     projects: dict[str, int] = {}
@@ -103,9 +142,11 @@ def quality(hours: float = 168.0) -> dict:
         "searches": n,
         "misses": len(misses),
         "miss_rate": round(len(misses) / n, 3) if n else 0.0,
-        "followed": followed,
-        "follow_rate": round(followed / n, 3) if n else 0.0,
-        "reformulations": reformulations,
+        "acted": acted,
+        "act_rate": round(acted / n, 3) if n else 0.0,
+        "chained": chained,
+        "context_bytes": sorted(volume.items(), key=lambda kv: -kv[1])[:8],
+        "context_total": sum(volume.values()),
         "writes": len(writes),
         "projects": sorted(projects.items(), key=lambda kv: -kv[1])[:8],
         "miss_queries": [
