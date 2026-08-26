@@ -35,7 +35,7 @@ from memory_compiler.storage import (
     regenerate_index, git_commit,
     update_active_context,
     append_session, append_note, latest_session, RUNNING_MARK, add_question, close_questions, open_questions_list,
-    mark_superseded, superseded_by,
+    mark_superseded, superseded_by, project_corrections,
     relevant_reflections,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
@@ -241,6 +241,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     result = action
     if superseded_ok:
         result += f"\n⚠️ Отменены этой поправкой: {', '.join(superseded_ok)}"
+
     if git_refs:
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
         result += f"\n\U0001f517 Git: {refs_summary}"
@@ -655,6 +656,17 @@ def first_touch_context(project: str) -> str:
     except (ValueError, OSError):
         pending = []
     if pending:
+        # ⚠️ Предупреждение о поправках идёт ПЕРЕД вопросами, а не после: подсказка
+        # ограничена бюджетом и режется с конца — сигнал, что вопросы могут быть
+        # опровергнуты, важнее второго вопроса в списке.
+        try:
+            corr = project_corrections(project)
+        except Exception:
+            corr = []
+        if corr:
+            parts.append("⚠️ В проекте есть поправки ("
+                         + "; ".join(t or f for f, t in corr[:2])
+                         + ") — вопросы ниже могли быть ими отменены.")
         parts.append("Открытые вопросы:")
         for q in pending:
             parts.append(f"- {q['text']}")
@@ -718,6 +730,14 @@ async def open_questions(project: str = "all") -> list[TextContent]:
             except ValueError:
                 pass
             parts.append(f"- **{q['opened']}**{age}\n  {q['text'][:400]}")
+        # Поправки проекта — рядом с вопросами. Какой именно вопрос отменён,
+        # машина не угадывает (проверено и отвергнуто, см. storage), но знать о
+        # существовании поправки читающий обязан: вопрос мог быть заведён раньше.
+        corr = await asyncio.to_thread(project_corrections, proj)
+        if corr:
+            parts.append(f"\n⚠️ В проекте есть поправки — проверьте, не отменяют ли они вопросы выше:")
+            for fname, title in corr[:3]:
+                parts.append(f"  - {title or fname} ({fname})")
     if not total:
         where = "во всех проектах" if project == "all" else f"в {project}"
         return [TextContent(type="text", text=f"Открытых вопросов {where} нет.")]
@@ -725,14 +745,23 @@ async def open_questions(project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text=f"# Открытые вопросы ({total})" + "\n".join(parts) + tail)]
 
 
-async def close_question(project: str, match: str) -> list[TextContent]:
-    """Закрыть вопрос(ы), чей текст содержит match."""
-    n = await asyncio.to_thread(close_questions, project, match)
+async def close_question(project: str, match: str, remainder: str = "") -> list[TextContent]:
+    """Закрыть вопрос(ы), чей текст содержит match; `remainder` — живой остаток.
+
+    Половина открытых вопросов (35 из 67 по замеру 26.08.2026) склеена из
+    нескольких тем: закрыть целиком значит похоронить живые пункты, оставить —
+    транслировать уже решённое. Остаток задаётся ТЕКСТОМ, а не вырезается
+    эвристикой: разрез по предложениям исказил бы смысл.
+    """
+    n = await asyncio.to_thread(close_questions, project, match, remainder)
     if not n:
         return [TextContent(type="text", text=f"⚠️ В {project} не найдено открытых вопросов по «{match}».")]
     await asyncio.to_thread(git_commit, f"questions: close in {project}")
     left = len(open_questions_list(project))
-    return [TextContent(type="text", text=f"✅ Закрыто вопросов: {n}. Осталось открытых в {project}: {left}")]
+    msg = f"✅ Закрыто вопросов: {n}. Осталось открытых в {project}: {left}"
+    if remainder and remainder.strip():
+        msg += f"\n↩️ Живой остаток заведён отдельным вопросом: {remainder.strip()[:120]}"
+    return [TextContent(type="text", text=msg)]
 
 
 async def load_session(project: str) -> list[TextContent]:
@@ -1741,9 +1770,16 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         pending_q = open_questions_list(target_project, limit=SESSION_MAX_QUESTIONS)
     except ValueError:
         pending_q = []
+    q_items = [f"- **{q['opened']}** — {q['text']}" for q in pending_q]
+    if q_items:
+        corr = await asyncio.to_thread(project_corrections, target_project)
+        if corr:
+            names = "; ".join(t or f for f, t in corr[:2])
+            # в начало списка: блок режется бюджетом с конца
+            q_items.insert(0, f"⚠️ В проекте есть поправки ({names}) — вопросы "
+                              f"ниже могли быть ими отменены.")
     blocks.append(_Block("questions", f"## Открытые вопросы ({target_project})",
-                         [f"- **{q['opened']}** — {q['text']}" for q in pending_q],
-                         weight=3.0))
+                         q_items, weight=3.0))
 
     # 4. Session — на continuation показываем всегда, иначе фильтр по словам.
     # Берём ПОСЛЕДНИЙ БЛОК ЖУРНАЛА целиком, а не срез файла по символам: файл

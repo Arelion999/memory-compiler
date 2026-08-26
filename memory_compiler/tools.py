@@ -251,7 +251,8 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "Имя проекта (обязательно)"},
-                    "match": {"type": "string", "description": "Кусок текста вопроса, который закрываем (обязательно)"}
+                    "match": {"type": "string", "description": "Кусок текста вопроса, который закрываем (обязательно)"},
+                    "remainder": {"type": "string", "description": "Живой ОСТАТОК вопроса, если решена лишь часть: он заведётся отдельным открытым вопросом. Половина вопросов склеена из нескольких тем — без остатка закрытие хоронит нерешённые пункты"}
                 },
                 "required": ["project", "match"]
             }

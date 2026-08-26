@@ -3205,8 +3205,18 @@ def add_question(project: str, text: str) -> bool:
     return True
 
 
-def close_questions(project: str, match: str) -> int:
-    """Закрыть вопросы, чей текст содержит match (регистр не важен)."""
+def close_questions(project: str, match: str, remainder: str = "") -> int:
+    """Закрыть вопросы, чей текст содержит match (регистр не важен).
+
+    `remainder` — текст ЖИВОГО остатка: закрытый вопрос уходит в историю целиком,
+    а остаток заводится новым открытым вопросом.
+
+    ⚠️ ОСТАТОК ЗАДАЁТСЯ ТЕКСТОМ, А НЕ ВЫРЕЗАЕТСЯ ЭВРИСТИКОЙ. Замер 26.08.2026:
+    52% открытых вопросов (35 из 67) склеены из нескольких тем, и разрез по
+    предложениям исказил бы смысл. Живой случай: в одном вопросе соседствовали
+    опровергнутый барьер платформ и два действующих пункта — закрыть целиком
+    значило похоронить живое, оставить как есть — транслировать опровергнутое.
+    """
     needle = (match or "").strip().lower()
     if not needle:
         return 0
@@ -3219,11 +3229,57 @@ def close_questions(project: str, match: str) -> int:
             n += 1
     if n:
         _write_questions(project, items)
+        # остаток заводим ТОЛЬКО если что-то закрылось: иначе промах по тексту
+        # породил бы вопрос-двойник рядом с нетронутым исходным
+        if remainder and remainder.strip():
+            add_question(project, remainder.strip())
     return n
 
 
+# ── Поправки проекта (v1.70.0) ──────────────────────────────────────────────
+# v1.69.0 научил выдачу предупреждать об отменённых СТАТЬЯХ, но открытые вопросы
+# продолжали транслировать опровергнутый вывод — поймано живой проверкой сразу
+# после релиза.
+#
+# ⚠️ УГАДЫВАНИЕ, КАКОЙ ИМЕННО ВОПРОС ОТМЕНЁН, ПРОВЕРЕНО И ОТВЕРГНУТО. Пометка по
+# пересечению слов с заголовком отменённой статьи давала на живых данных 4
+# срабатывания из 29 вопросов, из них два ложных; отбор по редким словам (IDF по
+# вопросам проекта) дал тот же результат. Лексической границы нет: в проекте все
+# вопросы про одну задачу, словарь общий, различает только смысл. Тот же вывод,
+# что и по «переформулировкам» в v1.66.0.
+#
+# Поэтому отдаём НАБЛЮДАЕМЫЙ ФАКТ: какие поправки в проекте есть. Сопоставляет
+# читающий. Замер: поправки существуют в 1 проекте из 47 — там, где их нет,
+# сигнала не будет вовсе.
+
+
+def project_corrections(project: str) -> list[tuple[str, str]]:
+    """Поправки проекта: (файл, заголовок) статей, которые кого-то отменили."""
+    try:
+        pdir = safe_project_dir(project)
+    except ValueError:
+        return []
+    seen: dict[str, str] = {}
+    for f in sorted(pdir.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        try:
+            head = f.read_text(encoding="utf-8")[:900]
+        except OSError:
+            continue
+        if SUPERSEDED_MARK not in head:
+            continue
+        link = superseded_by(project, f.name)
+        if link and link[0] not in seen:
+            seen[link[0]] = link[1]
+    return sorted(seen.items())
+
 def open_questions_list(project: str, limit: int = 0) -> list[dict]:
-    items = [q for q in parse_questions(project) if q["status"] == "open"]
+    items = []
+    for q in parse_questions(project):
+        if q["status"] != "open":
+            continue
+        items.append(q)
     return items[:limit] if limit else items
 
 

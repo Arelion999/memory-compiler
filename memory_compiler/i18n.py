@@ -127,6 +127,9 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'project': 'Project name (required)',
             'match': 'Fragment of the question text to close (required)',
+            'remainder': ('The LIVE remainder of the question when only part of it is resolved: '
+                          'it is filed as a separate open question. Half of the questions bundle '
+                          'several topics — without the remainder, closing buries the unresolved ones'),
         },
     },
     'get_active_context': {
