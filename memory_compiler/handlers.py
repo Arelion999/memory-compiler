@@ -403,18 +403,22 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
     if fallback_all:
         header += (f"\n*В проекте «{project}» ничего не найдено — показаны результаты "
                    f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
-    out = [header]
     links: list[ResourceLink] = []
     found: list[dict] = []
+    secrets = {}
     for r in results:
         secret = is_secret_article(r.get("preview", ""), r.get("file", ""))
         if secret:
             r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
-        preview_lines = r["preview"].splitlines()[:10]
-        scores = f"score: {r['score']}"
-        if "rerank_score" in r:
-            scores += f", rerank: {r['rerank_score']:.2f}"
-        out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n" + "\n".join(preview_lines) + "\n")
+        secrets[f"{r['project']}/{r['file']}"] = secret
+    # Текст выдачи собирает ОДИН бюджет: голове полное превью, хвосту короткое
+    # (см. _render_search_results). Ссылки и структурная выдача строятся по ВСЕМ
+    # результатам независимо от того, сколько текста досталось каждому: обрезка
+    # превью не должна прятать найденное от панели MCP Apps.
+    out = [_render_search_results(results, header, query)]
+    for r in results:
+        secret = secrets.get(f"{r['project']}/{r['file']}", False)
+        scores = _scores(r)
         # Resource link на статью — клиент открывает/прикрепляет как memory://-ресурс.
         # Секреты не линкуем (как ресурс они недоступны).
         if not secret:
@@ -1339,6 +1343,117 @@ def _weighted_budgets(want: list[int], weight: list[float], total: int,
             budgets[i] += take
             left -= take
     return budgets
+
+
+# ── Бюджет выдачи search (v1.67.0) ──────────────────────────────────────────
+# `search` отдавал 8 результатов с превью в 10 строк КАЖДЫЙ — одинаково первому
+# и восьмому. Замер 26.08.2026: это 64% всех символов, которые инструменты
+# возвращают за неделю (2626 тыс. из 4125 тыс.), медиана выдачи 13132 символа.
+# Хвост столько не стоит, и это показали два независимых замера:
+#   • baseline retrieval_eval: recall@3 0.667, recall@5 0.78, recall@10 0.84 —
+#     позиции 6-8 добавляют около 6% попаданий на ~37% объёма;
+#   • 345 пар «запрос → открытая статья»: слова запроса стоят в ЗАГОЛОВКЕ у 76%,
+#     в первых трёх строках у 87%, в первых четырёх у 91%; строки 5-10 дают 9%.
+# Поэтому голове — полное превью, хвосту — короткое, на всё — общий потолок.
+# ⚠️ ПОРЯДОК И СОСТАВ НЕ ТРОГАЕМ: правка про рендер, ранжирование то же.
+SEARCH_BUDGET = 7000       # потолок на всю выдачу, символов
+SEARCH_HEAD = 3            # позиций с полным превью (по recall@3)
+SEARCH_HEAD_WEIGHT = 3.0   # во столько раз голова важнее хвоста при дележе
+
+
+def _query_words(text: str) -> set[str]:
+    """Значимые слова запроса: короткие и служебные выкидываем."""
+    return {w for w in re.sub(r"[^а-яёa-z0-9]+", " ", (text or "").lower()).split()
+            if len(w) > 3 and w not in _QUERY_STOP}
+
+
+_QUERY_STOP = {"как", "что", "где", "для", "при", "это", "или", "был", "все",
+               "еще", "ещё", "уже", "про", "него", "нужно", "надо"}
+
+
+def _fit_preview(preview: str, budget: int, qwords: set[str]) -> str:
+    """Уместить превью в бюджет, оставляя строки СО СЛОВАМИ ЗАПРОСА.
+
+    ⚠️ ОТБОР ПО ЗАПРОСУ, А НЕ ПЕРВЫЕ N СТРОК — так решил замер. Сжатие хвоста
+    первыми строками теряло сигнал: слова запроса оставались в блоке целевой
+    статьи у 74% пар против 81% при полном превью (−7 п.п.). Отбор по запросу
+    в ТОМ ЖЕ бюджете даёт 79% на хвосте и 82% в голове, то есть возвращает
+    почти всё даром. Замер: 418 golden-пар «запрос → открытая статья».
+
+    ⚠️ ПОРЯДОК СТРОК СОХРАНЯЕТСЯ: превью читают как связный текст, а
+    перетасованные цитаты читаются как обрывки.
+    """
+    lines = preview.splitlines()
+    if not lines:
+        return ""
+    head, body = lines[0], lines[1:]
+    left = budget - len(head)
+    if left <= 0 or not body:
+        return head
+    hit = [i for i, l in enumerate(body) if qwords & _query_words(l)] if qwords else []
+    rest = [i for i in range(len(body)) if i not in set(hit)]
+    chosen: set[int] = set()
+    for i in hit + rest:                      # сначала совпавшие, потом добор с начала
+        need = len(body[i]) + 1
+        if need > left:
+            continue
+        chosen.add(i)
+        left -= need
+    if not chosen:
+        return head
+    out, skipped = [head], False
+    for i in range(len(body)):
+        if i in chosen:
+            if skipped:
+                out.append("…")
+                skipped = False
+            out.append(body[i])
+        elif out:
+            skipped = True
+    return "\n".join(out)
+
+
+def _render_search_results(results: list[dict], header: str = "", query: str = "") -> str:
+    """Собрать выдачу поиска в пределах SEARCH_BUDGET.
+
+    Бюджет делится тем же water-fill'ом, что и стартовый контекст: короткий
+    результат берёт своё целиком, неиспользованное достаётся длинным, вес задаёт
+    позиция. Заголовок остаётся у КАЖДОГО результата — в нём 76% сигнала, и
+    безымянная строка в выдаче бесполезна.
+    """
+    qwords = _query_words(query)
+    if not results:
+        return header
+    want, weight = [], []
+    for i, r in enumerate(results):
+        preview = r.get("preview", "") or ""
+        head_line = f"---\n### [{r['project']}] {r['title']} ({_scores(r)})\n"
+        want.append(len(head_line) + len(preview) + 1)
+        weight.append(SEARCH_HEAD_WEIGHT if i < SEARCH_HEAD else 1.0)
+    budgets = _weighted_budgets(want, weight, max(SEARCH_BUDGET - len(header), 0), floor=0)
+    parts = [header] if header else []
+    for r, bud in zip(results, budgets):
+        title_line = f"---\n### [{r['project']}] {r['title']} ({_scores(r)})\n"
+        left = bud - len(title_line)
+        # ⚠️ Второго среза по строкам здесь НЕТ: превью уже собрано
+        # make_preview(n=10) в search.py. Резать одно и то же дважды значит
+        # считать бюджет по объёму, которого в выдаче не будет, — тогда он
+        # распределяется впустую, и голова получает столько же, сколько хвост.
+        body = r.get("preview", "") or ""
+        if left <= 0:
+            parts.append(title_line)       # заголовок отдаём всегда
+            continue
+        if len(body) > left:
+            body = _fit_preview(body, left, qwords)
+        parts.append(title_line + body + "\n")
+    return "".join(parts)
+
+
+def _scores(r: dict) -> str:
+    s = f"score: {r['score']}"
+    if "rerank_score" in r:
+        s += f", rerank: {r['rerank_score']:.2f}"
+    return s
 
 
 class _Block:
