@@ -298,6 +298,7 @@ A two-link scheme (NAS → PC) whose links are independent:
 
 - **NAS** — a daily `tar` of the `knowledge/` directory (`scripts/mc-backup.sh`, cron 04:00, 7-day rotation). Archives land in `backups/`.
 - **PC** — an independent copy of the archives plus a snapshot of `.env` (`scripts/mc-backup-pull.ps1`, Task Scheduler job "memory-compiler backup pull", 05:00). Retention is 30 days for dailies, with monthly slices (`-01`) kept indefinitely. A restore drill verifies the integrity of the newest archive (`scripts/mc-backup-verify.ps1`).
+- **History mirror** — a single-file snapshot of the knowledge base git history (`scripts/mc-git-bundle.sh`, NAS, cron 04:10) and a live bare mirror built from it on the PC (`scripts/mc-git-mirror.ps1`, scheduled task "memory-compiler git mirror", 05:10). Archives do contain `.git`, but reaching the history means unpacking them; the mirror gives `git log`, `git show` and single-file recovery without the NAS. `git clone ssh://` to the NAS is impossible — DSM has no git, it lives only inside the container.
 
 ### Installation (Windows, the PC link)
 

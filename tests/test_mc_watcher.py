@@ -183,3 +183,74 @@ def test_backup_excludes_cover_neighbouring_names(tmp_path):
     assert "proj/a.md" in listing, "статья не попала в архив — исключения слишком широкие"
     for junk in (".whoosh_index", ".embeddings.pkl", ".git.old", "Conflict"):
         assert junk not in listing, "в архив попало восстановимое или мусор: %s" % junk
+
+
+# ── снимок git-истории (bundle) ─────────────────────────────────────────────
+
+BUNDLE_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "scripts", "mc-git-bundle.sh")
+
+
+def _bundle_env(tmp_path, docker_body):
+    fake = tmp_path / "docker"
+    fake.write_text("#!/bin/bash\n" + docker_body, encoding="utf-8", newline="\n")
+    fake.chmod(0o755)
+    e = dict(os.environ)
+    e.update({
+        "BACKUP_DIR": _bash_path(tmp_path / "backups"),
+        "DOCKER": _bash_path(fake),
+        "CONTAINER": "test-container",
+        "MC_BUNDLE_LOG": _bash_path(tmp_path / "bundle.log"),
+    })
+    return e
+
+
+def test_bundle_written_with_dated_copy(tmp_path):
+    env = _bundle_env(tmp_path, 'if [ "$2" = "sh" ]; then echo 42; else echo "СНИМОК"; fi\n')
+    subprocess.run([BASH, BUNDLE_SCRIPT], env=env, check=True, capture_output=True, timeout=60)
+
+    backups = tmp_path / "backups"
+    assert (backups / "knowledge-git.bundle").read_text(encoding="utf-8").strip() == "СНИМОК"
+    dated = list(backups.glob("knowledge-git-*.bundle"))
+    assert len(dated) == 1, "нет датированной копии на случай порчи свежей"
+
+
+def test_empty_output_does_not_replace_good_snapshot(tmp_path):
+    """Пустой вывод git молча заменил бы рабочий снимок пустышкой."""
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    good = backups / "knowledge-git.bundle"
+    good.write_text("ХОРОШИЙ СНИМОК", encoding="utf-8")
+
+    env = _bundle_env(tmp_path, 'true\n')          # docker молчит, код возврата 0
+    proc = subprocess.run([BASH, BUNDLE_SCRIPT], env=env, capture_output=True, timeout=60)
+
+    assert proc.returncode == 1, "пустой снимок принят как успех"
+    assert good.read_text(encoding="utf-8") == "ХОРОШИЙ СНИМОК", "рабочий снимок затёрт пустышкой"
+    assert "EMPTY" in (tmp_path / "bundle.log").read_text(encoding="utf-8")
+
+
+def test_docker_failure_keeps_previous_snapshot(tmp_path):
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    good = backups / "knowledge-git.bundle"
+    good.write_text("ХОРОШИЙ СНИМОК", encoding="utf-8")
+
+    env = _bundle_env(tmp_path, 'exit 3\n')
+    proc = subprocess.run([BASH, BUNDLE_SCRIPT], env=env, capture_output=True, timeout=60)
+
+    assert proc.returncode == 1
+    assert good.read_text(encoding="utf-8") == "ХОРОШИЙ СНИМОК"
+    assert not list(backups.glob("*.tmp")), "временный файл остался мусором"
+
+
+def test_dated_copies_are_rotated(tmp_path):
+    env = _bundle_env(tmp_path, 'if [ "$2" = "sh" ]; then echo 1; else echo "S"; fi\n')
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    for day in range(1, 8):                        # старьё из прошлых прогонов
+        (backups / ("knowledge-git-2026-08-%02d.bundle" % day)).write_text("old", encoding="utf-8")
+    subprocess.run([BASH, BUNDLE_SCRIPT], env=env, check=True, capture_output=True, timeout=60)
+
+    dated = list(backups.glob("knowledge-git-*.bundle"))
+    assert len(dated) <= 4, "датированные копии не ротируются: %d" % len(dated)

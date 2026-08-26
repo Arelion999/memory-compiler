@@ -298,6 +298,7 @@ Temporal decay — свежие и часто используемые стат�
 
 - **NAS** — ежедневный `tar` каталога `knowledge/` (`scripts/mc-backup.sh`, cron 04:00, ротация 7 дней). Архивы кладутся в `backups/`.
 - **ПК** — независимая копия архивов + снимок `.env` (`scripts/mc-backup-pull.ps1`, задача Task Scheduler «memory-compiler backup pull», 05:00). Ретенция 30 дней для ежедневных + месячные срезы (`-01`) хранятся бессрочно. Restore-drill проверяет целостность свежего архива (`scripts/mc-backup-verify.ps1`).
+- **Зеркало истории** — снимок git-истории базы одним файлом (`scripts/mc-git-bundle.sh`, NAS, cron 04:10) и живое bare-зеркало из него на ПК (`scripts/mc-git-mirror.ps1`, задача «memory-compiler git mirror», 05:10). Архивы содержат `.git`, но чтобы добраться до истории, их надо распаковать; зеркало даёт `git log`, `git show` и восстановление отдельного файла без NAS. `git clone ssh://` к NAS невозможен — на DSM нет git, он есть только внутри контейнера.
 
 ### Установка (Windows, звено ПК)
 
