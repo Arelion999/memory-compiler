@@ -616,6 +616,52 @@ async def save_session(project: str, summary: str, decisions: str = "", open_que
     return [TextContent(type="text", text=msg)]
 
 
+# ── Контекст без спроса при первом обращении к проекту (v1.68.0) ────────────
+# Замер 26.08.2026 по аудиту (109 сессий за месяц): 81% начинаются НЕ с загрузки
+# контекста — первым вызовом идут save_lesson, edit_article, search, finish_task.
+# Из этих «слепых» сессий 85 пишут в базу, то есть работают всерьёз, не прочитав,
+# на чём остановились. У 86 из 89 по проекту было что показать; частота подсказки
+# выходит около 3 раз в сутки — это не шум.
+FIRST_TOUCH_CHARS = 900        # потолок подсказки: это указатель, а не контекст
+FIRST_TOUCH_QUESTIONS = 2
+
+
+def first_touch_context(project: str) -> str:
+    """Короткая подсказка о состоянии проекта: открытые вопросы и незакрытая работа.
+
+    ⚠️ ПОВОД — ТОЛЬКО НЕЗАКРЫТОЕ. Обычная прошлая сессия поводом не служит: это
+    рядовая история проекта, за ней ходят в `start_task`, и дёргать ею на каждом
+    первом вызове значит превратить подсказку в фон.
+    """
+    parts: list[str] = []
+    try:
+        pending = open_questions_list(project, limit=FIRST_TOUCH_QUESTIONS)
+    except (ValueError, OSError):
+        pending = []
+    if pending:
+        parts.append("Открытые вопросы:")
+        for q in pending:
+            parts.append(f"- {q['text']}")
+    try:
+        session_text = latest_session(project) or ""
+    except OSError:
+        session_text = ""
+    head = session_text.splitlines()[0] if session_text else ""
+    if RUNNING_MARK in head:
+        body = "\n".join(session_text.splitlines()[1:]).strip()
+        if body:
+            parts.append(f"Сессия по проекту не закрыта:\n{body}")
+    if not parts:
+        return ""
+    body = "\n".join(parts)
+    tail = f"\n\nПолный контекст — `start_task(project=\"{project}\")`."
+    room = FIRST_TOUCH_CHARS - len(tail) - 80
+    if len(body) > room:
+        body, _ = _cut_section_body(body, room)
+    return (f"\n\n📌 **Первое обращение к `{project}` в этой сессии.** "
+            f"Контекст не загружался:\n{body}{tail}")
+
+
 async def session_note(note: str, project: str) -> list[TextContent]:
     """Заметка по ходу сессии: одна строка в текущий блок журнала.
 

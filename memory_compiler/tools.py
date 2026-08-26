@@ -163,7 +163,13 @@ async def list_tools() -> list[Tool]:
                             },
                             "required": ["uri", "name"]
                         }
-                    }
+                    },
+                    # Футеры (свежесть, подсказка при первом обращении к проекту)
+                    # ДУБЛИРУЮТСЯ сюда. У search объявлен outputSchema, и клиент
+                    # берёт structuredContent — дополнительный TextContent до
+                    # модели не доходит. Проверено на проде: сервер отдавал
+                    # подсказку вторым текстовым блоком, а она никуда не ехала.
+                    "notice": {"type": "string", "description": "server-side note: freshness warning or project context hint"}
                 },
                 "required": ["query", "count", "results"]
             },
@@ -1307,9 +1313,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Строим из уже готовых resource_link-блоков content: программный клиент получает
     # машиночитаемый список, человекочитаемый текст + ссылки остаются в content.
     if name == "search":
-        return (result, _build_search_structured(arguments.get("query", ""), result))
+        payload = _build_search_structured(arguments.get("query", ""), result)
+        # футер, добавленный _append_freshness последним TextContent, дублируем
+        # в структурированную выдачу — иначе он не доедет до модели (см.
+        # _merge_notice_into_payload)
+        notice = result[-1].text if result and getattr(result[-1], "type", "") == "text"             and str(getattr(result[-1], "text", "")).lstrip().startswith(("📌", "⚠️", "💡")) else ""
+        return (result, _merge_notice_into_payload(payload, notice))
     return result
 
+
+
+def _merge_notice_into_payload(payload: dict, notice: str) -> dict:
+    """Продублировать футер в структурированную выдачу.
+
+    Клиент с поддержкой outputSchema читает structuredContent и дополнительный
+    TextContent модели не показывает — без этого подсказка не доезжает именно
+    там, где она нужнее всего: `search` чаще всего и открывает «слепую» сессию.
+    """
+    if not notice or not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    out["notice"] = notice.strip()
+    return out
 
 
 # Инструменты, чья запись делает контекст ДРУГИХ сессий устаревшим.
@@ -1319,6 +1344,12 @@ _FRESHNESS_WRITE_TOOLS = {
     "finish_task", "edit_article", "delete_article", "consolidate", "ingest",
     "session_note",
 }
+
+
+# Инструменты, которые САМИ отдают контекст проекта: подсказка при первом
+# обращении дублировала бы их выдачу.
+_CONTEXT_TOOLS = {"start_task", "load_session", "get_active_context",
+                  "open_questions", "get_context", "get_summary"}
 
 
 def _append_freshness(name: str, arguments: dict, result: list) -> list:
@@ -1335,8 +1366,13 @@ def _append_freshness(name: str, arguments: dict, result: list) -> list:
         return result                     # вне запроса (REST, тесты) — не мешаем
     key = freshness.key_for(session)
     project = arguments.get("project") if isinstance(arguments, dict) else None
+    # ⚠️ Спрашиваем ДО consume: тот делает touch и признак первого касания стирает.
+    first = (freshness.is_first_touch(key, project or "")
+             and name not in _CONTEXT_TOOLS)
     try:
         note = freshness.consume(key, project or "")
+        if first:
+            note = handlers.first_touch_context(project) + note
         if name in _FRESHNESS_WRITE_TOOLS and project and project != "all":
             topic = ""
             if isinstance(arguments, dict):

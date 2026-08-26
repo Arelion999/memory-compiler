@@ -78,6 +78,16 @@ def note_write(project: str, tool: str, topic: str, key: str) -> None:
         _started[(key, project)] = time.time()
 
 
+def is_first_touch(key: str, project: str) -> bool:
+    """Впервые ли эта сессия обращается к проекту.
+
+    Спрашивать ОБЯЗАТЕЛЬНО до `consume` — тот делает `touch` и признак стирает.
+    """
+    if not key or not project or project == "all":
+        return False
+    return (key, project) not in _seen
+
+
 def touch(key: str, project: str) -> None:
     """Отметить, что сессия видела состояние проекта на этот момент."""
     if not key or not project or project == "all":
