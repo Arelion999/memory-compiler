@@ -1757,6 +1757,21 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 parts.extend(relevant_lines[:3])
                 parts.append("")
 
+    # 3a. Сроки на исходе. Инструмент stale_facts за 4.5 месяца не позвали НИ РАЗУ
+    # (замер по аудиту): проверка, которую надо вспомнить и вызвать, механизмом
+    # актуальности не работает. Показываем сам, по проекту, и только когда есть
+    # что сказать — через кэш, иначе скан добавил бы к старту 400-650 мс.
+    try:
+        deadlines = await asyncio.to_thread(stale_summary, target_project, 30, 3)
+    except Exception:
+        deadlines = []                       # сроки не должны ронять старт задачи
+    if deadlines:
+        parts.append(f"\n## Сроки на исходе ({target_project})\n")
+        for d in deadlines:
+            when = "истёк" if d["days_left"] < 0 else f"осталось {d['days_left']} дн"
+            parts.append(f"- **{d['title'][:90]}** — {d['date']}, {when}")
+        parts.append("")
+
     # 3b. Открытые вопросы проекта — то, на чём остановились и не закрыли.
     # Показываем ВСЕГДА, когда они есть: до v1.58.0 96% зафиксированных вопросов
     # затирались следующей сессией и до следующего старта не доезжали вовсе.
@@ -2094,18 +2109,16 @@ async def save_compact(project: str, summary: str) -> list[TextContent]:
     ))]
 
 
-async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextContent]:
-    """Найти статьи с устаревающими фактами: SSL-сертификаты, версии, expiration dates.
+# Кэш скана сроков: пересчитывать на каждый start_task накладно (400-650 мс
+# на проект, 4.5 с на всю базу — замер 2026-08-26), а сроки меняются днями.
+_STALE_CACHE: dict = {}
+_STALE_TTL = 3600
 
-    Сканирует статьи на:
-      1. Даты «valid until», «до», «expires», «истекает»
-      2. Tracking-статьи с полями `until`, `expires`, `valid_to`
-      3. Статьи старше 180 дней с тегами ssl/cert/password/license — кандидаты на ротацию
 
-    Параметры:
-      project   — фильтр по проекту ("all" = все)
-      warn_days — за сколько дней начинать предупреждать (default 30)
-    """
+def _scan_stale(project: str = "all", warn_days: int = 30) -> dict:
+    """Синхронный скан сроков. ⚠️ Читает ВСЕ статьи проекта — звать только из
+    потока (asyncio.to_thread), иначе блокирует event loop на сотни миллисекунд.
+    Возвращает три списка: истёкшее, истекающее, кандидаты на ротацию."""
     from memory_compiler.storage import _parse_frontmatter
     import memory_compiler.config as _cfg
 
@@ -2113,13 +2126,44 @@ async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextCon
     warn_until = today + timedelta(days=warn_days)
     stale_180 = today - timedelta(days=180)
 
-    # Regex для дат вида: "valid until 2026-10-11", "до 11.10.2026", "expires 2026/10/11"
+    # ⚠️ ГОЛОЕ «до» ЛОВИТ НЕ СРОКИ. Замер 2026-08-26 на боевой базе: из 22 записей
+    # «уже истекло» настоящими сроками были единицы, остальное — многозначность
+    # русского предлога и чужие исторические справки:
+    #   «пометки поставлены ДО 04.02.2026»      — здесь «до» = «раньше чем»
+    #   «закрытие отложено до 01.07.2026»       — прошедшее событие, не срок
+    #   «3.1 мертва (поддержка до 01.03.2023)»  — чужой продукт, справка на 1274 дня назад
+    # Настоящие сигналы выглядят иначе: «554 $m со сроком до 09.09.2026»,
+    # «мораторий … До 06.09.2026 НЕ удаляется». Поэтому дате обязан
+    # предшествовать маркер СРОКА, а не любое «до».
+    # Маркер срока обязан стоять ВПЛОТНУЮ к дате. Промежуточный вариант «маркер
+    # в окне 80 символов» проверен и отвергнут замером: он поднял выдачу с 22 до
+    # 97 записей — слова «срок», «лицензия», «действует» попадаются в тексте
+    # часто, и любая дата рядом становилась «сроком». Цена соседства — теряются
+    # сигналы вида «мораторий … До 06.09.2026 НЕ удаляется», где между маркером и
+    # датой пол-предложения. Выбор осознанный: ложные срабатывания обесценивают
+    # проверку целиком (её и так не звали ни разу за 4.5 месяца), а пропущенный
+    # сигнал стоит одного просмотра статьи.
+    DEADLINE = (r'(?:valid\s*(?:until|to|till)|valid_to|expires?|expiry|'
+                r'истека\w+|сгора\w+|срок\w*\s+(?:действия\s+)?до|действ\w+\s+до|'
+                r'действителен\s+до|мораторий\s+до|оплач\w+\s+до|продл\w+\s+до|'
+                r'не\s+позднее)')
     DATE_PATTERNS = [
-        # ISO YYYY-MM-DD with prefix
-        re.compile(r'(?:valid\s*(?:until|to|till)|до|expires?|истекает|действителен\s*до|valid_to)\s*[:=]?\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})', re.IGNORECASE),
-        # DD.MM.YYYY with prefix
-        re.compile(r'(?:valid\s*(?:until|to|till)|до|expires?|истекает|действителен\s*до)\s*[:=]?\s*(\d{1,2})[./](\d{1,2})[./](\d{4})', re.IGNORECASE),
+        re.compile(DEADLINE + r'\s*[:=]?\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})', re.IGNORECASE),
+        re.compile(DEADLINE + r'\s*[:=]?\s*(\d{1,2})[./](\d{1,2})[./](\d{4})', re.IGNORECASE),
     ]
+    # Дата, приехавшая из ССЫЛКИ на другую статью (раздел «См. также»), — чужой
+    # факт: он уже посчитан там, где живёт, и дублировать его незачем.
+    LINK_LINE = re.compile(r'\]\(\.{0,2}/|\]\(memory://')
+
+    def _is_deadline(text: str, pos: int) -> bool:
+        line_start = text.rfind("\n", 0, pos) + 1
+        line_end = text.find("\n", pos)
+        line = text[line_start:line_end if line_end > 0 else len(text)]
+        return not LINK_LINE.search(line)
+    # Истёкшее давно — это история проекта, а не задача. Показываем свежепротухшее:
+    # без окна в выдачу лезли записи трёхлетней давности и топили полезное.
+    EXPIRED_WINDOW_DAYS = 90
+    expired_after = today - timedelta(days=EXPIRED_WINDOW_DAYS)
 
     # Список проектов для скана
     projects = []
@@ -2155,6 +2199,8 @@ async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextCon
             found_dates = []
             for pat in DATE_PATTERNS:
                 for m in pat.finditer(text):
+                    if not _is_deadline(text, m.start()):
+                        continue          # дата есть, а срока нет — см. коммент выше
                     g = m.groups()
                     try:
                         if pat is DATE_PATTERNS[0]:
@@ -2197,6 +2243,8 @@ async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextCon
                 days_left = (dt - today).days
                 entry = {"path": rel, "title": title, "date": dt.isoformat(), "days_left": days_left}
                 if days_left < 0:
+                    if dt < expired_after:
+                        continue          # протухло давно — история, а не задача
                     expired.append(entry)
                 elif days_left <= warn_days:
                     expiring.append(entry)
@@ -2230,6 +2278,35 @@ async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextCon
     stale_secrets = sorted({s["path"]: s for s in stale_secrets}.values(),
                             key=lambda x: -x["age_days"])
 
+    return {"expired": expired, "expiring": expiring,
+            "stale_secrets": stale_secrets, "warn_days": warn_days}
+
+
+def stale_summary(project: str, warn_days: int = 30, limit: int = 3) -> list:
+    """Короткая сводка сроков для стартового контекста, через кэш.
+
+    Инструмент stale_facts за 4.5 месяца не позвали НИ РАЗУ (замер по аудиту).
+    Проверка, которую надо вспомнить и вызвать, механизмом актуальности не
+    работает — поэтому её вывод показывается сам, при старте задачи.
+    """
+    import time as _t
+    hit = _STALE_CACHE.get(project)
+    if hit and _t.time() - hit[0] < _STALE_TTL:
+        data = hit[1]
+    else:
+        data = _scan_stale(project, warn_days)
+        _STALE_CACHE[project] = (_t.time(), data)
+    rows = [dict(e, kind="истёк") for e in data["expired"]]
+    rows += [dict(e, kind="истекает") for e in data["expiring"]]
+    rows.sort(key=lambda e: e["days_left"])
+    return rows[:limit]
+
+
+async def stale_facts(project: str = "all", warn_days: int = 30) -> list[TextContent]:
+    """Stale fact watcher: сроки из текста статей и tracking-frontmatter."""
+    data = await asyncio.to_thread(_scan_stale, project, warn_days)
+    expired, expiring = data["expired"], data["expiring"]
+    stale_secrets = data["stale_secrets"]
     parts = [f"# Stale Facts Report{(' (' + project + ')') if project != 'all' else ''}\n"]
 
     parts.append(f"\n## ⚠️ Уже истекло ({len(expired)})\n")

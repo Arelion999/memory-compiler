@@ -35,6 +35,7 @@ HEAVY = {
     "rerank",
     "_build_graph",
     "quality",
+    "_scan_stale",
 }
 
 

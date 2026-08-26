@@ -126,11 +126,14 @@ def test_stale_facts_finds_expired_and_expiring(knowledge_dir):
     import memory_compiler.config as _cfg
     proj = knowledge_dir / "infra"
     proj.mkdir(exist_ok=True)
-    # Expired cert
-    (proj / "cert_old.md").write_text(
-        "# Old SSL cert\n\n**Теги:** ssl\n\nSSL valid until 2024-01-01.", encoding="utf-8")
-    # Expiring soon (15 days from now)
     from datetime import datetime, timedelta
+    # Недавно истёкший — попадает в отчёт. Дата берётся относительной: с v1.61.0
+    # истёкшее показывается за последние 90 дней, а протухшее годы назад считается
+    # историей проекта (см. test_stale_precision.py::test_long_expired_is_history).
+    past_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    (proj / "cert_old.md").write_text(
+        f"# Old SSL cert\n\n**Теги:** ssl\n\nSSL valid until {past_date}.", encoding="utf-8")
+    # Expiring soon (15 days from now)
     future_date = (datetime.now() + timedelta(days=15)).strftime("%Y-%m-%d")
     (proj / "cert_new.md").write_text(
         f"# New SSL cert\n\n**Теги:** ssl\n\nSSL valid until {future_date}.", encoding="utf-8")
@@ -144,7 +147,7 @@ def test_stale_facts_finds_expired_and_expiring(knowledge_dir):
     text = result[0].text
     # Expired
     assert "Old SSL cert" in text
-    assert "2024-01-01" in text
+    assert past_date in text
     # Expiring (within 30 days)
     assert "New SSL cert" in text
     # Far future — should NOT appear in expiring list (but may show in headers)
