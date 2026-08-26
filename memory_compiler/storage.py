@@ -3072,3 +3072,56 @@ def close_questions(project: str, match: str) -> int:
 def open_questions_list(project: str, limit: int = 0) -> list[dict]:
     items = [q for q in parse_questions(project) if q["status"] == "open"]
     return items[:limit] if limit else items
+
+
+# ─── Чтение накопленных фактов ───────────────────────────────────────────────
+#
+# ⚠️ ДО v1.62.0 ЭТОТ ФАЙЛ ПИСАЛСЯ И НЕ ЧИТАЛСЯ НИКЕМ. Диагностика 2026-08-26:
+# 103 КБ в 39 проектах, 632 факта, читателей в коде — ноль. Первым порывом было
+# перестать писать, но выборка это опровергла: годного содержимого 96%
+# («сертификат Let's Encrypt на app.dymok27.ru», «ЧекККМ_проведение: 2,2–5,0с →
+# 10,47с», «тела ПЛОСКИЕ, без обёртки»), то есть механизм работал, просто выход
+# был в никуда. Поэтому не удаляем, а подключаем к стартовому контексту.
+#
+# ⚠️ ФИЛЬТРОВАТЬ ПОЧТИ НЕЧЕГО, и жадный фильтр вреден: пробный вариант отсеивал
+# по последнему символу и по кавычке в начале — и выбрасывал ценное («УЗБЕКИСТАН
+# 46.8.194.10 стал полноценным узлом», описание формы в кавычках). Отсев оставлен
+# минимальным: слишком короткие строки и служебные вида «proj: Имя (5)».
+
+_REFL_JUNK = re.compile(r"^[\w-]+:\s*[^.]{0,30}\(\d+\)$")
+
+
+def _reflection_lines(project: str) -> list[str]:
+    try:
+        path = project_dir(project) / "_reflections.md"
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"- \[[\d\- :]+\]\s+(.+)", line)
+        if not m:
+            continue
+        fact = m.group(1).strip()
+        if len(fact) < 30 or len(fact.split()) < 4 or _REFL_JUNK.match(fact):
+            continue
+        out.append(fact)
+    return out
+
+
+def relevant_reflections(project: str, topic_words: set, limit: int = 4) -> list[str]:
+    """Факты прошлых сессий, пересекающиеся с темой задачи. Порядок — свежие выше.
+
+    Без темы не отдаём ничего: вываливать в стартовый контекст двадцать фактов
+    подряд — это шум, а не справка.
+    """
+    if not topic_words:
+        return []
+    scored = []
+    for pos, fact in enumerate(_reflection_lines(project)):
+        words = set(re.findall(r"[а-яА-ЯёЁa-zA-Z]{4,}", fact.lower()))
+        overlap = len(topic_words & words)
+        if overlap:
+            scored.append((-overlap, pos, fact))
+    scored.sort()
+    return [f for _, _, f in scored[:limit]]

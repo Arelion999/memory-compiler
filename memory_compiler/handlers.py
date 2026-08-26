@@ -35,6 +35,7 @@ from memory_compiler.storage import (
     regenerate_index, git_commit,
     update_active_context,
     append_session, latest_session, add_question, close_questions, open_questions_list,
+    relevant_reflections,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
     extract_snippets, extract_errors, TEMPLATES,
@@ -1756,6 +1757,20 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 parts.append(f"\n## Связанные действия в {target_project}\n")
                 parts.extend(relevant_lines[:3])
                 parts.append("")
+
+    # 3-. Факты прошлых сессий по теме. Файл `_reflections.md` до v1.62.0 писался
+    # на каждом finish_task и не читался НИКЕМ — 103 КБ в 39 проектах впустую.
+    # Отдаём только пересекающиеся с темой и не больше четырёх: это справка,
+    # а не второй поиск.
+    try:
+        facts = relevant_reflections(target_project, topic_words, limit=4)
+    except Exception:
+        facts = []
+    if facts:
+        parts.append(f"\n## Факты прошлых сессий ({target_project})\n")
+        for f in facts:
+            parts.append(f"- {f[:220]}")
+        parts.append("")
 
     # 3a. Сроки на исходе. Инструмент stale_facts за 4.5 месяца не позвали НИ РАЗУ
     # (замер по аудиту): проверка, которую надо вспомнить и вызвать, механизмом
