@@ -33,6 +33,7 @@ from memory_compiler.storage import (
     article_title_tags, parse_meta_value, _parse_frontmatter,
     regenerate_index, git_commit,
     update_active_context,
+    append_session, latest_session, add_question, close_questions, open_questions_list,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
     extract_snippets, extract_errors, TEMPLATES,
@@ -892,24 +893,63 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
 
 
 async def save_session(project: str, summary: str, decisions: str = "", open_questions: str = "") -> list[TextContent]:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    session_path = safe_project_dir(project) / "_session.md"
-    text = f"""# Сессия: {project}
+    """Дописать сессию в журнал проекта; открытые вопросы — в накопительный список.
 
-**Дата:** {now}
-
-## Что сделано
-{summary}
-
-## Решения
-{decisions or '\u2014'}
-
-## Открытые вопросы
-{open_questions or '\u2014'}
-"""
-    session_path.write_text(text, encoding="utf-8")
+    ⚠️ Раньше файл сессии ПЕРЕЗАПИСЫВАЛСЯ целиком, и открытые вопросы жили лишь
+    до следующей сессии того же проекта. Замер 2026-08-26 по аудиту (7965 вызовов,
+    502 сессии): вопросы фиксировались в 68% вызовов finish_task — 948 штук,
+    медиана 235 символов — и 916 из них (96%) затирались. В статью они не
+    попадают вообще. Теперь сессии накапливаются (последние MAX_SESSIONS), а
+    вопросы ведутся отдельным файлом со статусом и закрываются явно.
+    """
+    await asyncio.to_thread(append_session, project, summary, decisions, open_questions)
+    added = await asyncio.to_thread(add_question, project, open_questions) if open_questions else False
     await asyncio.to_thread(git_commit, f"session: {project}")
-    return [TextContent(type="text", text=f"\u2705 Контекст сессии сохранён: {project}/_session.md")]
+    msg = f"✅ Контекст сессии сохранён: {project}/_session.md"
+    if added:
+        n = len(open_questions_list(project))
+        msg += f"\n❓ Открытый вопрос добавлен в {project}/_questions.md (всего открытых: {n})"
+    return [TextContent(type="text", text=msg)]
+
+
+async def open_questions(project: str = "all") -> list[TextContent]:
+    """Незакрытые вопросы — то, на чём останавливались в прошлых сессиях."""
+    import memory_compiler.config as _cfg
+    projects = [project] if project != "all" else [p for p in _cfg.PROJECTS if p != "daily"]
+    parts, total = [], 0
+    for proj in projects:
+        try:
+            items = await asyncio.to_thread(open_questions_list, proj)
+        except ValueError:
+            continue
+        if not items:
+            continue
+        total += len(items)
+        parts.append(f"\n## {proj} ({len(items)})")
+        for q in items[:10]:
+            age = ""
+            try:
+                d = datetime.strptime(q["opened"][:10], "%Y-%m-%d")
+                days = (datetime.now() - d).days
+                age = f" · {days} дн назад" if days else " · сегодня"
+            except ValueError:
+                pass
+            parts.append(f"- **{q['opened']}**{age}\n  {q['text'][:400]}")
+    if not total:
+        where = "во всех проектах" if project == "all" else f"в {project}"
+        return [TextContent(type="text", text=f"Открытых вопросов {where} нет.")]
+    tail = "\n\n*Решённый закрывать через `close_question(project, match)` — по куску текста.*"
+    return [TextContent(type="text", text=f"# Открытые вопросы ({total})" + "\n".join(parts) + tail)]
+
+
+async def close_question(project: str, match: str) -> list[TextContent]:
+    """Закрыть вопрос(ы), чей текст содержит match."""
+    n = await asyncio.to_thread(close_questions, project, match)
+    if not n:
+        return [TextContent(type="text", text=f"⚠️ В {project} не найдено открытых вопросов по «{match}».")]
+    await asyncio.to_thread(git_commit, f"questions: close in {project}")
+    left = len(open_questions_list(project))
+    return [TextContent(type="text", text=f"✅ Закрыто вопросов: {n}. Осталось открытых в {project}: {left}")]
 
 
 async def load_session(project: str) -> list[TextContent]:
@@ -1627,6 +1667,13 @@ async def article_history(project: str, filename: str) -> list[TextContent]:
 # ─── Комбинированные tools (start/finish task) ──────────────────────────────
 
 
+# Бюджет стартового контекста. Прежние 400/600 символов резали последнюю
+# сессию на полуслове; блок журнала берётся целиком, а лимит служит потолком.
+SESSION_CHARS = 1800
+SESSION_MAX_QUESTIONS = 5
+SESSION_Q_CHARS = 300
+
+
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance.
 
@@ -1699,16 +1746,31 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 parts.extend(relevant_lines[:3])
                 parts.append("")
 
-    # 4. Session — на continuation показываем всегда, иначе фильтр по словам
-    session_path = KNOWLEDGE_DIR / target_project / "_session.md"
-    if session_path.exists():
-        session_text = session_path.read_text(encoding="utf-8")
+    # 3b. Открытые вопросы проекта — то, на чём остановились и не закрыли.
+    # Показываем ВСЕГДА, когда они есть: до v1.58.0 96% зафиксированных вопросов
+    # затирались следующей сессией и до следующего старта не доезжали вовсе.
+    try:
+        pending_q = open_questions_list(target_project, limit=SESSION_MAX_QUESTIONS)
+    except ValueError:
+        pending_q = []
+    if pending_q:
+        parts.append(f"\n## Открытые вопросы ({target_project})\n")
+        for q in pending_q:
+            parts.append(f"- **{q['opened']}** — {q['text'][:SESSION_Q_CHARS]}")
+        parts.append("")
+
+    # 4. Session — на continuation показываем всегда, иначе фильтр по словам.
+    # Берём ПОСЛЕДНИЙ БЛОК ЖУРНАЛА целиком, а не срез файла по символам: файл
+    # накопительный, и срез отдавал бы свежую сессию вперемешку со старыми,
+    # обрываясь на полуслове (прежний лимит 600 резал 20 проектов из 41).
+    session_text = latest_session(target_project)
+    if session_text:
         if is_continuation:
-            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:600]}{'...' if len(session_text) > 600 else ''}\n")
+            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:SESSION_CHARS]}\n")
         elif topic_words:
             session_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', session_text.lower()))
             if topic_words & session_words:
-                parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:400]}{'...' if len(session_text) > 400 else ''}\n")
+                parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:SESSION_CHARS]}\n")
 
     # 4b. Compact history — резюме сжатий контекста (новое в v1.4.0)
     # Continuous memory через compact-границы. Показываем только при continuation

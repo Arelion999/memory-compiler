@@ -116,3 +116,19 @@ def test_empty_source_dir_does_nothing(env):
     (env["tmp"] / "VERSION").unlink()
     run(env); run(env)
     assert restarts(env) == 0
+
+
+def test_missing_source_dir_is_loud_not_silent(env, tmp_path):
+    """Отсутствие каталога исходников обязано попасть в лог.
+
+    Живой случай 2026-08-26: рабочую копию скрипта перезаписали версией из
+    репозитория с шаблонным MC_DIR. Деплой встал, а в логе не было ни строчки —
+    молчание выглядело как «изменений нет».
+    """
+    env["env"]["MC_DIR"] = (tmp_path / "нет-такого-каталога").as_posix()
+    env["env"]["MC_MISSING_STAMP"] = (env["tmp"] / "missing").as_posix()
+    proc = subprocess.run([BASH, SCRIPT], env=env["env"], capture_output=True, timeout=60)
+    assert proc.returncode == 1, "молчаливый успех при отсутствующем MC_DIR"
+    log = (env["tmp"] / "log").read_text(encoding="utf-8")
+    assert "MC_DIR не существует" in log
+    assert restarts(env) == 0

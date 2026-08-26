@@ -97,6 +97,22 @@ TOOLS_EN: dict[str, dict] = {
             'project': "Project name, or 'all'",
         },
     },
+    'open_questions': {
+        # RU: Показать НЕЗАКРЫТЫЕ вопросы проекта — на чём останавливались...
+        'description': ('Show UNRESOLVED questions of a project — what previous sessions '
+                        'stopped at and left open. Call it when returning to a project.'),
+        'params': {
+            'project': "Project name or 'all' (default: all)",
+        },
+    },
+    'close_question': {
+        # RU: Закрыть решённый открытый вопрос проекта.
+        'description': 'Close a resolved open question of a project. Matches by a fragment of its text.',
+        'params': {
+            'project': 'Project name (required)',
+            'match': 'Fragment of the question text to close (required)',
+        },
+    },
     'get_active_context': {
         # RU: Получить активный контекст проекта — последние 10 действий/решений.
         'description': 'Get the active context of a project — the last 10 actions/decisions.',

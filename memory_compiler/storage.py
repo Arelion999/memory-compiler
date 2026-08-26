@@ -2899,3 +2899,149 @@ def _render_tracking_body(data: dict) -> str:
             lines.append(line)
 
     return "\n".join(lines)
+
+
+# ─── Журнал сессий и открытые вопросы ────────────────────────────────────────
+#
+# ⚠️ РАНЬШЕ `_session.md` ПЕРЕЗАПИСЫВАЛСЯ ЦЕЛИКОМ, и это стоило дорого. Замер
+# 2026-08-26 по аудиту (7965 вызовов, 502 сессии): открытые вопросы фиксировались
+# в 68% вызовов finish_task — 948 штук, медиана 235 символов, то есть содержательные
+# — и 916 из них (96%) затирались следующей сессией того же проекта. В статью
+# open_questions не попадали вообще: finish_task отдаёт их только сюда. Поэтому
+# сессии теперь НАКАПЛИВАЮТСЯ, а вопросы вынесены в отдельный файл со статусом,
+# где живут до явного закрытия.
+
+MAX_SESSIONS = 10          # сколько последних сессий держим в журнале
+SESSION_SEP = "\n---\n\n"
+
+
+def _session_path(project: str) -> Path:
+    return safe_project_dir(project) / "_session.md"
+
+
+def _questions_path(project: str) -> Path:
+    return safe_project_dir(project) / "_questions.md"
+
+
+def _split_session_blocks(text: str) -> list[str]:
+    """Разбор журнала на блоки сессий, включая СТАРЫЙ однозаписный формат.
+
+    Старый файл («# Сессия: proj» + «**Дата:**» + разделы) становится одним
+    блоком — прежняя сессия не теряется при первом же сохранении в новом формате.
+    """
+    if not text.strip():
+        return []
+    body = re.sub(r"^#\s+Сесси[яи][^\n]*\n+", "", text.strip(), count=1)
+    if "\n## " in "\n" + body:
+        parts = re.split(r"\n(?=## )", body.strip())
+        return [p.strip() for p in parts if p.strip()]
+    # Старый формат целиком — как один блок, с датой из шапки
+    m = re.search(r"\*\*Дата:\*\*\s*([0-9\- :]+)", body)
+    stamp = (m.group(1).strip() if m else "ранее")
+    return ["## %s\n\n%s" % (stamp, body.strip())]
+
+
+def append_session(project: str, summary: str, decisions: str = "",
+                   open_questions: str = "") -> Path:
+    """Дописать сессию в журнал проекта, не затирая прошлые."""
+    path = _session_path(project)
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    blocks = _split_session_blocks(old)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    new_block = ["## %s" % now, "", "**Что сделано:** %s" % (summary or "—")]
+    if decisions:
+        new_block.append("\n**Решения:** %s" % decisions)
+    if open_questions:
+        new_block.append("\n**Открытые вопросы:** %s" % open_questions)
+    blocks.insert(0, "\n".join(new_block).strip())
+
+    text = "# Сессии: %s\n\n%s\n" % (project, SESSION_SEP.join(blocks[:MAX_SESSIONS]))
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def latest_session(project: str) -> str:
+    """Последняя сессия целиком — без обрезки по символам."""
+    path = _session_path(project)
+    if not path.exists():
+        return ""
+    blocks = _split_session_blocks(path.read_text(encoding="utf-8"))
+    return blocks[0] if blocks else ""
+
+
+def _q_key(text: str) -> str:
+    return re.sub(r"[^a-zа-яё0-9]+", " ", (text or "").lower()).strip()[:160]
+
+
+def parse_questions(project: str) -> list[dict]:
+    path = _questions_path(project)
+    if not path.exists():
+        return []
+    out = []
+    for block in re.split(r"\n(?=## )", path.read_text(encoding="utf-8")):
+        m = re.match(r"##\s+(open|closed)\s+·\s+([0-9\- :]+)(.*)", block.strip())
+        if not m:
+            continue
+        body = block.split("\n", 1)[1].strip() if "\n" in block else ""
+        closed_at = ""
+        cm = re.search(r"закрыт\s+([0-9\- :]+)", m.group(3) or "")
+        if cm:
+            closed_at = cm.group(1).strip()
+        out.append({"status": m.group(1), "opened": m.group(2).strip(),
+                    "closed": closed_at, "text": body})
+    return out
+
+
+def _write_questions(project: str, items: list[dict]) -> Path:
+    path = _questions_path(project)
+    lines = ["# Открытые вопросы: %s" % project, ""]
+    for q in items:
+        head = "## %s · %s" % (q["status"], q["opened"])
+        if q["status"] == "closed" and q.get("closed"):
+            head += " (закрыт %s)" % q["closed"]
+        lines.append(head)
+        lines.append("")
+        lines.append(q["text"].strip())
+        lines.append("")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
+def add_question(project: str, text: str) -> bool:
+    """Добавить открытый вопрос. Дубль (тот же текст, ещё открыт) не плодим."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    items = parse_questions(project)
+    key = _q_key(text)
+    for q in items:
+        if q["status"] == "open" and _q_key(q["text"]) == key:
+            return False
+    items.insert(0, {"status": "open",
+                     "opened": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                     "closed": "", "text": text})
+    _write_questions(project, items)
+    return True
+
+
+def close_questions(project: str, match: str) -> int:
+    """Закрыть вопросы, чей текст содержит match (регистр не важен)."""
+    needle = (match or "").strip().lower()
+    if not needle:
+        return 0
+    items = parse_questions(project)
+    n = 0
+    for q in items:
+        if q["status"] == "open" and needle in q["text"].lower():
+            q["status"] = "closed"
+            q["closed"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            n += 1
+    if n:
+        _write_questions(project, items)
+    return n
+
+
+def open_questions_list(project: str, limit: int = 0) -> list[dict]:
+    items = [q for q in parse_questions(project) if q["status"] == "open"]
+    return items[:limit] if limit else items

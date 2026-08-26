@@ -348,11 +348,85 @@ def heal_leaked_markup(dry_run: bool = False) -> tuple:
     return touched, totals
 
 
+
+def _is_real_question(text: str) -> bool:
+    """Отсеять записи вида «хвостов нет» — это ОТСУТСТВИЕ вопроса, а не вопрос.
+
+    Без фильтра список открытых вопросов сразу наполнялся бы отчётами о том,
+    что вопросов не осталось, и терял смысл ровно там, где должен помогать.
+    """
+    q = (text or "").strip().strip("*_ ").lower()
+    if len(q) < 15:
+        return False
+    # ⚠️ Не startswith по списку фраз: «Хвостов ПО ЗАДАЧЕ нет» не начинается с
+    # «хвостов нет», и такая запись проезжала фильтр (поймано тестом). Отрицание
+    # ищем в пределах первой фразы, отсчитывая от предмета — хвосты, вопросы,
+    # задачи, блокеры.
+    return not _NO_QUESTION_RE.search(q)
+
+
+_NO_QUESTION_RE = re.compile(
+    r"^(?:нет\b|отсутств|none\b|n/?a\b|всё закрыто|все закрыто)"
+    r"|^(?:хвост\w*|вопрос\w*|задач\w*|проблем\w*|блокер\w*|замечани\w*)"
+    r"[^.?!]{0,60}?\b(?:нет|не оста\w+|закрыт\w*|решен\w*|решён\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def seed_questions_from_sessions(dry_run: bool = True):
+    """Одноразово: перенести открытые вопросы из файлов сессий в _questions.md.
+
+    Без этого прохода накопительный список стартует пустым, а последние
+    зафиксированные вопросы 41 проекта так и остались бы только внутри блока
+    журнала — то есть невидимыми для start_task и open_questions.
+
+    Идемпотентен: add_question не заводит дубль уже открытого вопроса.
+    """
+    from memory_compiler.storage import add_question, _session_path
+    import memory_compiler.config as _cfg
+
+    seeded = skipped = 0
+    for proj in sorted(p for p in _cfg.PROJECTS if p != "daily"):
+        try:
+            path = _session_path(proj)
+        except ValueError:
+            continue
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found = []
+        # Оба формата: новый «**Открытые вопросы:** …» внутри блока журнала и
+        # старый раздел «## Открытые вопросы» однозаписного файла.
+        NL = chr(10)
+        pat_new = r"\*\*Открытые вопросы:\*\*\s*(.+?)(?=" + NL + r"\s*" + NL + r"|" + NL + r"## |\Z)"
+        pat_old = r"^## Открытые вопросы\s*" + NL + r"(.+?)(?=" + NL + r"## |\Z)"
+        for m in re.finditer(pat_new, text, re.S):
+            found.append(m.group(1).strip())
+        for m in re.finditer(pat_old, text, re.S | re.M):
+            found.append(m.group(1).strip())
+        for q in found:
+            if not _is_real_question(q):
+                continue
+            if dry_run:
+                print(f"{proj}: + {q[:90]}")
+                seeded += 1
+                continue
+            if add_question(proj, q):
+                seeded += 1
+            else:
+                skipped += 1
+    print(f"\nИтого вопросов заведено: {seeded}, пропущено дублей: {skipped}"
+          + (" [dry-run, ничего не записано]" if dry_run else ""))
+    return seeded
+
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
     if "--heal-markup" in sys.argv:
         heal_header_markup(dry_run=dry)
     elif "--heal-leaked" in sys.argv:
         heal_leaked_markup(dry_run=dry)
+    elif "--seed-questions" in sys.argv:
+        seed_questions_from_sessions(dry_run=dry)
     else:
         dedupe_all_articles(dry_run=dry)

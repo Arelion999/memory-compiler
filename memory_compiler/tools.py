@@ -206,6 +206,33 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="open_questions",
+            description=(
+                "Показать НЕЗАКРЫТЫЕ вопросы проекта — на чём останавливались в прошлых "
+                "сессиях и что осталось нерешённым. Вызывать при возврате к проекту."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"}
+                },
+            }
+        ),
+        Tool(
+            name="close_question",
+            description=(
+                "Закрыть решённый открытый вопрос проекта. Ищет по куску текста вопроса."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Имя проекта (обязательно)"},
+                    "match": {"type": "string", "description": "Кусок текста вопроса, который закрываем (обязательно)"}
+                },
+                "required": ["project", "match"]
+            }
+        ),
+        Tool(
             name="save_session",
             description="Сохранить контекст сессии (что сделано, что осталось, решения). Вызывать в конце сессии.",
             inputSchema={
@@ -1348,6 +1375,10 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
             result = [TextContent(type="text", text="\U0001F504 Reindex \u0437\u0430\u043f\u0443\u0449\u0435\u043d \u0432 \u0444\u043e\u043d\u0435 \u2014 \u0441\u0435\u0440\u0432\u0435\u0440 \u043e\u0441\u0442\u0430\u0451\u0442\u0441\u044f \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u041d\u0430 \u0431\u043e\u043b\u044c\u0448\u043e\u0439 \u0431\u0430\u0437\u0435 (NAS) \u044d\u0442\u043e \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u0438\u043d\u0443\u0442; \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u0435 \u0432\u0438\u0434\u043d\u043e \u043f\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044e .embeddings.pkl.")]
         else:
             result = [TextContent(type="text", text="\u23f3 Reindex \u0443\u0436\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f \u2014 \u0434\u043e\u0436\u0434\u0438\u0441\u044c \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f.")]
+    elif name == "open_questions":
+        result = await handlers.open_questions(arguments.get("project", "all"))
+    elif name == "close_question":
+        result = await handlers.close_question(**arguments)
     elif name == "save_session":
         result = await handlers.save_session(**arguments)
     elif name == "load_session":

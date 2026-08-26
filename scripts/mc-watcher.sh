@@ -43,6 +43,21 @@ current=$( { find "$MC_DIR" -name "*.py" -type f -exec sha1sum {} \; ;
              [ -f "$VERSION_FILE" ] && sha1sum "$VERSION_FILE" ; } 2>/dev/null \
            | sort | sha1sum | awk '{print $1}')
 
+# ⚠️ КАТАЛОГА НЕТ — ЖАЛУЕМСЯ, А НЕ МОЛЧИМ. Раньше пустой хэш выглядел так же,
+# как «изменений нет», и watcher молча простаивал. Живой случай 2026-08-26:
+# рабочую копию /usr/local/bin/mc-watcher.sh перезаписали файлом ИЗ РЕПОЗИТОРИЯ,
+# где MC_DIR — шаблонный /path/to/...; деплой встал на полчаса, и в логе не было
+# ни строчки. Пишем в лог не чаще раза в час, чтобы не залить его при cron */1.
+if [ ! -d "$MC_DIR" ]; then
+  stamp="${MC_MISSING_STAMP:-/var/log/mc-watcher.missing}"
+  now=$(date +%s); prev=$(cat "$stamp" 2>/dev/null || echo 0)
+  if [ $((now - prev)) -ge 3600 ]; then
+    echo "[$(date -Iseconds)] ОШИБКА: MC_DIR не существует ($MC_DIR) — watcher ничего не деплоит" >> "$LOG"
+    echo "$now" > "$stamp"
+  fi
+  exit 1
+fi
+
 # Пусто/ошибка find (каталог недоступен во время синка) — ничего не делаем.
 [ -z "$current" ] && exit 0
 [ "$current" = "$EMPTY_SHA1" ] && exit 0
