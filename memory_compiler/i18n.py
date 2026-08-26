@@ -25,6 +25,10 @@ TOOLS_EN: dict[str, dict] = {
             'content': 'Problem, cause, solution',
             'project': 'Project name',
             'force_new': 'Force creation of a new article',
+            'supersedes': ('File names of articles this correction SUPERSEDES (comma-separated). '
+                           'Always set it when an earlier conclusion turns out to be wrong: without '
+                           'it both articles are returned as equals, and the next session takes the '
+                           'one ranked higher, not the one that is correct'),
         },
     },
     'get_context': {

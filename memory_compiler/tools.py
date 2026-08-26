@@ -108,7 +108,8 @@ async def list_tools() -> list[Tool]:
                     "content": {"type": "string", "description": "Проблема, причина, решение"},
                     "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}},
-                    "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"}
+                    "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"},
+                    "supersedes": {"type": "string", "description": "Имена файлов статей, которые эта поправка ОТМЕНЯЕТ (через запятую). Ставить всегда, когда выяснилось, что прежний вывод неверен: без этого обе статьи выдаются равноправно и следующая сессия возьмёт ту, что выше по релевантности, а не ту, что верна"}
                 },
                 "required": ["topic", "content", "project"]
             }

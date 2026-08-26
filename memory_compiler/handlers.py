@@ -35,6 +35,7 @@ from memory_compiler.storage import (
     regenerate_index, git_commit,
     update_active_context,
     append_session, append_note, latest_session, RUNNING_MARK, add_question, close_questions, open_questions_list,
+    mark_superseded, superseded_by,
     relevant_reflections,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
@@ -88,7 +89,8 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
         await asyncio.to_thread(embed_document, text, filename, project)
 
 
-async def save_lesson(topic: str, content: str, project: str, tags: list = None, force_new: bool = False) -> list[TextContent]:
+async def save_lesson(topic: str, content: str, project: str, tags: list = None,
+                      force_new: bool = False, supersedes: str = "") -> list[TextContent]:
     try:
         safe_project_dir(project)
     except ValueError as e:
@@ -225,10 +227,20 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     # 11. Project journal (Karpathy LLM Wiki pattern)
     log_event(project, "save_lesson", f"{topic} → {article_path.name}")
 
+    # 11a. Связь «отменяет»: пометить опровергнутые статьи. Неудача (опечатка в
+    # имени, файла нет) НЕ роняет сохранение — знание важнее связи.
+    superseded_ok = []
+    for old_name in [s.strip() for s in (supersedes or "").split(",") if s.strip()]:
+        if await asyncio.to_thread(mark_superseded, project, old_name,
+                                   article_path.name, topic):
+            superseded_ok.append(old_name)
+
     # 12. Git commit
     await asyncio.to_thread(git_commit, f"save: {topic} [{project}]")
 
     result = action
+    if superseded_ok:
+        result += f"\n⚠️ Отменены этой поправкой: {', '.join(superseded_ok)}"
     if git_refs:
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
         result += f"\n\U0001f517 Git: {refs_summary}"
@@ -396,6 +408,10 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
         return [TextContent(type="text", text=f"Ничего не найдено: '{query}'")]
 
     results = await _rerank_async(query, results, top_k=8)
+    # Поправки к найденному подтягиваются НЕЗАВИСИМО от релевантности и встают
+    # выше отменённых статей: в живом случае поправка была в той же выдаче, но
+    # ниже, и агент взял верхнюю.
+    results = await attach_corrections(results)
 
     track_access([f"{r['project']}/{r['file']}" for r in results])
 
@@ -1459,6 +1475,43 @@ def _fit_preview(preview: str, budget: int, qwords: set[str]) -> str:
     return "\n".join(out)
 
 
+async def attach_corrections(results: list[dict]) -> list[dict]:
+    """Подтянуть в выдачу поправки к найденным статьям и поставить их ВЫШЕ.
+
+    ⚠️ НЕЗАВИСИМО ОТ РЕЛЕВАНТНОСТИ — в этом весь смысл. В живом случае поправка
+    лежала в той же выдаче, но ниже отменённой статьи, и агент взял верхнюю.
+    Поправка не обязана быть релевантнее: она обязана быть ВИДНА.
+    """
+    if not results:
+        return results
+    have = {(r.get("project"), r.get("file")) for r in results}
+    corrections: list[dict] = []
+    for r in results:
+        link = await asyncio.to_thread(superseded_by, r.get("project", ""), r.get("file", ""))
+        if not link:
+            continue
+        fname, title = link
+        r["superseded_by"] = link
+        key = (r.get("project"), fname)
+        if key in have:
+            continue                       # поправка уже в выдаче — только поднимем
+        path = KNOWLEDGE_DIR / r["project"] / fname
+        if not path.exists():
+            continue
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        corrections.append({
+            "project": r["project"], "file": fname,
+            "title": title or article_title_tags(text, fname)[0],
+            "score": r.get("score", 0), "preview": make_preview(text, n=10),
+            "is_correction": True,
+        })
+        have.add(key)
+    if not corrections:
+        # поправка уже была в выдаче — поднимаем её над отменённой
+        return sorted(results, key=lambda r: bool(r.get("superseded_by")))
+    return corrections + sorted(results, key=lambda r: bool(r.get("superseded_by")))
+
+
 def _render_search_results(results: list[dict], header: str = "", query: str = "") -> str:
     """Собрать выдачу поиска в пределах SEARCH_BUDGET.
 
@@ -1480,6 +1533,14 @@ def _render_search_results(results: list[dict], header: str = "", query: str = "
     parts = [header] if header else []
     for r, bud in zip(results, budgets):
         title_line = f"---\n### [{r['project']}] {r['title']} ({_scores(r)})\n"
+        # Отменённая статья не выдаётся молча: предупреждение идёт ПЕРЕД телом —
+        # иначе его прочтут уже после того, как поверят содержанию.
+        sup = r.get("superseded_by") or _superseded_note(r)
+        if sup:
+            title_line += (f"⚠️ **Статья отменена** поправкой «{sup[1] or sup[0]}» "
+                           f"({sup[0]}) — читать её.\n")
+        elif r.get("is_correction"):
+            title_line += "✅ **Это поправка** — она отменяет прежний вывод по теме.\n"
         left = bud - len(title_line)
         # ⚠️ Второго среза по строкам здесь НЕТ: превью уже собрано
         # make_preview(n=10) в search.py. Резать одно и то же дважды значит
@@ -1493,6 +1554,14 @@ def _render_search_results(results: list[dict], header: str = "", query: str = "
             body = _fit_preview(body, left, qwords)
         parts.append(title_line + body + "\n")
     return "".join(parts)
+
+
+def _superseded_note(r: dict):
+    """Пометка об отмене из шапки статьи (дешёвое чтение, без обхода базы)."""
+    try:
+        return superseded_by(r.get("project", ""), r.get("file", ""))
+    except Exception:
+        return None
 
 
 def _scores(r: dict) -> str:

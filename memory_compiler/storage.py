@@ -2943,6 +2943,74 @@ SESSION_SEP = "\n---\n\n"
 MAX_NOTES = 12             # заметок по ходу на одну сессию
 RUNNING_MARK = "· в работе"  # пометка незакрытого блока журнала
 
+# ── Связь «отменяет» (v1.69.0) ──────────────────────────────────────────────
+# Живой случай 26.08.2026: по теме контура 8.3.27 в проекте лежали четыре статьи —
+# две поправки (97.6 и 96.8) и две отменённые ими (94.5 и 92.3). Выдача показала
+# все РАВНОПРАВНО, агент взял верхнюю по релевантности и заявил владельцу работу,
+# которой не нужно. Признаки поправки были только текстовые («прежний вывод
+# НЕВЕРЕН», тег «поправка») — машиночитаемой связи не существовало.
+#
+# ⚠️ СВЯЗЬ ПИШЕТСЯ В ОБЕ СТОРОНЫ, и пометка живёт В САМОЙ отменённой статье, а не
+# в отдельном индексе: читающий видит предупреждение, даже открыв файл напрямую,
+# и не нужен обход всех статей на каждое чтение (ровно та цена, из-за которой
+# detect_contradictions отключили в v1.54.1).
+SUPERSEDED_MARK = "**Отменена:**"
+SUPERSEDES_MARK = "**Отменяет:**"
+
+
+def _article_file(project: str, filename: str) -> Path | None:
+    try:
+        path = safe_article_path(project, filename)
+    except ValueError:
+        return None
+    return path if path.exists() else None
+
+
+def mark_superseded(project: str, old_filename: str, new_filename: str,
+                    new_title: str = "") -> bool:
+    """Пометить статью отменённой более поздней. True, если пометка поставлена.
+
+    ⚠️ Неудача НЕ РОНЯЕТ вызов: опечатка в имени файла не должна стоить потери
+    самой поправки — знание важнее связи.
+    """
+    if not old_filename or old_filename == new_filename:
+        return False
+    path = _article_file(project, old_filename)
+    if path is None:
+        return False
+    text = path.read_text(encoding="utf-8")
+    if SUPERSEDED_MARK in text:
+        return False                      # уже помечена — не дублируем
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    note = "%s %s%s (%s)" % (SUPERSEDED_MARK, new_filename,
+                             " — %s" % new_title if new_title else "", stamp)
+    lines = text.splitlines()
+    # ставим в шапку — сразу после метаданных, до тела: предупреждение обязано
+    # попасться на глаза раньше отменённого содержания
+    insert_at = 1
+    for i, line in enumerate(lines[:12]):
+        if line.startswith(("**Дата:**", "**Проект:**", "**Теги:**", "**Обновлено:**")):
+            insert_at = i + 1
+    lines.insert(insert_at, note)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
+def superseded_by(project: str, filename: str) -> tuple[str, str] | None:
+    """(файл поправки, её заголовок) — или None, если статья не отменялась."""
+    path = _article_file(project, filename)
+    if path is None:
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines()[:14]:
+        if line.startswith(SUPERSEDED_MARK):
+            rest = line[len(SUPERSEDED_MARK):].strip()
+            rest = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)\s*$", "", rest)
+            if " — " in rest:
+                fname, title = rest.split(" — ", 1)
+                return fname.strip(), title.strip()
+            return rest.strip(), ""
+    return None
+
 
 def _session_path(project: str) -> Path:
     return safe_project_dir(project) / "_session.md"
