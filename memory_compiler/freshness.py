@@ -33,6 +33,8 @@ _writes: deque = deque(maxlen=300)
 _seen: dict[tuple[str, str], float] = {}
 # Последний проект, с которым работала сессия, — для вызовов без project.
 _last_project: dict[str, str] = {}
+# Отсчёт молчания: (session_key, project) -> ts начала работы либо своей записи.
+_started: dict[tuple[str, str], float] = {}
 # Стабильные ключи сессий: id() переиспользуется после сборки мусора.
 _keys: WeakKeyDictionary = WeakKeyDictionary()
 _counter = [0]
@@ -43,6 +45,11 @@ MAX_AGE_SEC = 12 * 3600
 MAX_SHOWN = 5
 # Потолок на словари: сессий за сутки бывают десятки, чистим самые старые.
 MAX_SEEN = 500
+# Молчаливая работа дольше этого — повод напомнить про заметку по ходу.
+# Замер 2026-08-26 по аудиту: работа после последней загрузки контекста —
+# медиана 25 минут, p90 101. Инструмент, о котором надо ВСПОМНИТЬ, механизмом
+# не работает: у stale_facts за 4.5 месяца ноль вызовов.
+NOTE_HINT_SEC = 25 * 60
 
 
 def key_for(session: Any) -> str:
@@ -65,6 +72,10 @@ def note_write(project: str, tool: str, topic: str, key: str) -> None:
     if not project or project == "all":
         return
     _writes.append((time.time(), project, tool, (topic or "")[:120], key))
+    if key:
+        # своя запись сдвигает отсчёт молчания: напоминать сразу после того, как
+        # просьбу выполнили, — верный способ обесценить напоминание
+        _started[(key, project)] = time.time()
 
 
 def touch(key: str, project: str) -> None:
@@ -94,13 +105,15 @@ def consume(key: str, project: str) -> str:
     last = _seen.get((key, project))
     touch(key, project)
     if last is None:
+        _started.setdefault((key, project), time.time())
         return ""
+    hint = _note_hint(key, project)
 
     now = time.time()
     fresh = [w for w in _writes
              if w[1] == project and w[0] > last and w[4] != key and now - w[0] <= MAX_AGE_SEC]
     if not fresh:
-        return ""
+        return hint
 
     lines = []
     for ts, _proj, tool, topic, _k in fresh[-MAX_SHOWN:]:
@@ -116,6 +129,28 @@ def consume(key: str, project: str) -> str:
         "`get_active_context` / `read_article` по этим темам. Скорее всего, "
         "изменения уже описаны, и разбираться с нуля не нужно."
         % (project, len(fresh), _plural(len(fresh)), "\n".join(lines))
+    ) + hint
+
+
+def _note_hint(key: str, project: str) -> str:
+    """Напомнить про `session_note`, если сессия давно работает и молчит.
+
+    Отсчёт — от начала работы с проектом либо от последней СВОЕЙ записи.
+    Напоминание сдвигает отсчёт: подсказка, повторяемая в каждом ответе,
+    читается как шум и перестаёт работать.
+    """
+    since = _started.get((key, project))
+    if since is None:
+        _started[(key, project)] = time.time()
+        return ""
+    if time.time() - since < NOTE_HINT_SEC:
+        return ""
+    _started[(key, project)] = time.time()
+    return (
+        "\n\n💡 Работа по `%s` идёт больше %d минут без записи в базу. Если по "
+        "дороге что-то выяснилось — `session_note` (одна строка, сводка сессии "
+        "не пересобирается): параллельная сессия и следующий старт это увидят."
+        % (project, NOTE_HINT_SEC // 60)
     )
 
 
@@ -132,3 +167,4 @@ def reset() -> None:
     _writes.clear()
     _seen.clear()
     _last_project.clear()
+    _started.clear()

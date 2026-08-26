@@ -137,3 +137,55 @@ def test_dispatcher_survives_absent_request_context():
 
     base = [TextContent(type="text", text="ответ")]
     assert tools._append_freshness("search", {"project": "infra"}, base) == base
+
+
+# ── напоминание о заметке по ходу (v1.65.0) ─────────────────────────────────
+# Замер 2026-08-26: работа после последней загрузки контекста — медиана 25 минут,
+# p90 101. Инструмент, о котором надо ВСПОМНИТЬ, не работает механизмом: у
+# stale_facts за 4.5 месяца ноль вызовов. Поэтому напоминает сервер, там же, где
+# уже едет футер свежести.
+
+def test_long_silent_work_gets_a_note_hint():
+    a = freshness.key_for(FakeSession())
+    freshness.consume(a, "infra")                       # начало работы с проектом
+    freshness._seen[(a, "infra")] = time.time() - freshness.NOTE_HINT_SEC - 60
+    freshness._started[(a, "infra")] = time.time() - freshness.NOTE_HINT_SEC - 60
+    hint = freshness.consume(a, "infra")
+    assert "session_note" in hint
+
+
+def test_short_work_is_not_nagged():
+    a = freshness.key_for(FakeSession())
+    freshness.consume(a, "infra")
+    assert "session_note" not in freshness.consume(a, "infra")
+
+
+def test_hint_is_not_repeated_every_call():
+    """Напоминание раз в окно, а не в каждом ответе: подсказка, повторяемая
+    без конца, читается как шум и перестаёт работать."""
+    a = freshness.key_for(FakeSession())
+    freshness.consume(a, "infra")
+    freshness._started[(a, "infra")] = time.time() - freshness.NOTE_HINT_SEC - 60
+    freshness._seen[(a, "infra")] = time.time() - freshness.NOTE_HINT_SEC - 60
+    assert "session_note" in freshness.consume(a, "infra")
+    assert "session_note" not in freshness.consume(a, "infra")
+
+
+def test_own_note_resets_the_timer():
+    """Записала заметку — отсчёт пошёл заново, иначе напоминание придёт сразу
+    после выполнения просьбы."""
+    a = freshness.key_for(FakeSession())
+    freshness.consume(a, "infra")
+    freshness._started[(a, "infra")] = time.time() - freshness.NOTE_HINT_SEC - 60
+    freshness.note_write("infra", "session_note", "нашёл причину", a)
+    freshness._seen[(a, "infra")] = time.time() - 10
+    assert "session_note" not in freshness.consume(a, "infra")
+
+
+def test_note_text_is_shown_in_the_footer():
+    """У заметки нет ни topic, ни filename — если брать только их, чужая сессия
+    видит «session_note: (без темы)» и не понимает, что именно изменилось."""
+    a, b = freshness.key_for(FakeSession()), freshness.key_for(FakeSession())
+    freshness.consume(a, "infra")
+    freshness.note_write("infra", "session_note", "прод отдаёт 502 после рестарта", b)
+    assert "прод отдаёт 502" in freshness.consume(a, "infra")

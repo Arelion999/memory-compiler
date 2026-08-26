@@ -34,7 +34,7 @@ from memory_compiler.storage import (
     article_title_tags, parse_meta_value, _parse_frontmatter,
     regenerate_index, git_commit,
     update_active_context,
-    append_session, latest_session, add_question, close_questions, open_questions_list,
+    append_session, append_note, latest_session, RUNNING_MARK, add_question, close_questions, open_questions_list,
     relevant_reflections,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
     update_cross_references,
@@ -610,6 +610,23 @@ async def save_session(project: str, summary: str, decisions: str = "", open_que
         n = len(open_questions_list(project))
         msg += f"\n❓ Открытый вопрос добавлен в {project}/_questions.md (всего открытых: {n})"
     return [TextContent(type="text", text=msg)]
+
+
+async def session_note(note: str, project: str) -> list[TextContent]:
+    """Заметка по ходу сессии: одна строка в текущий блок журнала.
+
+    Дополнять контекст ПОСРЕДИ работы было нечем: `save_session` пересобирает
+    сводку целиком и зовётся в 10% сессий (замер 2026-08-26 по аудиту, 502
+    сессии). При этом работа после последней загрузки контекста — медиана 25
+    минут, p90 101: всё найденное в эти минуты для параллельной сессии и для
+    следующего старта не существовало.
+
+    Дёшево по построению: без git-коммита (5.5 с на `git add -A`), без
+    пересборки сводки, без индексации — файл журнала служебный и в поиск не
+    попадает (search.SERVICE_FILES).
+    """
+    await asyncio.to_thread(append_note, project, note)
+    return [TextContent(type="text", text=f"✅ Заметка записана в {project}/_session.md")]
 
 
 async def open_questions(project: str = "all") -> list[TextContent]:
@@ -1259,6 +1276,127 @@ SESSION_CHARS = 1800
 SESSION_MAX_QUESTIONS = 5
 SESSION_Q_CHARS = 300
 
+# ── Общий бюджет стартового контекста (v1.65.0) ─────────────────────────────
+# До этого у каждого блока был свой срез в символах, и лимиты не знали друг о
+# друге. Замер 2026-08-26 на боевой базе: 50% показанных открытых вопросов
+# резались по 300 символов, ещё 12 не показывались вовсе — а у 28 проектов из 46
+# весь стартовый контекст не дотягивал и до 1500 символов, то есть место было.
+# Размер ответа при этом гулял от 457 до 6808: общего потолка не существовало,
+# он складывался стихийно из суммы независимых срезов.
+START_BUDGET = 6000        # потолок на обрезаемые блоки, символов
+START_BLOCK_FLOOR = 120    # меньше — огрызок; блок не показываем, долю возвращаем
+
+
+def _weighted_budgets(want: list[int], weight: list[float], total: int,
+                      floor: int = START_BLOCK_FLOOR) -> list[int]:
+    """Взвешенный water-fill: блок берёт min(запрос, своя доля), неиспользованное
+    делится между теми, кому не хватило, пропорционально весам (приоритетам).
+
+    От `_fair_section_budgets` отличается двумя вещами, обеими нужными здесь:
+    вес (открытые вопросы важнее runbook'ов) и отсечка огрызков — блок, которому
+    досталось меньше `floor`, не показывается вовсе, а его доля возвращается в
+    пул. Результат не зависит от порядка блоков.
+    """
+    n = len(want)
+    budgets = [0] * n
+    if total <= 0 or not n:
+        return budgets
+    open_idx = {i for i in range(n) if want[i] > 0 and weight[i] > 0}
+    left = total
+    while open_idx:
+        wsum = sum(weight[i] for i in open_idx)
+        if wsum <= 0:
+            break
+        # доля блока в оставшемся пуле пропорциональна его весу
+        fits = {i for i in open_idx if want[i] <= left * weight[i] / wsum}
+        if not fits:
+            for i in open_idx:
+                budgets[i] = int(left * weight[i] / wsum)
+            left -= sum(budgets[i] for i in open_idx)
+            break
+        for i in fits:
+            budgets[i] = want[i]
+            left -= want[i]
+        open_idx -= fits
+    # огрызки отбрасываем: обрывок в 30 символов не контекст, а шум
+    for i in range(n):
+        if 0 < budgets[i] < min(floor, want[i]):
+            left += budgets[i]
+            budgets[i] = 0
+    # освободившееся (и остаток от целочисленного деления) доливаем тем, кто уже
+    # показывается и не насытился. Отброшенным не доливаем — иначе огрызок
+    # вернулся бы из мёртвых. Порядок задан весом, при равенстве индексом:
+    # раздача обязана быть воспроизводимой.
+    while left > 0:
+        hungry = [i for i in range(n) if budgets[i] and budgets[i] < want[i]]
+        if not hungry:
+            break
+        share = max(1, left // len(hungry))
+        for i in sorted(hungry, key=lambda i: (-weight[i], i)):
+            if left <= 0:
+                break
+            take = min(share, want[i] - budgets[i], left)
+            budgets[i] += take
+            left -= take
+    return budgets
+
+
+class _Block:
+    """Кусок стартового контекста: заголовок, пункты и приоритет.
+
+    Пункты — целые смысловые единицы (вопрос, находка, факт). Внутри бюджета
+    они набираются ЦЕЛИКОМ, пока влезают: половина вопроса хуже, чем вопрос и
+    честная пометка «ещё 3».
+    """
+
+    __slots__ = ("key", "header", "items", "weight", "sep")
+
+    def __init__(self, key: str, header: str, items: list[str], weight: float,
+                 sep: str = "\n"):
+        self.key = key
+        self.header = header
+        self.items = [i for i in items if i and i.strip()]
+        self.weight = weight
+        self.sep = sep
+
+    @property
+    def want(self) -> int:
+        if not self.items:
+            return 0
+        return len(self.header) + sum(len(i) + len(self.sep) for i in self.items)
+
+
+def _render_block(block: "_Block", budget: int) -> str:
+    """Собрать блок в пределах бюджета: целые пункты, пока влезают; последний
+    подрезается по границе строки; не поместившиеся — считаются вслух."""
+    if not block.items or budget <= 0:
+        return ""
+    left = budget - len(block.header)
+    if left <= 0:
+        return ""
+    shown, cut_tail = [], False
+    for item in block.items:
+        need = len(item) + len(block.sep)
+        if need <= left:
+            shown.append(item)
+            left -= need
+            continue
+        # последний влезающий подрезаем, только если от него остаётся смысл
+        if not shown and left > START_BLOCK_FLOOR:
+            piece, _ = _cut_section_body(item, left)
+            shown.append(piece)
+            left = 0
+            cut_tail = True
+        break
+    if not shown:
+        return ""
+    hidden = len(block.items) - len(shown) - (1 if cut_tail else 0)
+    parts = [block.header, *shown]
+    if hidden > 0:
+        parts.append(f"*…ещё {hidden} — спроси `open_questions` / `search`*"
+                     if block.key == "questions" else f"*…ещё {hidden}*")
+    return block.sep.join(parts)
+
 
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance.
@@ -1266,11 +1404,19 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     Continuation intent: if topic is a generic "continue" phrase (mostly stopwords),
     skip semantic search entirely — load active context + last session for the project.
     Industry pattern: continuation is session restoration, not RAG.
+
+    Объём выдачи держит ОДИН бюджет (START_BUDGET), а не срез у каждого блока:
+    блоки заявляют желаемую длину и приоритет, `_weighted_budgets` раздаёт
+    water-fill'ом. Прежние независимые лимиты (сессия 1800, вопрос 300, факт 220,
+    compact 600, решение 100) вели себя ровно наоборот нужному — резали там, где
+    место было (28 проектов из 46 не выбирали и 1500 символов), и не давали
+    потолка там, где выдача разрасталась (457..6808 символов на вызов).
     """
     from memory_compiler.search import is_low_confidence_query
     MIN_SCORE = 15  # min hybrid score
     MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
+    blocks: list[_Block] = []
 
     # Topic words for relevance checks
     topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
@@ -1295,13 +1441,15 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
 
         if relevant:
             track_access([f"{r['project']}/{r['file']}" for r in relevant])
-            parts.append(f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)\n")
+            found_items = []
             for r in relevant[:3]:
                 preview = "\n".join(r["preview"].splitlines()[:4])
                 scores = f"hybrid: {r.get('score', 0)}"
                 if "rerank_score" in r:
                     scores += f", rerank: {r['rerank_score']:.2f}"
-                parts.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
+                found_items.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}")
+            blocks.append(_Block("found", f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)",
+                                 found_items, weight=2.5, sep="\n\n"))
         else:
             parts.append("*Похожих кейсов не найдено в базе.*\n")
 
@@ -1315,10 +1463,8 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         if is_continuation:
             # Continuation intent → recent activity wholesale (top 5)
             ctx_lines = [l for l in ctx_text.splitlines() if l.startswith("- [")]
-            if ctx_lines:
-                parts.append(f"\n## Недавняя активность в {target_project}\n")
-                parts.extend(ctx_lines[:5])
-                parts.append("")
+            blocks.append(_Block("activity", f"## Недавняя активность в {target_project}",
+                                 ctx_lines[:5], weight=1.5))
         elif topic_words:
             relevant_lines = []
             for line in ctx_text.splitlines():
@@ -1327,10 +1473,8 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 line_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', line.lower()))
                 if topic_words & line_words:
                     relevant_lines.append(line)
-            if relevant_lines:
-                parts.append(f"\n## Связанные действия в {target_project}\n")
-                parts.extend(relevant_lines[:3])
-                parts.append("")
+            blocks.append(_Block("activity", f"## Связанные действия в {target_project}",
+                                 relevant_lines[:3], weight=1.5))
 
     # 3-. Факты прошлых сессий по теме. Файл `_reflections.md` до v1.62.0 писался
     # на каждом finish_task и не читался НИКЕМ — 103 КБ в 39 проектах впустую.
@@ -1340,11 +1484,8 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         facts = relevant_reflections(target_project, topic_words, limit=4)
     except Exception:
         facts = []
-    if facts:
-        parts.append(f"\n## Факты прошлых сессий ({target_project})\n")
-        for f in facts:
-            parts.append(f"- {f[:220]}")
-        parts.append("")
+    blocks.append(_Block("facts", f"## Факты прошлых сессий ({target_project})",
+                         [f"- {f}" for f in facts], weight=1.5))
 
     # 3a. Сроки на исходе. Инструмент stale_facts за 4.5 месяца не позвали НИ РАЗУ
     # (замер по аудиту): проверка, которую надо вспомнить и вызвать, механизмом
@@ -1354,38 +1495,44 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         deadlines = await asyncio.to_thread(stale_summary, target_project, 30, 3)
     except Exception:
         deadlines = []                       # сроки не должны ронять старт задачи
-    if deadlines:
-        parts.append(f"\n## Сроки на исходе ({target_project})\n")
-        for d in deadlines:
-            when = "истёк" if d["days_left"] < 0 else f"осталось {d['days_left']} дн"
-            parts.append(f"- **{d['title'][:90]}** — {d['date']}, {when}")
-        parts.append("")
+    dl_items = []
+    for d in deadlines:
+        when = "истёк" if d["days_left"] < 0 else f"осталось {d['days_left']} дн"
+        dl_items.append(f"- **{d['title'][:90]}** — {d['date']}, {when}")
+    blocks.append(_Block("deadlines", f"## Сроки на исходе ({target_project})",
+                         dl_items, weight=2.0))
 
     # 3b. Открытые вопросы проекта — то, на чём остановились и не закрыли.
     # Показываем ВСЕГДА, когда они есть: до v1.58.0 96% зафиксированных вопросов
     # затирались следующей сессией и до следующего старта не доезжали вовсе.
+    # Длину вопроса держит бюджет, а не срез по 300 символов: замер 2026-08-26 —
+    # так обрезалась ПОЛОВИНА показанных вопросов (18 из 36).
     try:
         pending_q = open_questions_list(target_project, limit=SESSION_MAX_QUESTIONS)
     except ValueError:
         pending_q = []
-    if pending_q:
-        parts.append(f"\n## Открытые вопросы ({target_project})\n")
-        for q in pending_q:
-            parts.append(f"- **{q['opened']}** — {q['text'][:SESSION_Q_CHARS]}")
-        parts.append("")
+    blocks.append(_Block("questions", f"## Открытые вопросы ({target_project})",
+                         [f"- **{q['opened']}** — {q['text']}" for q in pending_q],
+                         weight=3.0))
 
     # 4. Session — на continuation показываем всегда, иначе фильтр по словам.
     # Берём ПОСЛЕДНИЙ БЛОК ЖУРНАЛА целиком, а не срез файла по символам: файл
     # накопительный, и срез отдавал бы свежую сессию вперемешку со старыми,
-    # обрываясь на полуслове (прежний лимит 600 резал 20 проектов из 41).
+    # обрываясь на полуслове.
     session_text = latest_session(target_project)
     if session_text:
-        if is_continuation:
-            parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:SESSION_CHARS]}\n")
-        elif topic_words:
+        # Незакрытая сессия — это «что происходит прямо сейчас», её показываем
+        # ВСЕГДА и первым делом: заметку писали именно затем, чтобы её увидели,
+        # в том числе параллельная сессия с другой темой.
+        running = RUNNING_MARK in session_text.splitlines()[0]
+        show_session = running or is_continuation
+        if not show_session and topic_words:
             session_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', session_text.lower()))
-            if topic_words & session_words:
-                parts.append(f"\n## Предыдущая сессия ({target_project})\n{session_text[:SESSION_CHARS]}\n")
+            show_session = bool(topic_words & session_words)
+        if show_session:
+            header = (f"## Сессия в работе ({target_project}) — не закрыта" if running
+                      else f"## Предыдущая сессия ({target_project})")
+            blocks.append(_Block("session", header, [session_text], weight=3.0))
 
     # 4b. Compact history — резюме сжатий контекста (новое в v1.4.0)
     # Continuous memory через compact-границы. Показываем только при continuation
@@ -1394,10 +1541,11 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     if compact_path.exists() and (is_continuation or topic_words):
         compact_text = compact_path.read_text(encoding="utf-8")
         # Парсим первый ## блок (самый свежий)
-        blocks = re.split(r"^## ", compact_text, flags=re.MULTILINE)
-        recent_block = blocks[1].strip() if len(blocks) > 1 else ""
-        if recent_block:
-            parts.append(f"\n## Compact history ({target_project}) — последний сжатый контекст\n## {recent_block[:600]}{'...' if len(recent_block) > 600 else ''}\n")
+        cblocks = re.split(r"^## ", compact_text, flags=re.MULTILINE)
+        recent_block = cblocks[1].strip() if len(cblocks) > 1 else ""
+        blocks.append(_Block("compact",
+                             f"## Compact history ({target_project}) — последний сжатый контекст",
+                             [f"## {recent_block}"] if recent_block else [], weight=0.8))
 
     # 5. Search in dependent projects (только релевантные)
     deps = read_project_deps(target_project)
@@ -1408,10 +1556,12 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
             dep_results.extend([r for r in dr if r.get("score", 0) >= MIN_SCORE])
         if dep_results:
             dep_results.sort(key=lambda r: -r.get("score", 0))
-            parts.append(f"\n## Из зависимых проектов ({', '.join(deps)})\n")
+            dep_items = []
             for r in dep_results[:2]:
                 preview = "\n".join(r["preview"].splitlines()[:3])
-                parts.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
+                dep_items.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}")
+            blocks.append(_Block("deps", f"## Из зависимых проектов ({', '.join(deps)})",
+                                 dep_items, weight=1.0, sep="\n\n"))
 
     # 5. Relevant decisions (brief, only high-score)
     decision_results = await _whoosh_async(topic, project=target_project, limit=10)
@@ -1433,15 +1583,12 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                         decision_line = text.splitlines()[idx + 1].strip()
                     break
             decisions_found.append(f"- **{r['title']}** — {decision_line[:100]}")
-    if decisions_found:
-        parts.append(f"\n## Решения по теме\n")
-        parts.extend(decisions_found[:3])
-        parts.append("")
+    blocks.append(_Block("decisions", "## Решения по теме", decisions_found[:3], weight=1.2))
 
     # 6. Relevant runbooks (brief, only matching)
     proj_path = KNOWLEDGE_DIR / target_project
+    runbooks_found = []
     if proj_path.exists():
-        runbooks_found = []
         for md in proj_path.glob("*.md"):
             if md.name.startswith("_"):
                 continue
@@ -1450,14 +1597,20 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 continue
             title = head.splitlines()[0].lstrip("# ").strip() if head.splitlines() else md.stem
             # Check relevance: any topic word in title
-            topic_words = {w.lower() for w in topic.split() if len(w) > 3}
-            if topic_words & {w.lower() for w in title.split()}:
+            title_words = {w.lower() for w in topic.split() if len(w) > 3}
+            if title_words & {w.lower() for w in title.split()}:
                 total = head.count("- [ ]") + head.count("- [x]")
                 runbooks_found.append(f"- **{title}** ({md.name}, {total} шагов)")
-        if runbooks_found:
-            parts.append(f"\n## Runbooks\n")
-            parts.extend(runbooks_found[:3])
-            parts.append("")
+    blocks.append(_Block("runbooks", "## Runbooks", runbooks_found[:3], weight=0.5))
+
+    # 7. Раздача общего бюджета: короткий блок берёт своё целиком, неиспользованное
+    # достаётся тем, кому не хватило, приоритет решает, кого резать первым.
+    live = [b for b in blocks if b.items]
+    budgets = _weighted_budgets([b.want for b in live], [b.weight for b in live], START_BUDGET)
+    for b, bud in zip(live, budgets):
+        rendered = _render_block(b, bud)
+        if rendered:
+            parts.append("\n" + rendered + "\n")
 
     parts.append("\n---\n*Приступай к задаче. По завершении вызови `finish_task`.*")
     return [TextContent(type="text", text="\n".join(parts))]

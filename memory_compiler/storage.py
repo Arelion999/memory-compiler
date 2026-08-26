@@ -2940,6 +2940,8 @@ def _render_tracking_body(data: dict) -> str:
 
 MAX_SESSIONS = 10          # сколько последних сессий держим в журнале
 SESSION_SEP = "\n---\n\n"
+MAX_NOTES = 12             # заметок по ходу на одну сессию
+RUNNING_MARK = "· в работе"  # пометка незакрытого блока журнала
 
 
 def _session_path(project: str) -> Path:
@@ -2953,19 +2955,73 @@ def _questions_path(project: str) -> Path:
 def _split_session_blocks(text: str) -> list[str]:
     """Разбор журнала на блоки сессий, включая СТАРЫЙ однозаписный формат.
 
-    Старый файл («# Сессия: proj» + «**Дата:**» + разделы) становится одним
-    блоком — прежняя сессия не теряется при первом же сохранении в новом формате.
+    Граница блока — ТОЛЬКО заголовок-дата «## ГГГГ-ММ-ДД», не любой «## ».
+    Прежнее условие («в теле есть \\n## ») ветку старого формата не пускало
+    НИКОГДА: старый файл сам состоит из разделов «## Что сделано» / «## Решения»,
+    и первым блоком становилась строка «**Дата:** …» — 26 символов вместо всей
+    сессии. Замер 2026-08-26 на боевой базе: 38 проектов из 41, в стартовом
+    контексте вместо содержания прошлой сессии стояла одна строка с датой,
+    а при первой же новой записи старый файл разъезжался на 4 псевдо-сессии
+    и занимал 4 слота из MAX_SESSIONS. Держит tests/test_session_journal.py.
     """
     if not text.strip():
         return []
     body = re.sub(r"^#\s+Сесси[яи][^\n]*\n+", "", text.strip(), count=1)
-    if "\n## " in "\n" + body:
-        parts = re.split(r"\n(?=## )", body.strip())
-        return [p.strip() for p in parts if p.strip()]
+    if re.search(r"(?:^|\n)## \d{4}-\d{2}-\d{2}", body):
+        parts = re.split(r"\n(?=## \d{4}-\d{2}-\d{2})", body.strip())
+        return [p.strip("\n").rstrip("-\n ").strip() for p in parts if p.strip()]
     # Старый формат целиком — как один блок, с датой из шапки
     m = re.search(r"\*\*Дата:\*\*\s*([0-9\- :]+)", body)
     stamp = (m.group(1).strip() if m else "ранее")
     return ["## %s\n\n%s" % (stamp, body.strip())]
+
+
+def _running_notes(blocks: list[str]) -> list[str]:
+    """Заметки из верхнего блока «в работе», если он СЕГОДНЯШНИЙ.
+
+    Брошенный вчерашний блок не продолжаем: слипшиеся в один блок разные дни
+    читаются как одна сессия и врут о том, на чём остановились.
+    """
+    if not blocks:
+        return []
+    head = blocks[0].splitlines()[0] if blocks[0] else ""
+    if RUNNING_MARK not in head:
+        return []
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not head.startswith("## %s" % today):
+        return []
+    return [l for l in blocks[0].splitlines()[1:] if l.strip()]
+
+
+def append_note(project: str, note: str) -> Path:
+    """Дописать заметку по ходу сессии в текущий блок журнала.
+
+    Дешёвая альтернатива `save_session`, который пересобирает сводку целиком и
+    потому зовётся в 10% сессий (замер 2026-08-26 по аудиту). Работа после
+    последней загрузки контекста: медиана 25 минут, p90 101 — всё это время
+    параллельная сессия и следующий старт не знали о происходящем.
+
+    Git НЕ трогаем сознательно: `git add -A` по базе стоит 5.5 с, и ради одной
+    строки его не платят — заметка доедет с ближайшим сохранением статьи.
+    """
+    note = (note or "").strip()
+    if not note:
+        return _session_path(project)
+    path = _session_path(project)
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    blocks = _split_session_blocks(old)
+    notes = _running_notes(blocks)
+    if notes:
+        blocks = blocks[1:]                      # текущий блок пересоберём
+    line = "- %s %s" % (datetime.now().strftime("%H:%M"), note)
+    if not any(n.split(" ", 2)[-1] == note for n in notes):
+        notes.append(line)
+    notes = notes[-MAX_NOTES:]
+    head = "## %s %s" % (datetime.now().strftime("%Y-%m-%d %H:%M"), RUNNING_MARK)
+    blocks.insert(0, "\n".join([head, ""] + notes))
+    path.write_text("# Сессии: %s\n\n%s\n" % (project, SESSION_SEP.join(blocks[:MAX_SESSIONS])),
+                    encoding="utf-8")
+    return path
 
 
 def append_session(project: str, summary: str, decisions: str = "",
@@ -2974,9 +3030,16 @@ def append_session(project: str, summary: str, decisions: str = "",
     path = _session_path(project)
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     blocks = _split_session_blocks(old)
+    # Заметки текущей сессии вливаем в её итог, а не оставляем отдельным блоком:
+    # иначе одна сессия выглядит в журнале как две и занимает два слота.
+    notes = _running_notes(blocks)
+    if notes:
+        blocks = blocks[1:]
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     new_block = ["## %s" % now, "", "**Что сделано:** %s" % (summary or "—")]
+    if notes:
+        new_block.append("\n**По ходу:**\n" + "\n".join(notes))
     if decisions:
         new_block.append("\n**Решения:** %s" % decisions)
     if open_questions:

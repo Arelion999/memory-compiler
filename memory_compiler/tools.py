@@ -219,6 +219,23 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="session_note",
+            description=(
+                "Записать заметку ПО ХОДУ работы — одной строкой, не дожидаясь конца "
+                "сессии: что выяснилось, что проверено, где затык. Дёшево: сводка "
+                "сессии не пересобирается. Вызывать сразу, как появился факт, который "
+                "пригодится параллельной сессии или следующему старту."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "Что выяснилось — одна-две фразы (обязательно)"},
+                    "project": {"type": "string", "description": "Имя проекта (обязательно)"}
+                },
+                "required": ["note", "project"]
+            }
+        ),
+        Tool(
             name="close_question",
             description=(
                 "Закрыть решённый открытый вопрос проекта. Ищет по куску текста вопроса."
@@ -1300,6 +1317,7 @@ _FRESHNESS_WRITE_TOOLS = {
     "save_lesson", "save_decision", "save_runbook", "save_secret", "save_tracking",
     "save_session", "save_from_template", "save_contexts", "save_compact",
     "finish_task", "edit_article", "delete_article", "consolidate", "ingest",
+    "session_note",
 }
 
 
@@ -1322,7 +1340,10 @@ def _append_freshness(name: str, arguments: dict, result: list) -> list:
         if name in _FRESHNESS_WRITE_TOOLS and project and project != "all":
             topic = ""
             if isinstance(arguments, dict):
-                topic = str(arguments.get("topic") or arguments.get("filename") or "")
+                # у session_note нет ни topic, ни filename — иначе чужая сессия
+                # увидит «session_note: (без темы)» и не поймёт, что изменилось
+                topic = str(arguments.get("topic") or arguments.get("filename")
+                            or arguments.get("note") or "")
             freshness.note_write(project, name, topic, key)
     except Exception:
         return result                     # сторож не имеет права ронять вызов
@@ -1377,6 +1398,8 @@ async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:
             result = [TextContent(type="text", text="\u23f3 Reindex \u0443\u0436\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f \u2014 \u0434\u043e\u0436\u0434\u0438\u0441\u044c \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0438\u044f.")]
     elif name == "open_questions":
         result = await handlers.open_questions(arguments.get("project", "all"))
+    elif name == "session_note":
+        result = await handlers.session_note(**arguments)
     elif name == "close_question":
         result = await handlers.close_question(**arguments)
     elif name == "save_session":

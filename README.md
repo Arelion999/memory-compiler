@@ -41,7 +41,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 ## Features
 
-### 47 MCP tools
+### 50 MCP tools
 
 **Search and read:**
 
@@ -76,6 +76,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 | Tool | Description |
 |------|-------------|
 | `save_session(project, summary, ...)` | Save context for the next session |
+| `session_note(note, project)` | A note WHILE working — one line, no summary rebuild |
 | `load_session(project)` | Load context plus notifications about stale articles |
 | `get_active_context(project)` | Feed of the last 10 actions |
 

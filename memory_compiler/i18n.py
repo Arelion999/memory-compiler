@@ -105,6 +105,18 @@ TOOLS_EN: dict[str, dict] = {
             'project': "Project name or 'all' (default: all)",
         },
     },
+    'session_note': {
+        # RU: Записать заметку ПО ХОДУ работы — одной строкой...
+        'description': ('Write a note WHILE working — one line, without waiting for the '
+                        'end of the session: what turned up, what was verified, where it '
+                        'got stuck. Cheap: the session summary is not rebuilt. Call it as '
+                        'soon as a fact appears that a parallel session or the next start '
+                        'would need.'),
+        'params': {
+            'note': 'What turned up — one or two sentences (required)',
+            'project': 'Project name (required)',
+        },
+    },
     'close_question': {
         # RU: Закрыть решённый открытый вопрос проекта.
         'description': 'Close a resolved open question of a project. Matches by a fragment of its text.',

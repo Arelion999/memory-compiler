@@ -139,3 +139,53 @@ def test_seed_migrates_questions_and_is_idempotent(proj, monkeypatch):
 
     maintenance.seed_questions_from_sessions(dry_run=False)
     assert len(storage.open_questions_list(proj)) == 1, "повторный проход завёл дубль"
+
+
+def test_old_format_is_read_whole_before_any_new_write(proj):
+    """Старый файл обязан читаться ЦЕЛИКОМ ещё до первой записи в новом формате.
+
+    Разбор шёл по любому «## », а старый формат САМ состоит из разделов
+    «## Что сделано» / «## Решения», поэтому первым блоком становилась строка
+    «**Дата:** …» — 26 символов вместо всей сессии. Ветка «старый формат целиком»
+    была недостижима: условие проверяло наличие «## », а он там есть всегда.
+    Замер 2026-08-26 на боевой базе: 38 проектов из 41, у всех в стартовом
+    контексте вместо содержания стояла одна строка с датой.
+    """
+    storage._session_path(proj).write_text(
+        "# Сессия: demo\n\n**Дата:** 2026-08-20 10:00\n\n"
+        "## Что сделано\nразобран перелив прода в дев\n\n"
+        "## Решения\nрегламентные задания в копии запрещены\n\n"
+        "## Открытые вопросы\nне проверен рестарт после обновления\n",
+        encoding="utf-8")
+    latest = storage.latest_session(proj)
+    assert "разобран перелив прода в дев" in latest, "содержание сессии потеряно"
+    assert "регламентные задания в копии запрещены" in latest
+    assert "2026-08-20 10:00" in latest, "дата старой сессии должна остаться"
+
+
+def test_old_format_becomes_exactly_one_block(proj):
+    """При миграции старый файл — ОДИН блок, а не четыре псевдо-сессии.
+
+    Иначе разделы старого файла занимали бы 4 слота из MAX_SESSIONS и вытесняли
+    настоящие сессии.
+    """
+    storage._session_path(proj).write_text(
+        "# Сессия: demo\n\n**Дата:** 2026-08-20 10:00\n\n"
+        "## Что сделано\nстарый формат\n\n## Решения\nстарое решение\n\n"
+        "## Открытые вопросы\nстарый вопрос\n", encoding="utf-8")
+    storage.append_session(proj, "новая запись")
+    blocks = storage._split_session_blocks(storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 2, "ожидались ровно два блока: новая сессия и старая целиком"
+    assert "новая запись" in blocks[0]
+    assert all(w in blocks[1] for w in ("старый формат", "старое решение", "старый вопрос"))
+
+
+def test_new_format_split_is_not_broken_by_inner_headings(proj):
+    """Позитивный контроль: блоки нового формата по-прежнему разделяются, а
+    подзаголовки ВНУТРИ блока новой сессией не считаются."""
+    storage.append_session(proj, "первая")
+    storage.append_session(proj, "вторая\n\n## Детали\nподраздел внутри блока")
+    blocks = storage._split_session_blocks(storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 2, "подзаголовок внутри блока не должен плодить сессии"
+    assert "вторая" in blocks[0] and "подраздел внутри блока" in blocks[0]
+    assert "первая" in blocks[1]
