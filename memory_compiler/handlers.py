@@ -27,6 +27,7 @@ from memory_compiler.search import (
 # старый объект — delete/remove чистили бы устаревший dict, а semantic-поиск ходил по
 # новому → удалённая статья оставалась бы фантомом. Обращаемся через модуль.
 import memory_compiler.search as _search
+from memory_compiler import embed_queue
 from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
     merge_into_article, is_duplicate_entry, make_preview,
@@ -63,17 +64,27 @@ _CTX_FULLTEXT_CAP = 8000
 
 
 async def _index_embed(text: str, filename: str, project: str) -> None:
-    """B2: index_document + embed_document в worker-потоке. embed_document делает encode
-    модели (секунды на слабом CPU) и берёт _index_lock — синхронно на event loop это
-    морозило весь сервер (/api/health, параллельные MCP-вызовы, SSE) → таймауты/реконнекты
-    после рестарта. asyncio.to_thread уводит ожидание лока и инференс с event loop.
-    save_article_meta/git_commit НАМЕРЕННО остаются на loop: перенос save_article_meta в
-    поток дал бы гонку с track_access (loop мутирует article_meta ↔ поток итерирует его в
-    json.dumps → 'dict changed size during iteration')."""
-    def _work():
-        index_document(text, filename, project)
-        embed_document(text, filename, project)
-    await asyncio.to_thread(_work)
+    """Текстовый индекс — сразу, вектор — фоном.
+
+    B2: обе операции уходят с event loop, иначе `embed_document` (encode модели плюс
+    `_index_lock`) морозил весь сервер — /api/health, параллельные MCP-вызовы, SSE.
+    save_article_meta/git_commit НАМЕРЕННО остаются на loop: перенос save_article_meta
+    в поток дал бы гонку с track_access (loop мутирует article_meta ↔ поток итерирует
+    его в json.dumps → 'dict changed size during iteration').
+
+    ⚠️ РАЗДЕЛЕНИЕ СИНХРОННОГО И ФОНОВОГО (v1.59.0). Уход в поток снимал нагрузку с
+    сервера, но КЛИЕНТ всё равно ждал инференс: замер показал медиану записи 7081 мс
+    против 275 мс у чтения, хвост до 183 с и 1.1% записей в клиентском таймауте.
+    Профиль: whoosh 71 мс, git 36 мс, поиск дублей 4 мс, encode статьи — 1855 мс.
+    Поэтому whoosh остаётся в ожидании (статья находится текстом сразу), а вектор
+    считает фоновый воркер. Плата — несколько секунд, пока статья не видна
+    семантическому поиску. MC_EMBED_ASYNC=0 возвращает прежнее поведение.
+    """
+    await asyncio.to_thread(index_document, text, filename, project)
+    if embed_queue.ASYNC_ENABLED:
+        embed_queue.enqueue(text, filename, project)
+    else:
+        await asyncio.to_thread(embed_document, text, filename, project)
 
 
 async def save_lesson(topic: str, content: str, project: str, tags: list = None, force_new: bool = False) -> list[TextContent]:

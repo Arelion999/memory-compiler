@@ -9,6 +9,12 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
+# Эмбеддинги в тестах считаются СИНХРОННО. В проде вектор уезжает в фоновую очередь
+# (v1.59.0: запись 7 с → 0.3 с), но тест, сохраняющий статью и тут же ищущий её
+# семантикой, на асинхронном режиме стал бы гонкой — зелёной или красной в
+# зависимости от того, успел ли воркер. Тесты самой очереди включают режим сами.
+os.environ.setdefault("MC_EMBED_ASYNC", "0")
+
 import pytest
 from pathlib import Path
 

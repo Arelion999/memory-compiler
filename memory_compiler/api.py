@@ -41,6 +41,7 @@ import time as _time
 
 from memory_compiler import obs
 from memory_compiler import analytics
+from memory_compiler import embed_queue
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -331,8 +332,12 @@ async def web_health(request: Request):
     # сломан» — health отвечает ok, потому что индекс открыт, а семантический запрос
     # в это время ждёт загрузки модели под локом. Именно так выглядели семь деплоев
     # подряд (2026-07-19): первый поиск после каждого падал в таймаут клиента.
+    # Очередь эмбеддингов — ПУБЛИЧНО, рядом с models_ready и по той же причине:
+    # без неё «статья сохранена, но семантикой не находится» выглядит как поломка
+    # поиска, хотя вектор просто ещё считается (v1.59.0, отложенные эмбеддинги).
     payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count(),
-               "models_ready": _search_mod.embed_model_ready()}
+               "models_ready": _search_mod.embed_model_ready(),
+               "embed_pending": embed_queue.pending()}
     # Детали (имена проектов = клиентов, размеры, usage-счётчики) — только под
     # настроенным auth. Публичный /api/health нужен Docker healthcheck (без токена),
     # поэтому он отдаёт лишь status/version/documents, без разведданных о базе.
@@ -984,6 +989,22 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         # предикт не укладывались в MCP-таймаут клиента → первый поиск падал в -32001.
         # Грузим заранее в executor'е, не блокируя старт; к первому запросу модели готовы.
         warm_task = asyncio.create_task(warm_models())  # strong ref: avoid GC
+
+        async def embed_backlog():
+            """Догон отложенных эмбеддингов после рестарта.
+
+            Очередь живёт в памяти, а контейнер перезапускается часто (mc-watcher,
+            десятки раз в день при активной разработке). Всё, что не успело
+            посчитаться, иначе пропало бы молча: статья есть, текстом находится,
+            семантикой — нет. Ждём прогрев, иначе догон встанет в очередь за
+            загрузкой модели и первый живой поиск будет ждать вместе с ним.
+            """
+            await warm_task
+            n = await asyncio.to_thread(embed_queue.embed_missing)
+            if n:
+                obs.get_logger("embed").info("backlog queued", extra={"count": n})
+
+        backlog_task = asyncio.create_task(embed_backlog())  # strong ref: avoid GC
         task = asyncio.create_task(auto_compile_loop())
         lint_task = asyncio.create_task(auto_lint_loop())
         gc_task = asyncio.create_task(auto_gc_loop())  # strong ref: avoid GC
