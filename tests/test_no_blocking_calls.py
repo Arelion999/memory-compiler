@@ -34,6 +34,7 @@ HEAVY = {
     "whoosh_search",
     "rerank",
     "_build_graph",
+    "quality",
 }
 
 

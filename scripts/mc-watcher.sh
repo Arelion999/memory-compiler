@@ -14,12 +14,25 @@
 # Debounce: рестарт только когда хэш стабилен 2 прогона подряд (~1 мин без
 # изменений = синк устоялся) — не перезапускаем контейнер на промежуточном
 # состоянии. Цена: деплой задерживается примерно на 1 минуту.
+#
+# Cooldown (MC_COOLDOWN, по умолчанию 300 с): не чаще одного рестарта в 5 минут.
+# Причина — каждый рестарт убивает MCP-сессии клиентов, и следующий вызов падает
+# с -32001 (замер 2026-07-20: 76 рестартов за сутки активной разработки, оба
+# разобранных инцидента совпали с ними). Правки *.py идут пачками, применять
+# каждую отдельным рестартом незачем.
+#
+# ⚠️ СМЕНА VERSION ОБХОДИТ COOLDOWN. Это релиз: его надо применить и проверить
+# сразу, а не через пять минут. Задерживать релиз ради тишины в сессиях —
+# ровно тот случай, когда лечение хуже болезни.
 
 MC_DIR="${MC_DIR:-/path/to/memory-compiler/memory_compiler}"
 VERSION_FILE="${VERSION_FILE:-$MC_DIR/../VERSION}"
 STATE="${MC_STATE:-/var/log/mc-watcher.state}"       # последний ЗАДЕПЛОЕННЫЙ хэш
 PENDING="${MC_PENDING:-/var/log/mc-watcher.pending}" # кандидат "hash count" для debounce
 LOG="${MC_LOG:-/var/log/mc-watcher.log}"
+LAST_TS="${MC_LAST_TS:-/var/log/mc-watcher.last}"    # unixtime последнего рестарта
+VER_STATE="${MC_VER_STATE:-/var/log/mc-watcher.version}"  # задеплоенный VERSION
+COOLDOWN="${MC_COOLDOWN:-300}"                       # сек между рестартами
 DOCKER="${DOCKER:-/usr/local/bin/docker}"
 CONTAINER="${CONTAINER:-memory-compiler-mcp}"
 
@@ -57,7 +70,23 @@ if [ "$pcount" -lt 2 ]; then
   exit 0
 fi
 
+# Cooldown: пропускаем рестарт, если недавно уже перезапускались. Кандидат
+# остаётся в PENDING — изменение не теряется, применится следующим прогоном.
+version_now=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
+version_was=$(cat "$VER_STATE" 2>/dev/null || echo "")
+if [ "$version_now" = "$version_was" ]; then
+  last_ts=$(cat "$LAST_TS" 2>/dev/null || echo 0)
+  now_ts=$(date +%s)
+  age=$((now_ts - last_ts))
+  if [ "$age" -lt "$COOLDOWN" ]; then
+    echo "[$(date -Iseconds)] change held (hash ${current:0:12}): рестарт был $age с назад, cooldown $COOLDOWN с" >> "$LOG"
+    exit 0
+  fi
+fi
+
 echo "[$(date -Iseconds)] stable change -> restart $CONTAINER (hash ${current:0:12})" >> "$LOG"
 $DOCKER restart "$CONTAINER" >> "$LOG" 2>&1
 echo "$current" > "$STATE"
+date +%s > "$LAST_TS"
+cat "$VERSION_FILE" > "$VER_STATE" 2>/dev/null
 : > "$PENDING"

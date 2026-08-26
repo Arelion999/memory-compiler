@@ -319,6 +319,14 @@ var I18N={
     "analytics.neverAccessed":"Никогда не открывались",
     "analytics.topAccessed":"Топ по обращениям",
     "analytics.hits":"обр.",
+    "quality.title":"Качество памяти (7 дней)",
+    "quality.searches":"Поисков",
+    "quality.misses":"Впустую",
+    "quality.useful":"Выдача пригодилась",
+    "quality.reform":"Переформулировок подряд",
+    "quality.writes":"Записей в базу",
+    "quality.missList":"Запросы, не давшие ничего",
+    "quality.hint":"Пусто у поиска = пробел базы или ранжирования: завести статью либо добавить запрос в golden-набор.",
     "audit.recent":"Аудит (последние",
     "cmdk.startTyping":"Начните вводить запрос…",
     "lbl.frozen":"заморожен",
@@ -400,6 +408,14 @@ var I18N={
     "analytics.neverAccessed":"Never accessed",
     "analytics.topAccessed":"Top accessed",
     "analytics.hits":"hits",
+    "quality.title":"Memory quality (7 days)",
+    "quality.searches":"Searches",
+    "quality.misses":"Empty",
+    "quality.useful":"Results used",
+    "quality.reform":"Consecutive reformulations",
+    "quality.writes":"Writes to base",
+    "quality.missList":"Queries that returned nothing",
+    "quality.hint":"An empty search means a gap in the base or in ranking: add an article or put the query into the golden set.",
     "audit.recent":"Audit (last",
     "cmdk.startTyping":"Start typing a query…",
     "lbl.frozen":"frozen",
@@ -1523,6 +1539,31 @@ async function loadAnalytics(){
   const r=await fetch("/api/analytics");
   const d=await r.json();
   let h=`<div class="card"><h3>${t("analytics.stats")}</h3><pre>${t("analytics.totalArticles")}: ${d.total_articles}\n${t("analytics.tracked")}: ${d.total_tracked}\n${t("analytics.neverAccessed")}: ${d.never_accessed.length}</pre></div>`;
+  const q=d.quality;
+  if(q&&q.searches){
+    // Перевод строки в JS-литерале собираем из кода символа: ui.py — обычная
+    // Python-строка, и backslash-n в ней превратился бы в НАСТОЯЩИЙ перенос,
+    // разорвав литерал пополам (поймано node --check, тот же класс, что с
+    // плейсхолдером CSS).
+    const NL=String.fromCharCode(10);
+    const pct=v=>Math.round(v*100)+'%';
+    h+='<div class="card"><h3>'+t('quality.title')+'</h3><pre>'
+      +t('quality.searches')+': '+q.searches+NL
+      +t('quality.misses')+': '+q.misses+' ('+pct(q.miss_rate)+')'+NL
+      +t('quality.useful')+': '+q.followed+' ('+pct(q.follow_rate)+')'+NL
+      +t('quality.reform')+': '+q.reformulations+NL
+      +t('quality.writes')+': '+q.writes+'</pre>';
+    if(q.miss_queries&&q.miss_queries.length){
+      h+='<h4 style="margin:8px 0 4px">'+t('quality.missList')+'</h4>';
+      q.miss_queries.forEach(m=>{
+        h+='<div style="padding:3px 0;border-bottom:1px solid var(--border);font-size:0.85em">'
+          +'<span style="color:var(--text2)">'+esc(m.ts)+'</span> '
+          +'<span style="color:var(--accent)">'+esc(m.tool)+'</span> '+esc(m.query)+'</div>';
+      });
+      h+='<div style="color:var(--text2);font-size:0.8em;margin-top:6px">'+t('quality.hint')+'</div>';
+    }
+    h+='</div>';
+  }
   if(d.top_accessed.length){
     h+=`<div class="card"><h3>${t("analytics.topAccessed")}</h3>`;
     d.top_accessed.forEach(i=>{

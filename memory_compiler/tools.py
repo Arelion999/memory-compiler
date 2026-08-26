@@ -16,6 +16,7 @@ from memory_compiler.search import rebuild_index, rebuild_embeddings, start_back
 from memory_compiler.storage import regenerate_index, audit_log, _parse_frontmatter
 from memory_compiler import handlers
 from memory_compiler import obs
+from memory_compiler import freshness
 from memory_compiler import i18n
 from memory_compiler.i18n import localize_tools, localize_prompts
 
@@ -1248,6 +1249,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception:
             pass
         raise
+    # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
+    # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
+    # и до подсчёта размера — футер тоже часть ответа.
+    result = _append_freshness(name, arguments, result)
+
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
@@ -1258,6 +1264,43 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # машиночитаемый список, человекочитаемый текст + ссылки остаются в content.
     if name == "search":
         return (result, _build_search_structured(arguments.get("query", ""), result))
+    return result
+
+
+
+# Инструменты, чья запись делает контекст ДРУГИХ сессий устаревшим.
+_FRESHNESS_WRITE_TOOLS = {
+    "save_lesson", "save_decision", "save_runbook", "save_secret", "save_tracking",
+    "save_session", "save_from_template", "save_contexts", "save_compact",
+    "finish_task", "edit_article", "delete_article", "consolidate", "ingest",
+}
+
+
+def _append_freshness(name: str, arguments: dict, result: list) -> list:
+    """Дописать к ответу предупреждение о чужих записях в этом проекте.
+
+    ⚠️ Отдельным блоком, а не приклейкой к существующему тексту: у search есть
+    outputSchema и resource_link-блоки, а 414 ассертов в тестах сравнивают тексты
+    ответов дословно. Отдельный TextContent появляется ТОЛЬКО когда есть что
+    сказать, поэтому обычные ответы остаются байт-в-байт прежними.
+    """
+    try:
+        session = app.request_context.session
+    except Exception:
+        return result                     # вне запроса (REST, тесты) — не мешаем
+    key = freshness.key_for(session)
+    project = arguments.get("project") if isinstance(arguments, dict) else None
+    try:
+        note = freshness.consume(key, project or "")
+        if name in _FRESHNESS_WRITE_TOOLS and project and project != "all":
+            topic = ""
+            if isinstance(arguments, dict):
+                topic = str(arguments.get("topic") or arguments.get("filename") or "")
+            freshness.note_write(project, name, topic, key)
+    except Exception:
+        return result                     # сторож не имеет права ронять вызов
+    if note:
+        return list(result) + [TextContent(type="text", text=note)]
     return result
 
 

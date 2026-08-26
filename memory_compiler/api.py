@@ -40,6 +40,7 @@ from memory_compiler.i18n import MC_LANG
 import time as _time
 
 from memory_compiler import obs
+from memory_compiler import analytics
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -547,11 +548,21 @@ async def web_analytics(request: Request):
                     all_articles.add(f"{proj}/{md.name}")
     never_accessed = all_articles - set(article_meta.keys())
 
+    # Качество памяти как продукта: промахи поиска, доля пригодившихся выдач.
+    # quality() читает мегабайтный аудит-лог, поэтому строго в потоке — иначе
+    # встаёт весь сервер (тот же класс, что rerank и git_commit прежде).
+    try:
+        hours = float(request.query_params.get("hours", 168))
+    except (TypeError, ValueError):
+        hours = 168.0
+    quality = await asyncio.to_thread(analytics.quality, hours)
+
     return JSONResponse({
         "top_accessed": items[:20],
         "never_accessed": sorted(never_accessed)[:20],
         "total_tracked": len(article_meta),
         "total_articles": len(all_articles),
+        "quality": quality,
     })
 
 
