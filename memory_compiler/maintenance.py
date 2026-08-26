@@ -427,9 +427,14 @@ def drop_service_from_index(dry_run: bool = True):
     Точечная чистка вместо полной пересборки: whoosh собирается 93 с, а
     эмбеддинги с нуля — больше получаса. Здесь достаточно удалить ключи.
     """
-    from memory_compiler.search import (SERVICE_FILES, get_index, _index_lock,
-                                        _embeddings, _embed_texts, _chunk_hashes,
-                                        persist_embeddings)
+    from memory_compiler import search as _s
+    from memory_compiler.search import SERVICE_FILES, get_index, _index_lock, persist_embeddings
+
+    # ⚠️ Эмбеддинги грузятся ЛЕНИВО, а этот проход обычно запускают отдельным
+    # процессом (docker exec). Без явной загрузки словарь пуст, и чистка молча
+    # отчитывается «0 ключей» — так и было в первом прогоне.
+    _s.load_embeddings()
+    _embeddings, _embed_texts, _chunk_hashes = _s._embeddings, _s._embed_texts, _s._chunk_hashes
     removed_ix = 0
     ix = get_index()
     with ix.searcher() as s:

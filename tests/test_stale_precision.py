@@ -30,8 +30,13 @@ def base(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(storage, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(cfg, "PROJECTS", ["demo"])
+    # Скан сроков живёт в handlers_reports (v1.64.0) и держит СВОИ значения,
+    # импортированные по значению, — патчить надо там.
+    from memory_compiler import handlers_reports as reports
+    monkeypatch.setattr(reports, "KNOWLEDGE_DIR", tmp_path)
+    monkeypatch.setattr(reports, "PROJECTS", ["demo"])
     (tmp_path / "demo").mkdir()
-    handlers._STALE_CACHE.clear()
+    reports._STALE_CACHE.clear()
 
     def add(name, body):
         (tmp_path / "demo" / name).write_text(

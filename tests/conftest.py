@@ -53,6 +53,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.handlers as handlers_mod
     import memory_compiler.api as api_mod
     import memory_compiler.maintenance as maintenance_mod
+    import memory_compiler.handlers_reports as reports_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -74,6 +75,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     # «статей 0», потому что проекта testproj в проде нет. Повезло.
     monkeypatch.setattr(maintenance_mod, "KNOWLEDGE_DIR", knowledge_dir)
     monkeypatch.setattr(maintenance_mod, "PROJECTS", ["testproj", "general"])
+    # ⚠️ handlers_reports (v1.64.0) — тот же класс: отчёты уехали из handlers в
+    # свой модуль и держат СВОИ KNOWLEDGE_DIR/PROJECTS. Без этих строк линт
+    # молча сканирует боевую базу и ничего не находит в tmp — так и упали
+    # одиннадцать тестов сразу после разреза.
+    monkeypatch.setattr(reports_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(reports_mod, "PROJECTS", ["testproj", "general"])
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)

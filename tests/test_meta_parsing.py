@@ -200,14 +200,17 @@ def test_lint_does_not_pair_stubs_of_extracted_secrets(knowledge_dir, monkeypatc
     # Без этого шага тест зеленел бы и от того, что векторы разошлись, а не от фильтра.
     import re as _re
     orig_re = h.SECRET_POINTER_RE
-    monkeypatch.setattr(h, "SECRET_POINTER_RE", _re.compile(r"(?!x)x"))
+    # Фильтр заглушек живёт в handlers_reports (v1.64.0) — патчить надо там,
+    # иначе lint читает своё значение и позитивный контроль ниже не срабатывает.
+    from memory_compiler import handlers_reports as _reports
+    monkeypatch.setattr(_reports, "SECRET_POINTER_RE", _re.compile(r"(?!x)x"))
     without_filter = asyncio.run(lint(project="stubproj"))[0].text
     assert stub_pairs(without_filter), \
         f"тест не воспроизводит исходную поломку — проверять нечего:\n{without_filter}"
 
     # Возвращаем ТОЛЬКО сигнатуру: monkeypatch.undo() снял бы и патч эмбеддингов,
     # и позитивный контроль ниже проверял бы пустой снимок вместо пары plain_*.
-    monkeypatch.setattr(h, "SECRET_POINTER_RE", orig_re)
+    monkeypatch.setattr(_reports, "SECRET_POINTER_RE", orig_re)
     text = asyncio.run(lint(project="stubproj"))[0].text
 
     assert not stub_pairs(text), \
