@@ -2069,6 +2069,30 @@ async def save_compact(project: str, summary: str) -> list[TextContent]:
 
 
 
+# ── Журнал без сводки: молчать об этом нельзя (v1.72.0) ─────────────────────
+# Вопрос, оставшийся от v1.71.1: вопрос стал доезжать без сводки, а САМА сессия
+# в журнал по-прежнему не попадала. Живой случай 27.08.2026 — блок за день
+# появился только ручным `save_session`, и до того старт следующей сессии
+# показывал бы вчерашний день. Модель узнать об этом неоткуда: ответ выглядел
+# успешным.
+#
+# ⚠️ ПОДСКАЗКА НЕ БЕЗУСЛОВНАЯ. `finish_task` зовут по нескольку раз за сессию, и
+# напоминание на каждом стало бы фоном — ровно та болезнь, из-за которой
+# подсказка о `session_note` сделана раз в окно. Молчим, когда сегодняшний блок
+# уже закрыт сводкой; блок «в работе» закрытым не считается — заметки вольются
+# в итог только вместе со сводкой, иначе сессия навсегда останется незакрытой.
+def _journal_gap_hint(project: str) -> str:
+    block = latest_session(project)
+    head = block.splitlines()[0] if block else ""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if head.startswith("## %s" % today) and RUNNING_MARK not in head:
+        return ""
+    tail = " Заметки по ходу вольются в итоговый блок." if RUNNING_MARK in head else ""
+    return ("📓 Сводки сессии не было — день не попал в журнал проекта, и на старте "
+            "следующей сессии его не будет видно. Допиши: "
+            "save_session(project=\"%s\", summary=…).%s" % (project, tail))
+
+
 async def finish_task(topic: str, content: str, project: str, tags: list = None,
                       session_summary: str = "", open_questions: str = "") -> list[TextContent]:
     """Завершить задачу: save_lesson + save_session. Один вызов вместо двух."""
@@ -2094,6 +2118,10 @@ async def finish_task(topic: str, content: str, project: str, tags: list = None,
         if await asyncio.to_thread(add_question, project, open_questions):
             n = len(open_questions_list(project))
             parts.append(f"❓ Открытый вопрос добавлен в {project}/_questions.md (всего открытых: {n})")
+    if not session_summary:
+        hint = _journal_gap_hint(project)
+        if hint:
+            parts.append(hint)
 
     # 3. Prospective reflection — извлечь atomic facts из content + session_summary
     reflections = extract_reflections(content + "\n" + (session_summary or ""))

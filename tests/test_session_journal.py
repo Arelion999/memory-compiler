@@ -256,3 +256,71 @@ async def test_summary_path_still_writes_both(knowledge_dir):
 
     assert "разобрали и починили" in storage.latest_session("testproj")
     assert len(storage.open_questions_list("testproj")) == 1
+
+
+# ── предупреждение о непополненном журнале (v1.72.0) ─────────────────────────
+# Вопрос, оставшийся от v1.71.1: вопрос теперь доезжает без сводки, а САМА
+# сессия в журнал не попадает — 27.08 блок появился только ручным save_session,
+# и следующий старт показал бы вчерашний день. Молчать об этом нельзя: модель
+# не видит, что день не записан, и узнать неоткуда.
+#
+# ⚠️ Предупреждение НЕ БЕЗУСЛОВНОЕ. Если день уже закрыт сводкой (finish_task
+# зовут по нескольку раз за сессию), напоминание становится фоном — ровно та
+# болезнь, из-за которой подсказка о session_note сделана раз в окно.
+
+def _text(result):
+    return result[0].text
+
+
+@pytest.mark.asyncio
+async def test_finish_task_warns_when_summary_missing(knowledge_dir):
+    """Без сводки ответ обязан сказать, что день в журнал не попал."""
+    from memory_compiler.handlers import finish_task
+
+    out = _text(await finish_task(topic="починка", content="разобрано и починено",
+                                  project="testproj"))
+
+    assert "save_session" in out, "модель должна увидеть, ЧЕМ дописать журнал"
+    assert "журнал" in out.lower(), "надо назвать, что именно не заполнено"
+
+
+@pytest.mark.asyncio
+async def test_no_warning_when_summary_given(knowledge_dir):
+    """Позитивный контроль: со сводкой предупреждения нет."""
+    from memory_compiler.handlers import finish_task
+
+    out = _text(await finish_task(topic="починка", content="разобрано и починено",
+                                  project="testproj", session_summary="разобрали и починили"))
+
+    assert "save_session" not in out, "сводка передана — напоминать не о чем"
+
+
+@pytest.mark.asyncio
+async def test_no_warning_when_today_already_closed(knowledge_dir):
+    """День уже записан сводкой — второй finish_task не бубнит.
+
+    Иначе при двух-трёх вызовах за сессию предупреждение станет фоном.
+    """
+    from memory_compiler.handlers import finish_task
+    storage.append_session("testproj", "утренний блок этой же сессии")
+
+    out = _text(await finish_task(topic="починка", content="разобрано и починено",
+                                  project="testproj"))
+
+    assert "save_session" not in out, "день в журнале есть — предупреждать не о чем"
+
+
+@pytest.mark.asyncio
+async def test_warns_when_running_block_has_notes(knowledge_dir):
+    """Блок «в работе» с заметками — итог всё равно не подведён, предупреждаем.
+
+    Заметки вольются в итоговый блок только при сохранении сводки; без неё
+    сессия так и останется незакрытой и будет всплывать на каждом старте.
+    """
+    from memory_compiler.handlers import finish_task
+    storage.append_note("testproj", "по ходу: причина в холодном старте")
+
+    out = _text(await finish_task(topic="починка", content="разобрано и починено",
+                                  project="testproj"))
+
+    assert "save_session" in out, "незакрытый блок — повод напомнить о сводке"
