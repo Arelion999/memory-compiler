@@ -90,7 +90,8 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
 
 
 async def save_lesson(topic: str, content: str, project: str, tags: list = None,
-                      force_new: bool = False, supersedes: str = "") -> list[TextContent]:
+                      force_new: bool = False, supersedes: str = "",
+                      verified: str = "") -> list[TextContent]:
     try:
         safe_project_dir(project)
     except ValueError as e:
@@ -149,7 +150,11 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
             while article_path.exists():
                 article_path = base / f"{slug}_{day}_{n}.md"
                 n += 1
-        article_text = f"""# {topic}\n\n**Дата:** {ts}\n**Проект:** {project}\n**Теги:** {', '.join(tags) if tags else '—'}\n\n## Записи\n\n### {ts}\n{content}\n"""
+        # ⚠️ «Проверено» — метка ШАПКИ, и она обязана быть в _HEADER_META_PREFIXES
+        # (storage), иначе строка утечёт в тело: в превью поиска, в индекс и в
+        # ИИ-контексты. На «наивном разборе шапки» база уже горела в v1.43.0.
+        vline = f"\n**Проверено:** {verified.strip()}" if verified and verified.strip() else ""
+        article_text = f"""# {topic}\n\n**Дата:** {ts}\n**Проект:** {project}\n**Теги:** {', '.join(tags) if tags else '—'}{vline}\n\n## Записи\n\n### {ts}\n{content}\n"""
         article_path.write_text(article_text, encoding="utf-8")
         await asyncio.to_thread(regenerate_index)
         action = f"\u2705 Создано: {project}/{article_path.name}"

@@ -25,6 +25,10 @@ TOOLS_EN: dict[str, dict] = {
             'content': 'Problem, cause, solution',
             'project': 'Project name',
             'force_new': 'Force creation of a new article',
+            'verified': ('HOW the fact was verified: a test run, a live call on prod, command '
+                         'output, an API response. Set it when the conclusion came from a tool '
+                         'rather than indirect reasoning — otherwise the next session takes a '
+                         'guess for a verified fact'),
             'supersedes': ('File names of articles this correction SUPERSEDES (comma-separated). '
                            'Always set it when an earlier conclusion turns out to be wrong: without '
                            'it both articles are returned as equals, and the next session takes the '
