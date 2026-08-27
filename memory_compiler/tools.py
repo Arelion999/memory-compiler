@@ -1146,6 +1146,86 @@ def _trailing_open_field(work: str, others: set) -> tuple | None:
     return q, raw.strip(), head.rstrip()
 
 
+# Имена полей, встречавшиеся в утёкших хвостах на боевой базе (замер 27.08.2026:
+# tags 24, session_summary 19, open_questions 16). Голый тег ловим и по ним, а не
+# только по параметрам ТЕКУЩЕГО инструмента: в daily хвост прилетает от разных
+# вызовов, и `<session_summary>` попадает в статью, сохранённую save_lesson.
+_LEAK_FIELDS = frozenset({"content", "session_summary", "open_questions", "tags", "decisions"})
+
+
+def _leak_line_kind(line: str, key: str, others: set) -> tuple | None:
+    """Опознать СТРОКУ хвоста вызова: ('drop',) или ('field', имя, значение, закрыта).
+
+    ⚠️ Маркер обязан стоять В НАЧАЛЕ строки. Ровно это отличает хвост вызова от
+    прозы про него: в статьях о самом баге разметка стоит внутри фразы, и такие
+    упоминания трогать нельзя (см. негативные контроли в тестах).
+    """
+    s = line.strip()
+    if s in (f"</{key}>", "</content>", _INVOKE_CLOSE, _PARAM_CLOSE):
+        return ("drop",)
+    m = _PARAM_OPEN_RE.match(s)
+    if m and m.group(1) in others:
+        raw = m.group(2)
+        for close in (f"</{m.group(1)}>", _PARAM_CLOSE):
+            if raw.endswith(close):
+                return ("field", m.group(1), raw[:-len(close)], True)
+        return ("field", m.group(1), raw, False)
+    for q in others | _LEAK_FIELDS:
+        if s.startswith(f"<{q}>"):
+            raw = s[len(q) + 2:]
+            close = f"</{q}>"
+            if raw.endswith(close):
+                return ("field", q, raw[:-len(close)], True)
+            return ("field", q, raw, False)
+    return None
+
+
+def _strip_leaked_lines(text: str, key: str, others: set) -> tuple[str, dict]:
+    """Снять строки хвоста вызова ГДЕ БЫ ОНИ НИ СТОЯЛИ, сохранив текст вокруг.
+
+    Прежний guard шёл строго с конца (endswith/rpartition) и потому пропускал две
+    формы: хвост посреди значения, за которым остался ещё абзац, и голые теги без
+    обёртки `<parameter name=`, у которых нет якоря `</content>`.
+
+    ⚠️ ТЕКСТ ВОКРУГ БЛОКА СОХРАНЯЕТСЯ, а не отрезается «до конца»: замер по базе
+    27.08.2026 — в 51 случае из 56 после блока идёт содержательный текст, и в
+    daily это следующие записи дня. Отрезав хвост целиком, чистка снесла бы их.
+    """
+    if text.count("```") % 2:
+        return text, {}                    # незакрытый fenced-блок — не трогаем
+    lines, out, fields = text.splitlines(), [], {}
+    fence, pending, buf = False, None, []
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        if fence:
+            out.append(line)
+            continue
+        if pending:                        # добираем многострочное значение поля
+            close = f"</{pending}>"
+            if close in line:
+                buf.append(line.split(close)[0])
+                fields.setdefault(pending, "\n".join(buf).strip())
+                pending, buf = None, []
+            else:
+                buf.append(line)
+            continue
+        hit = _leak_line_kind(line, key, others)
+        if hit is None:
+            out.append(line)
+        elif hit[0] == "drop":
+            continue
+        else:
+            _, q, raw, closed = hit
+            if closed:
+                fields.setdefault(q, raw.strip())
+            else:
+                pending, buf = q, [raw]
+    if pending:                            # блок так и не закрылся — берём как есть
+        fields.setdefault(pending, "\n".join(buf).strip())
+    return "\n".join(out).rstrip(), fields
+
+
 def _parse_leaked(raw: str, prop: dict):
     """Значение утёкшего поля по типу из схемы. Непарсибельное — None (поле
     не восстанавливаем: содержимое уже мусор, а падать нельзя)."""
@@ -1202,7 +1282,21 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
             out[key] = text        # без якоря блоки не трогаем — только срез </invoke>
             fields = {}
         else:
-            continue
+            # Хвост стоит НЕ в конце (за ним остался текст) либо теги голые, без
+            # обёртки `<parameter name=` — прежние правила такое не находят.
+            # Разбираем построчно, сохраняя текст вокруг блока.
+            stripped, extra = _strip_leaked_lines(text, key, set(props) - {key})
+            if not extra and stripped == text:
+                continue
+            # ⚠️ Поле, которого у ЭТОГО инструмента нет, аргументом не отдаём —
+            # вызов упадёт с TypeError (поймано живой проверкой v1.70.2:
+            # session_summary из хвоста уехал в save_lesson). Обёртку снимаем, а
+            # содержимое возвращаем в текст: знание не теряется, лежит прозой.
+            orphan = [v for q, v in extra.items() if q not in props and v]
+            fields = {q: v for q, v in extra.items() if q in props}
+            if orphan:
+                stripped = (stripped + "\n\n" + "\n".join(orphan)).strip()
+            out[key] = stripped
         healed.append(key)
         for q, raw in fields.items():
             if out.get(q) in (None, "", []):

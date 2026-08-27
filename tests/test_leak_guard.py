@@ -182,3 +182,94 @@ def test_call_tool_clean_call_untouched(knowledge_dir, monkeypatch):
         "project": "testproj"}))
     audit_last = (knowledge_dir / "_audit.log").read_text(encoding="utf-8").strip().splitlines()[-1]
     assert "_healed" not in json.loads(audit_last)["args"]
+
+
+# ─── форма В СЕРЕДИНЕ и голые теги (v1.70.2) ─────────────────────────────────
+# Нашёл Дмитрий Четверик 27.08.2026. Guard шёл строго С КОНЦА строки (endswith /
+# rpartition), поэтому:
+#   * хвост, за которым остался ещё абзац, не находился вовсе;
+#   * голые теги без обёртки '<parameter name=' извлекались, но откатывались —
+#     применение требовало якоря '</content>', а его в этой форме нет.
+# Проверено на боевой базе: 123 статьи с остатками, из них одна свежее чистки
+# 12.08 — там хвост стоит на 66% файла, за ним '<session_summary">' с битой
+# кавычкой, '</open_questions>' и '<tags>', а последний абзац идёт уже после.
+
+
+def test_heal_tail_in_the_middle_keeps_the_rest():
+    """Хвост посреди content: блок снимается, текст ВОКРУГ остаётся целым.
+
+    ⚠️ Резать «от маркера до конца» нельзя: замер по базе — в 51 случае из 56
+    после блока идёт содержательный текст (в daily это следующие записи дня).
+    """
+    content = ("Первый абзац.\n"
+               "</content>\n"
+               "<session_summary>итог сессии</session_summary>\n"
+               "\n"
+               "Последний абзац остался тут.")
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("save_lesson"))
+    assert "</content>" not in args["content"]
+    assert "<session_summary>" not in args["content"]
+    assert "Первый абзац." in args["content"]
+    assert "Последний абзац остался тут." in args["content"], "текст после блока потерян"
+
+
+def test_heal_bare_tags_without_anchor():
+    """Диалект daily: голые теги полей, якоря '</content>' нет вовсе."""
+    content = ("Текст статьи.\n"
+               "<session_summary>что сделано</session_summary>\n"
+               "<tags>[\"x\"]</tags>")
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("finish_task"))
+    assert args["content"].strip() == "Текст статьи."
+    assert args.get("session_summary") == "что сделано"
+    assert args.get("tags") == ["x"]
+
+
+def test_heal_bare_open_questions_content_is_not_lost():
+    """Внутри open_questions лежит ЖИВОЙ вопрос — снимаем обёртку, текст доносим.
+
+    На боевой статье от 21.08 там был реальный вопрос про 403 строки и dict_tool.py,
+    не доехавший до _questions.md. Удалять такой блок целиком нельзя.
+    """
+    content = ("Разбор.\n"
+               "<open_questions>403 строки лечатся dict_tool.py unquote по bin</open_questions>")
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("finish_task"))
+    assert args.get("open_questions") == "403 строки лечатся dict_tool.py unquote по bin"
+    assert "<open_questions>" not in args["content"]
+
+
+def test_heal_mid_tail_still_ignores_prose_and_fences():
+    """НЕГАТИВНЫЙ КОНТРОЛЬ к новым правилам: упоминание внутри фразы и пример в
+    блоке кода по-прежнему неприкосновенны — иначе статьи о самом баге пострадают."""
+    prose = "в теле оказался </content> и дальше текст — вот так это выглядит"
+    args, healed = t.heal_arguments({"content": prose}, _props("finish_task"))
+    assert args["content"] == prose and healed == []
+
+    fenced = ("Порча выглядит так:\n\n```\nтекст\n</content>\n<tags>[\"a\"]</tags>\n```\n\nДальше проза.")
+    args2, healed2 = t.heal_arguments(
+        {"topic": "T", "content": fenced, "project": "p"}, _props("save_lesson"))
+    assert args2["content"] == fenced and healed2 == []
+
+
+def test_heal_unknown_field_does_not_break_the_call():
+    """Поле, которого у инструмента НЕТ, нельзя доносить как аргумент.
+
+    Поймано живой проверкой на проде v1.70.2: guard извлёк `session_summary` из
+    хвоста и передал его в `save_lesson` — вызов упал с TypeError. Юнит-тесты
+    этого не видели, потому что звали heal_arguments напрямую, минуя диспетчер.
+
+    Обёртку снимаем, а содержимое возвращаем в текст: знание не теряется, просто
+    лежит прозой — ровно как советовал Дмитрий («снимать только обёртку»).
+    """
+    content = ("Разбор.\n"
+               "<session_summary>итог из хвоста</session_summary>\n"
+               "<open_questions>живой вопрос</open_questions>")
+    args, healed = t.heal_arguments(
+        {"topic": "T", "content": content, "project": "p"}, _props("save_lesson"))
+    assert "session_summary" not in args, "чужое поле не должно уезжать в аргументы"
+    assert "open_questions" not in args
+    assert "<session_summary>" not in args["content"]
+    assert "итог из хвоста" in args["content"], "содержимое обязано остаться в тексте"
+    assert "живой вопрос" in args["content"]
