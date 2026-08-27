@@ -189,3 +189,70 @@ def test_new_format_split_is_not_broken_by_inner_headings(proj):
     assert len(blocks) == 2, "подзаголовок внутри блока не должен плодить сессии"
     assert "вторая" in blocks[0] and "подраздел внутри блока" in blocks[0]
     assert "первая" in blocks[1]
+
+
+# ── вопрос не зависит от сводки (v1.71.1) ───────────────────────────────────
+# Найдено 27.08.2026. В `finish_task` сохранение сессии стояло под
+# `if session_summary:`, и внутрь той же ветки уходил `open_questions` — вызов
+# без сводки записывал только статью-урок, а переданный вопрос исчезал МОЛЧА:
+# ни исключения, ни предупреждения, ответ отчитывался успехом. Живой случай:
+# finish_task 27.08 13:02 передал 595 символов с цифрами контрольного замера,
+# и они не легли никуда — журнал остался на вчерашнем блоке, а `open_questions`
+# продолжал отдавать позавчерашний вопрос.
+#
+# ⚠️ Ветка `if session_summary:` сама по себе НУЖНА и остаётся: `append_session`
+# ВСЕГДА вставляет новый блок (вливаются только заметки «в работе»), поэтому
+# вызов без сводки не должен пополнять журнал — иначе одна сессия займёт два
+# слота из MAX_SESSIONS. Чинится ровно привязка ВОПРОСА к сводке.
+
+@pytest.mark.asyncio
+async def test_question_is_saved_even_without_session_summary(knowledge_dir):
+    """Переданный open_questions обязан лечь в базу и без сводки сессии."""
+    from memory_compiler.handlers import finish_task
+
+    await finish_task(
+        topic="починка гейта",
+        content="Разобрана причина, гейт поправлен.",
+        project="testproj",
+        open_questions="Контрольный замер не сделан — медиана выдачи была 14287",
+    )
+
+    items = storage.open_questions_list("testproj")
+    assert len(items) == 1, "вопрос без сводки потерян — ровно тот баг, что чиним"
+    assert "14287" in items[0]["text"], "текст вопроса должен доехать целиком"
+
+
+@pytest.mark.asyncio
+async def test_call_without_summary_still_adds_no_journal_block(knowledge_dir):
+    """Позитивный контроль: журнал по-прежнему пополняется только сводкой.
+
+    Без этой проверки «починка» вида «звать save_session всегда» прошла бы
+    зелёной, попутно посадив в журнал пустой блок «Что сделано: —».
+    """
+    from memory_compiler.handlers import finish_task
+
+    await finish_task(
+        topic="починка гейта",
+        content="Разобрана причина, гейт поправлен.",
+        project="testproj",
+        open_questions="Замер не сделан",
+    )
+
+    assert storage.latest_session("testproj") == "", "блок в журнале без сводки не заводим"
+
+
+@pytest.mark.asyncio
+async def test_summary_path_still_writes_both(knowledge_dir):
+    """Позитивный контроль: со сводкой по-прежнему пишутся И журнал, И вопрос."""
+    from memory_compiler.handlers import finish_task
+
+    await finish_task(
+        topic="починка гейта",
+        content="Разобрана причина, гейт поправлен.",
+        project="testproj",
+        session_summary="разобрали и починили",
+        open_questions="Замер не сделан",
+    )
+
+    assert "разобрали и починили" in storage.latest_session("testproj")
+    assert len(storage.open_questions_list("testproj")) == 1

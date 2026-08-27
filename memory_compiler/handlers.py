@@ -2079,9 +2079,21 @@ async def finish_task(topic: str, content: str, project: str, tags: list = None,
     parts.append(lesson_result[0].text)
 
     # 2. Сохранить сессию
+    # ⚠️ ВОПРОС НЕ ПРИВЯЗАН К СВОДКЕ (v1.71.1). Раньше save_session звался только
+    # под `if session_summary:`, и вместе с сессией МОЛЧА терялся open_questions:
+    # вызов без сводки писал одну статью-урок, вопрос не заводился, а ответ
+    # отчитывался успехом. Живой случай 27.08.2026 — 595 символов с цифрами
+    # контрольного замера не легли никуда, и старт следующей сессии показывал
+    # позавчерашний вопрос. Сама ветка остаётся: append_session ВСЕГДА вставляет
+    # новый блок, поэтому вызов без сводки журнал не пополняет — иначе одна
+    # сессия заняла бы два слота из MAX_SESSIONS.
     if session_summary:
         session_result = await save_session(project, session_summary, "", open_questions or "")
         parts.append(session_result[0].text)
+    elif open_questions:
+        if await asyncio.to_thread(add_question, project, open_questions):
+            n = len(open_questions_list(project))
+            parts.append(f"❓ Открытый вопрос добавлен в {project}/_questions.md (всего открытых: {n})")
 
     # 3. Prospective reflection — извлечь atomic facts из content + session_summary
     reflections = extract_reflections(content + "\n" + (session_summary or ""))
