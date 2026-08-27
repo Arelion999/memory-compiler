@@ -86,6 +86,36 @@ def test_extract_git_refs():
     assert "42" in refs["issue"]
 
 
+def test_extract_git_refs_skips_non_commit_objects():
+    """Пустое дерево и пустой blob — валидные git-объекты, но не коммиты. Ловились
+    в «Коммиты» на статьях про обслуживание репозиториев (2026-08-27)."""
+    refs = extract_git_refs(
+        "единственный объект — пустое дерево 4b825dc642cb6eb9a060e54bf8d69288fbee4904, "
+        "рядом пустой blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+        "Уборка репозитория",
+    )
+    assert "commit" not in refs
+
+
+def test_extract_git_refs_skips_foreign_hex():
+    """Чужие калибры hex и hex-подобные слова — не коммиты: git печатает только
+    сокращённые 7–12 символов и полные 40, а md5 даёт 32."""
+    refs = extract_git_refs(
+        "контрольная сумма d41d8cd98f00b204e9800998ecf8427e совпала, "
+        "значение deadbeef в дампе, счётчик 20260827",
+        "",
+    )
+    assert "commit" not in refs
+
+
+def test_extract_git_refs_keeps_real_hashes():
+    """Регрессия к фильтрам выше: хеши обоих настоящих калибров остаются."""
+    refs = extract_git_refs(
+        "HEAD 0ad33ca, полный 0ad33ca1b2c3d4e5f60718293a4b5c6d7e8f9012 ", ""
+    )
+    assert refs["commit"] == ["0ad33ca", "0ad33ca1b2c3d4e5f60718293a4b5c6d7e8f9012"]
+
+
 def test_format_git_refs():
     refs = {"commit": ["abc1234"], "issue": ["42"]}
     result = format_git_refs(refs)

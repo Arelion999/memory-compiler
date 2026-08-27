@@ -1092,6 +1092,43 @@ _GIT_REF_PATTERNS = [
 ]
 
 
+# Хеши, валидные как git-объекты, но коммитами не бывающие никогда: константы
+# пустого дерева и пустого blob. Попадают в тексты про обслуживание репозиториев
+# («в objects ровно один файл — пустое дерево 4b825dc…») и уезжали в «Коммиты».
+_GIT_NON_COMMIT_OBJECTS = frozenset({
+    "4b825dc642cb6eb9a060e54bf8d69288fbee4904",  # empty tree
+    "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",  # empty blob
+})
+
+
+def _looks_like_commit_hash(value: str) -> bool:
+    """Отличить хеш коммита от постороннего hex: md5, отпечатка, hex-подобного слова.
+
+    Без доступа к репозиторию тип объекта не проверить (сервер в контейнере, репозиторий
+    смонтирован далеко не всегда, а subprocess на каждое сохранение вешал бы event loop),
+    поэтому отсекаем по форме — этого хватает на все встреченные ложные срабатывания.
+    """
+    n = len(value)
+    # Настоящие калибры: сокращённый (7–12 символов, core.abbrev растёт с размером
+    # репозитория) и полный sha1 = 40. Промежуточных длин git не печатает, поэтому
+    # 32-символьный hex — это md5 или чужой идентификатор. sha256-репозитории (64)
+    # намеренно не ловим: вывод sha256sum в текстах про инфраструктуру встречается
+    # несравнимо чаще, чем git на sha256, и дал бы новый поток ложных коммитов.
+    if not (7 <= n <= 12 or n == 40):
+        return False
+    if value in _GIT_NON_COMMIT_OBJECTS:
+        return False
+    if value.isdigit():
+        return False   # 20260827 — дата или счётчик
+    # Сокращённый хеш из одних букв a-f — практически всегда слово (deadbeef, accede):
+    # у настоящего sha1 шанс обойтись без цифр — 0.10% на семи символах и 0.04% на
+    # восьми ((6/16)^n). На боевой базе (550 хешей в «Коммитах») таких нет ни одного,
+    # то есть правило почти нейтрально: держим его против hex-подобных СЛОВ.
+    if n <= 12 and not any(ch.isdigit() for ch in value):
+        return False
+    return True
+
+
 def extract_git_refs(content: str, topic: str) -> dict[str, list[str]]:
     """Извлечь упоминания git-объектов из контента."""
     text = f"{topic}\n{content}"
@@ -1100,9 +1137,9 @@ def extract_git_refs(content: str, topic: str) -> dict[str, list[str]]:
         found = re.findall(pattern, text)
         if found:
             refs.setdefault(ref_type, set()).update(found)
-    # Отфильтровать ложные срабатывания для коммитов (исключить даты и т.п.)
+    # Отфильтровать ложные срабатывания для коммитов (даты, md5, не-коммит объекты)
     if "commit" in refs:
-        refs["commit"] = {c for c in refs["commit"] if not c.isdigit() and len(c) >= 7}
+        refs["commit"] = {c for c in refs["commit"] if _looks_like_commit_hash(c)}
     return {k: sorted(v) for k, v in refs.items() if v}
 
 
