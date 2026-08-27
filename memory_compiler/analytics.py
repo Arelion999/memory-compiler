@@ -156,3 +156,107 @@ def quality(hours: float = 168.0) -> dict:
             for r in misses[-10:]
         ],
     }
+
+
+# ── Суточный замер (v1.73.0) ────────────────────────────────────────────────
+# Контрольный замер после релизов зависел от того, вспомнит ли о нём человек, и
+# ровно поэтому не делался. Прецедент в этом же проекте: `stale_facts` — ноль
+# вызовов за 4.5 месяца, `knowledge_gap` — ноль. Инструмент, о котором надо
+# ВСПОМНИТЬ, механизмом не работает, поэтому считает сервер по расписанию.
+#
+# ⚠️ НАРЕЗКА СЕССИЙ — ЭВРИСТИКА: аудит не пишет session_id, серии режутся по
+# паузе. Замер 26.08.2026 показал, что доля слепых стартов ЧУВСТВИТЕЛЬНА к
+# порогу (30 мин → 46%, 60 мин → 54%, 90 мин → 66%), направление при этом одно и
+# то же. Поэтому порог ЗАФИКСИРОВАН: ряды сравнимы только между собой, и менять
+# константу задним числом нельзя — иначе «улучшение» окажется сменой линейки,
+# как уже было с baseline поиска (три роста подряд, ни один от кода).
+SESSION_GAP_SEC = 3600
+
+
+def _context_tools() -> set:
+    """Инструменты, сами отдающие контекст: с них начатая сессия не слепая.
+
+    Список берётся из tools.py ОТЛОЖЕННЫМ импортом — прямой дал бы цикл
+    (tools тянет handlers), а копия списка разъехалась бы молча.
+    """
+    try:
+        from memory_compiler.tools import _CONTEXT_TOOLS
+        return set(_CONTEXT_TOOLS)
+    except Exception:
+        return {"start_task", "load_session", "get_active_context",
+                "open_questions", "get_context", "get_summary"}
+
+
+def _median(values: list) -> int:
+    if not values:
+        return 0
+    s = sorted(values)
+    mid = len(s) // 2
+    return int(s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2)
+
+
+def daily(hours: float = 24.0) -> dict:
+    """Суточный срез качества памяти. Вызывать в потоке, а не в event loop.
+
+    ⚠️ Существующие формулы НЕ дублируются — miss_rate/act_rate/chained берутся
+    у quality(). Копия расчёта тут уже случившаяся болезнь: act_rate живёт в трёх
+    местах сразу (этот модуль, панель качества ui.py, хук mc_guard.py), четвёртая
+    разъедется молча. Цена — лог читается дважды; на суточном окне это доли
+    секунды, и она осознанная.
+    """
+    q = quality(hours)
+    rows = _read_rows(hours)
+
+    searches = [r for r in rows if r.get("tool") == "search"]
+    sizes = [int(r.get("size") or 0) for r in searches if int(r.get("size") or 0) > 0]
+    total_chars = sum(int(r["size"]) for r in rows
+                      if isinstance(r.get("size"), int) and r["size"] > 0)
+
+    finishes = [r for r in rows if r.get("tool") == "finish_task"]
+    no_summary = [r for r in finishes
+                  if not str((r.get("args") or {}).get("session_summary") or "").strip()]
+
+    # ⚠️ ДВЕ ЦИФРЫ, А НЕ ОДНА, и этого требует сама нарезка. Длинная непрерывная
+    # работа режется паузами на несколько серий, и КАЖДОЕ продолжение по
+    # определению начинается не со start_task — «вслепую 100%» получается
+    # артефактом сегментации, а не фактом о работе. Первый живой прогон 28.08
+    # это и показал: 4 серии из 4 «слепые», хотя контекст в тот день грузили.
+    # Исходный замер 26.08 давал пару ровно поэтому: контекст где-либо 54%,
+    # контекст первым вызовом 21%.
+    ctx = _context_tools()
+    sessions, blind, ctx_anywhere, prev_ts = 0, 0, 0, None
+    seen_ctx = False
+    for r in rows:
+        if prev_ts is None or r["_ts"] - prev_ts > SESSION_GAP_SEC:
+            if sessions and seen_ctx:
+                ctx_anywhere += 1
+            sessions += 1
+            seen_ctx = False
+            if r.get("tool") not in ctx:
+                blind += 1
+        if r.get("tool") in ctx:
+            seen_ctx = True
+        prev_ts = r["_ts"]
+    if sessions and seen_ctx:
+        ctx_anywhere += 1
+
+    nf = len(finishes)
+    return {
+        "hours": hours,
+        "calls": q["calls"],
+        "searches": q["searches"],
+        "miss_rate": q["miss_rate"],
+        "act_rate": q["act_rate"],
+        "chained": q["chained"],
+        "search_median": _median(sizes),
+        "search_share": round(sum(sizes) / total_chars, 3) if total_chars else 0.0,
+        "notes": len([r for r in rows if r.get("tool") == "session_note"]),
+        "finish_total": nf,
+        "finish_no_summary": len(no_summary),
+        "no_summary_rate": round(len(no_summary) / nf, 3) if nf else 0.0,
+        "sessions": sessions,
+        "blind": blind,
+        "blind_rate": round(blind / sessions, 3) if sessions else 0.0,
+        "ctx_anywhere": ctx_anywhere,
+        "ctx_rate": round(ctx_anywhere / sessions, 3) if sessions else 0.0,
+    }

@@ -285,6 +285,27 @@ async def web_save(request: Request):
     return JSONResponse({"result": result[0].text})
 
 
+async def web_daily_metrics(request: Request):
+    """Снять суточный замер качества памяти и записать его статьёй.
+
+    Дёргается по расписанию (`scripts/mc-daily-metrics.sh`, cron на NAS). Считает
+    ВНУТРИ работающего сервера сознательно: отдельный процесс переписывал бы
+    pickle эмбеддингов мимо внутрипроцессного лока — см. daily_metrics.run_async.
+    """
+    from memory_compiler import daily_metrics
+
+    hours = 24.0
+    try:
+        body = await request.json()
+        hours = float(body.get("hours") or 24.0)
+    except Exception:
+        pass
+    if hours <= 0 or hours > 24 * 90:
+        return JSONResponse({"error": "hours out of range"}, status_code=400)
+    text = await daily_metrics.run_async(hours)
+    return JSONResponse({"result": text})
+
+
 async def warm_models() -> float:
     """Прогреть ML-модели в фоне. Возвращает длительность в секундах (0.0 при сбое).
 
@@ -1061,6 +1082,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/projects/{project}", endpoint=web_project),
             Route("/api/graph", endpoint=web_graph),
             Route("/api/analytics", endpoint=web_analytics),
+            Route("/api/metrics/daily", endpoint=web_daily_metrics, methods=["POST"]),
             Route("/api/compile/preview", endpoint=web_compile_preview),
             Route("/api/compile/run", endpoint=web_compile_run, methods=["POST"]),
             Route("/api/export/{project}", endpoint=web_export),

@@ -199,3 +199,107 @@ def test_action_is_credited_to_the_search_it_actually_followed(audit):
     q = analytics.quality(24)
     assert q["acted"] == 1, "зачёт положен только второму поиску"
     assert q["chained"] == 1, "первый поиск не привёл к действию"
+
+
+# ── суточный замер (v1.73.0) ────────────────────────────────────────────────
+# Контрольный замер после релизов зависел от того, вспомнит ли о нём человек, и
+# ровно поэтому не делался: тот же случай, что со `stale_facts` — ноль вызовов
+# за четыре с половиной месяца. Считает СЕРВЕР, раз в сутки, по тому же
+# аудит-логу.
+#
+# ⚠️ Существующие формулы не дублируются: daily() берёт их у quality(). Копия
+# расчёта — это уже случившаяся болезнь (act_rate живёт в трёх местах сразу:
+# analytics, панель ui.py и хук mc_guard.py), четвёртую заводить нельзя.
+
+def test_daily_survives_empty_log(audit):
+    audit([])
+    d = analytics.daily(24)
+    assert d["searches"] == 0 and d["sessions"] == 0 and d["blind_rate"] == 0.0
+
+
+def test_daily_counts_blind_sessions(audit):
+    """Сессия, начатая НЕ с загрузки контекста, считается слепой.
+
+    Аудит не пишет session_id, поэтому сессии режутся по паузе — это
+    эвристика, и она честно названа в docstring функции.
+    """
+    gap = analytics.SESSION_GAP_SEC + 60
+    audit([
+        _row(-3 * gap, "start_task", project="demo"),          # зрячая
+        _row(-3 * gap + 30, "save_lesson", project="demo"),
+        _row(-2 * gap, "save_lesson", project="demo"),         # слепая
+        _row(-2 * gap + 30, "finish_task", project="demo"),
+        _row(-gap, "search", query="что-то"),                  # слепая
+    ])
+    d = analytics.daily(24)
+    assert d["sessions"] == 3, "три серии, разделённые паузой"
+    assert d["blind"] == 2
+    assert d["blind_rate"] == round(2 / 3, 3)
+
+
+def test_daily_counts_finish_task_without_summary(audit):
+    audit([
+        _row(-600, "finish_task", topic="a", session_summary="итог"),
+        _row(-500, "finish_task", topic="b"),
+        _row(-400, "finish_task", topic="c", session_summary="  "),
+    ])
+    d = analytics.daily(24)
+    assert d["finish_total"] == 3
+    assert d["finish_no_summary"] == 2, "пустая строка — тоже без сводки"
+
+
+def test_daily_reports_search_volume(audit):
+    """Медиана выдачи поиска и доля поиска в отданных символах — то, ради чего
+    вводился SEARCH_BUDGET; без них эффект правки не виден."""
+    audit([
+        _row(-900, "search", size=6000, query="a"),
+        _row(-800, "search", size=7000, query="b"),
+        _row(-700, "search", size=8000, query="c"),
+        _row(-600, "start_task", size=3000, project="demo"),
+    ])
+    d = analytics.daily(24)
+    assert d["search_median"] == 7000
+    assert d["search_share"] == round(21000 / 24000, 3)
+
+
+def test_daily_counts_session_notes(audit):
+    audit([
+        _row(-900, "session_note", note="раз", project="demo"),
+        _row(-800, "session_note", note="два", project="demo"),
+        _row(-700, "search", query="a"),
+    ])
+    assert analytics.daily(24)["notes"] == 2
+
+
+def test_daily_reuses_quality_numbers(audit):
+    """Позитивный контроль против копии расчёта: act_rate у daily() обязан
+    совпадать с quality() на тех же данных — если формулу продублируют, они
+    разъедутся молча."""
+    rows = [
+        _row(-900, "search", size=9000, query="a"),
+        _row(-880, "read_article", project="demo"),
+        _row(-600, "search", size=40, query="пусто"),
+    ]
+    audit(rows)
+    assert analytics.daily(24)["act_rate"] == analytics.quality(24)["act_rate"]
+    assert analytics.daily(24)["miss_rate"] == analytics.quality(24)["miss_rate"]
+
+
+def test_daily_also_counts_context_anywhere_in_the_session(audit):
+    """Двух цифр требует сама эвристика нарезки.
+
+    Длинная непрерывная работа режется паузами на несколько серий, и все
+    продолжения по определению начинаются НЕ со start_task — «вслепую 100%»
+    получается артефактом, а не фактом. Исходный замер 26.08 поэтому и давал
+    пару: контекст где-либо (54%) и контекст первым вызовом (21%).
+    """
+    gap = analytics.SESSION_GAP_SEC + 60
+    audit([
+        _row(-2 * gap, "save_lesson", project="demo"),      # начата вслепую,
+        _row(-2 * gap + 30, "start_task", project="demo"),  # но контекст всё же взят
+        _row(-gap, "search", query="что-то"),               # и начата вслепую, и без контекста
+    ])
+    d = analytics.daily(24)
+    assert d["blind"] == 2, "обе серии начаты не с контекста"
+    assert d["ctx_anywhere"] == 1, "в одной из них контекст всё же загружали"
+    assert d["ctx_rate"] == 0.5
