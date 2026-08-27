@@ -76,6 +76,12 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
   .title { font-weight: 600; color: var(--accent); word-break: break-word; }
   .meta { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
   .empty { color: var(--muted); padding: 8px 0; }
+  .notice {
+    background: var(--card); border-left: 3px solid var(--accent);
+    border-radius: 4px; color: var(--muted); font-size: 12px; line-height: 1.5;
+    padding: 8px 10px; margin-bottom: 10px;
+    white-space: pre-wrap; word-break: break-word;
+  }
   .back {
     font: inherit; font-size: 13px; cursor: pointer; color: var(--accent);
     background: none; border: none; padding: 0; margin-bottom: 8px;
@@ -174,6 +180,15 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     head.appendChild(el("b", null, data.query || "Поиск"));
     head.appendChild(el("span", null, "найдено: " + (data.count || 0)));
     root.appendChild(head);
+
+    // Подсказки сервера (свежесть от параллельных сессий, первое обращение к
+    // проекту, напоминание о заметке) приезжают полем notice: у search объявлен
+    // outputSchema, и отдельный текстовый блок до клиента не доходит — потому
+    // они и продублированы в structuredContent. Не показать их здесь значило бы
+    // отдать подсказку модели и спрятать от человека, молча.
+    // Текст многострочный, поэтому white-space: pre-wrap; в DOM — только
+    // textContent, как и заголовки статей.
+    if (data.notice) root.appendChild(el("div", "notice", data.notice));
 
     // Фильтр по проекту — поверх УЖЕ полученных результатов, без обращения к
     // серверу и без хода модели.

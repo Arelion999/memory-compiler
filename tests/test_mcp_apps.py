@@ -174,3 +174,41 @@ def test_protocol_version_literal_matches_the_constant():
     """В HTML версия вписана литералом (подстановки нет намеренно) — сторож от
     тихого расхождения с константой модуля."""
     assert f'"{PROTOCOL_VERSION}"' in SEARCH_VIEW_HTML
+
+
+# ─── Панель обязана читать всё, что сервер ей кладёт (v1.72.1) ───────────────
+# Аудит 27.08.2026 по классу «поле передано — потребитель не взял». Сервер
+# дублирует футеры (свежесть, подсказка первого обращения, напоминание о
+# session_note) в structuredContent полем `notice` — именно потому, что у search
+# объявлен outputSchema и дополнительный TextContent до модели не доходит
+# (v1.68.0). А вьюха читала results/query/count и поля результата, но `notice`
+# не читала ВОВСЕ: модель подсказку получала, человек в панели — нет, и
+# ни ошибки, ни пустого места, просто тишина.
+#
+# ⚠️ Сторож НЕ на одно поле, а на ВЕСЬ контракт: любое новое поле outputSchema
+# обязано быть прочитано вьюхой, иначе это повторение того же класса на новом
+# месте — а заметить его снова будет нечем.
+
+def _search_output_schema():
+    return _tool("search").outputSchema
+
+
+def test_view_reads_every_top_level_field_the_server_sends():
+    props = _search_output_schema()["properties"]
+    unread = [k for k in props if ("data.%s" % k) not in SEARCH_VIEW_HTML]
+    assert not unread, (
+        "сервер кладёт в structuredContent поля, которых панель не читает: %s" % unread)
+
+
+def test_view_reads_every_result_field_the_server_sends():
+    item = _search_output_schema()["properties"]["results"]["items"]["properties"]
+    unread = [k for k in item if ("r.%s" % k) not in SEARCH_VIEW_HTML]
+    assert not unread, "панель не читает поля результата: %s" % unread
+
+
+def test_notice_is_rendered_as_text_not_markup():
+    """Текст подсказки собирает сервер, но правило то же, что для заголовков:
+    в DOM он попадает текстом. innerHTML во вьюхе запрещён отдельным тестом —
+    здесь проверяем, что подсказка вообще доходит до отрисовки."""
+    assert "data.notice" in SEARCH_VIEW_HTML
+    assert "notice" in SEARCH_VIEW_HTML

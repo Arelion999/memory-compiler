@@ -765,7 +765,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "repo_path": {"type": "string", "description": "Путь к git-репозиторию"},
                     "project": {"type": "string", "default": "all", "description": "Проект для сравнения (или 'all')"},
-                    "days": {"type": "number", "default": 30, "description": "За сколько последних дней анализировать коммиты"},
+                    "days": {"type": "number", "default": 30, "description": "За сколько последних дней анализировать коммиты. Действует ТОЛЬКО с repo_path: при git_log_raw окно задано содержимым лога, и параметр молча игнорируется"},
                     "git_log_raw": {"type": "string", "description": "Сырой git log (альтернатива repo_path)"}
                 }
             }

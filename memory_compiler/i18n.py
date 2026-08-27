@@ -432,7 +432,7 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'repo_path': 'Path to the git repository',
             'project': "Project to compare against (or 'all')",
-            'days': 'How many recent days of commits to analyze',
+            'days': 'How many recent days of commits to analyze. Applies ONLY with repo_path: with git_log_raw the window is set by the log itself and this parameter is silently ignored',
             'git_log_raw': 'Raw git log (alternative to repo_path)',
         },
     },
