@@ -6,6 +6,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 WORKDIR /app
 
 COPY requirements.txt .
+
+# torch — ТОЛЬКО CPU-колесо. NAS на Celeron J4125, GPU нет вовсе, а дефолтные колёса
+# с PyPI тянут nvidia-* + triton: замер 20.08.2026 — 3.4 ГБ из 8.67 ГБ образа (67%),
+# кода для железа, которого здесь не существует. Ставится ОТДЕЛЬНЫМ шагом и ДО
+# requirements.txt: тогда sentence-transformers видит torch уже установленным и не
+# подтягивает GPU-вариант с PyPI. Через --index-url (не --extra-index-url): второй
+# оставляет PyPI равноправным источником, и выбор колеса становится делом случая.
+RUN pip install --no-cache-dir --timeout=120 --index-url https://download.pytorch.org/whl/cpu torch
 RUN pip install --no-cache-dir --timeout=120 -r requirements.txt
 
 COPY memory_compiler/ memory_compiler/
