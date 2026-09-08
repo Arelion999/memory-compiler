@@ -34,7 +34,8 @@ from memory_compiler.storage import (
     article_title_tags, parse_meta_value, _parse_frontmatter,
     regenerate_index, git_commit,
     update_active_context,
-    append_session, append_note, latest_session, RUNNING_MARK, add_question, close_questions, open_questions_list,
+    append_session, append_note, latest_session, RUNNING_MARK, running_notes_today,
+    add_question, close_questions, open_questions_list,
     mark_superseded, superseded_by, project_corrections,
     relevant_reflections,
     auto_tags, extract_secret_identifiers, extract_git_refs, format_git_refs,
@@ -2087,7 +2088,12 @@ def _journal_gap_hint(project: str) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     if head.startswith("## %s" % today) and RUNNING_MARK not in head:
         return ""
-    tail = " Заметки по ходу вольются в итоговый блок." if RUNNING_MARK in head else ""
+    # ⚠️ ОБЕЩАЕМ ВЛИВАНИЕ ПО ТОМУ ЖЕ ПРАВИЛУ, ПО КОТОРОМУ ОНО ПРОИСХОДИТ. Раньше
+    # условием был сам факт RUNNING_MARK, а вливается только СЕГОДНЯШНИЙ блок:
+    # брошенный вчерашний намеренно не продолжается (v1.65.0). Обещание,
+    # выданное по своей копии условия, — тот же класс, что чинили весь день.
+    notes = running_notes_today(project)
+    tail = (" Заметки по ходу (%d) вольются в итоговый блок." % len(notes)) if notes else ""
     return ("📓 Сводки сессии не было — день не попал в журнал проекта, и на старте "
             "следующей сессии его не будет видно. Допиши: "
             "save_session(project=\"%s\", summary=…).%s" % (project, tail))

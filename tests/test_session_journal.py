@@ -324,3 +324,64 @@ async def test_warns_when_running_block_has_notes(knowledge_dir):
                                   project="testproj"))
 
     assert "save_session" in out, "незакрытый блок — повод напомнить о сводке"
+
+
+# ── обещание вливания даётся по тому же правилу, что и само вливание (v1.74.1) ─
+# Подсказка обещала «заметки вольются в итоговый блок» при ЛЮБОМ блоке «в работе»,
+# а `_running_notes` вливает только СЕГОДНЯШНИЙ: брошенный вчерашний намеренно не
+# продолжается (v1.65.0, слипшиеся дни врут о том, на чём остановились). Живой
+# случай 08.09: верхний блок журнала висел «в работе» с 01.09, и подсказка обещала
+# на него вливание, которого не было бы.
+
+def _write_running_block(project, day, note="по ходу: что-то выяснилось"):
+    storage._session_path(project).write_text(
+        "# Сессии: %s\n\n## %s 11:37 %s\n\n- 11:37 %s\n"
+        % (project, day, storage.RUNNING_MARK, note), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_hint_promises_merge_only_for_today_running_block(knowledge_dir):
+    from memory_compiler.handlers import _journal_gap_hint
+    from datetime import datetime
+
+    _write_running_block("testproj", datetime.now().strftime("%Y-%m-%d"))
+    hint = _journal_gap_hint("testproj")
+    assert "save_session" in hint, "день всё ещё не закрыт сводкой"
+    assert "вольются" in hint, "сегодняшние заметки действительно вольются"
+
+
+@pytest.mark.asyncio
+async def test_hint_does_not_promise_merge_for_abandoned_block(knowledge_dir):
+    """Вчерашний брошенный блок не продолжается — и обещать вливание нельзя."""
+    from memory_compiler.handlers import _journal_gap_hint
+    from datetime import datetime, timedelta
+
+    _write_running_block("testproj",
+                         (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"))
+    hint = _journal_gap_hint("testproj")
+    assert "save_session" in hint, "подсказка про незаписанный день остаётся"
+    assert "вольются" not in hint, "вливания не будет — обещать его нельзя"
+
+
+def test_running_notes_helper_matches_what_append_session_merges(knowledge_dir):
+    """Инвариант: подсказка и вливание смотрят на ОДНО правило.
+
+    Разъедутся — вернётся ровно тот дефект, что чинится: обещание, данное по
+    своей копии условия.
+    """
+    from datetime import datetime, timedelta
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write_running_block("testproj", today, note="сегодняшняя заметка")
+    assert storage.running_notes_today("testproj"), "хелпер видит сегодняшние заметки"
+    storage.append_session("testproj", "итог дня")
+    assert "сегодняшняя заметка" in storage.latest_session("testproj"), "и они влились"
+
+    _write_running_block("testproj",
+                         (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d"),
+                         note="позавчерашняя заметка")
+    assert storage.running_notes_today("testproj") == [], "брошенный блок не считается"
+    storage.append_session("testproj", "новый итог")
+    blocks = storage._split_session_blocks(
+        storage._session_path("testproj").read_text(encoding="utf-8"))
+    assert "позавчерашняя заметка" not in blocks[0], "и в итог не влился"
