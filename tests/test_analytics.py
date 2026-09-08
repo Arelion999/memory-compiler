@@ -303,3 +303,69 @@ def test_daily_also_counts_context_anywhere_in_the_session(audit):
     assert d["blind"] == 2, "обе серии начаты не с контекста"
     assert d["ctx_anywhere"] == 1, "в одной из них контекст всё же загружали"
     assert d["ctx_rate"] == 0.5
+
+
+# ── скользящее окно 7 суток (v1.74.0) ───────────────────────────────────────
+# Разбор ряда 29.08–08.09 (11 точек): доли, считаемые ПО СЕССИЯМ, на суточном
+# окне шумят — сессий за сутки 2..7, одна сессия двигает долю на ~17 п.п.,
+# разлёт «стартуют вслепую» 0..100%. Метрики по объёму (медиана выдачи,
+# промахи, доля символов) на тех же сутках ровные и в окне не нуждаются.
+
+def test_session_shares_are_also_counted_over_a_week(audit):
+    """Недельные доли считаются по 7 суткам, а не по последним 24 часам."""
+    gap = analytics.SESSION_GAP_SEC + 60
+    day = 24 * 3600
+    audit([
+        # позавчера: две серии, обе начаты контекстом → в неделю попадут, в сутки нет
+        _row(-2 * day, "start_task", project="demo"),
+        _row(-2 * day - gap, "start_task", project="demo"),
+        # сегодня: одна серия вслепую
+        _row(-600, "save_lesson", project="demo"),
+    ])
+    d = analytics.daily(24)
+    assert d["sessions"] == 1 and d["blind"] == 1, "суточные цифры считаем по суткам"
+    assert d["sessions_7d"] == 3, "в неделю должны попасть все три серии"
+    assert d["blind_7d"] == 1
+    assert d["blind_rate_7d"] == round(1 / 3, 3)
+    assert d["ctx_rate_7d"] == round(2 / 3, 3)
+
+
+def test_week_equals_day_when_all_activity_is_recent(audit):
+    """Инвариант против копии расчёта: если вся активность в сутках, окна равны.
+
+    Разъедутся — значит недельные доли считает ВТОРАЯ реализация сегментации,
+    а не тот же хелпер.
+    """
+    gap = analytics.SESSION_GAP_SEC + 60
+    audit([
+        _row(-2 * gap, "start_task", project="demo"),
+        _row(-gap, "save_lesson", project="demo"),
+    ])
+    d = analytics.daily(24)
+    assert (d["sessions_7d"], d["blind_7d"], d["ctx_anywhere_7d"]) == \
+           (d["sessions"], d["blind"], d["ctx_anywhere"])
+
+
+def test_wide_window_does_not_shrink_to_a_week(audit):
+    """Запросили месяц — недельное окно не сужает основной срез."""
+    day = 24 * 3600
+    audit([
+        _row(-20 * day, "start_task", project="demo"),
+        _row(-600, "save_lesson", project="demo"),
+    ])
+    d = analytics.daily(24 * 30)
+    assert d["sessions"] == 2, "основное окно — то, что запросили"
+    assert d["trend_hours"] >= 24 * 30, "окно тренда не может быть уже основного"
+    assert d["sessions_7d"] == d["sessions"]
+
+
+def test_volume_metrics_stay_on_the_requested_window(audit):
+    """Позитивный контроль: объёмные метрики окном тренда НЕ затронуты."""
+    day = 24 * 3600
+    audit([
+        _row(-3 * day, "search", size=99999, query="старый"),
+        _row(-600, "search", size=5000, query="сегодняшний"),
+    ])
+    d = analytics.daily(24)
+    assert d["searches"] == 1 and d["search_median"] == 5000, \
+        "медиана выдачи считается по суткам, иначе ряд перестанет быть суточным"

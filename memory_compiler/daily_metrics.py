@@ -76,11 +76,23 @@ def format_report(d: dict, prev: dict | None) -> str:
             _shift("впустую", d["miss_rate"], p.get("miss_rate"), _pct),
             _shift("привело к действию", d["act_rate"], p.get("act_rate"), _pct),
         ]) + ".",
-        "КОНТЕКСТ СЕССИИ. " + ", ".join([
-            _shift("контекст загружен где-либо", d.get("ctx_rate", 0),
-                   p.get("ctx_rate"), _pct),
-            _shift("стартуют вслепую", d["blind_rate"], p.get("blind_rate"), _pct),
-            "%d из %d" % (d["blind"], d["sessions"]),
+        # ⚠️ ДОЛИ ПО СЕССИЯМ — С НЕДЕЛЬНОГО ОКНА, и это не косметика. На сутках
+        # сессий 2..7, одна двигает долю на ~17 п.п.: за первые 11 точек ряда
+        # «стартуют вслепую» гуляло 0..100% при ровном направлении, и по одной
+        # точке вывод сделать было нельзя. Суточные значения никуда не делись —
+        # они остаются абсолютными числами ниже и целиком в снимке MTR.
+        # ⚠️ Дельта недельной доли берётся из НЕДЕЛЬНОГО поля прошлого снимка:
+        # сравнение недели с вчерашними сутками показало бы сдвиг, которого не
+        # было — разные линейки.
+        "КОНТЕКСТ СЕССИИ ЗА %d СУТ. " % round(d.get("trend_hours", 168) / 24) + ", ".join([
+            _shift("контекст где-либо", d.get("ctx_rate_7d", d.get("ctx_rate", 0)),
+                   p.get("ctx_rate_7d"), _pct),
+            _shift("стартуют вслепую", d.get("blind_rate_7d", d["blind_rate"]),
+                   p.get("blind_rate_7d"), _pct),
+            "%d из %d" % (d.get("blind_7d", d["blind"]), d.get("sessions_7d", d["sessions"])),
+        ]) + ".",
+        "ЗА СУТКИ. " + ", ".join([
+            "сессий %d, из них вслепую %d из %d" % (d["sessions"], d["blind"], d["sessions"]),
             _shift("заметок по ходу", d["notes"], p.get("notes")),
             _shift("finish_task без сводки", d["no_summary_rate"],
                    p.get("no_summary_rate"), _pct),

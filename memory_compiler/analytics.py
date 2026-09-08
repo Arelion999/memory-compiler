@@ -172,6 +172,41 @@ def quality(hours: float = 168.0) -> dict:
 # как уже было с baseline поиска (три роста подряд, ни один от кода).
 SESSION_GAP_SEC = 3600
 
+# ⚠️ ДОЛИ ПО СЕССИЯМ СЧИТАЮТСЯ ЕЩЁ И НА НЕДЕЛЕ (v1.74.0). Разбор ряда 29.08–08.09
+# (11 суточных точек): сессий за сутки 2..7, медиана 6 — ОДНА сессия двигает долю
+# на ~17 п.п., и «стартуют вслепую» гуляло 0..100% при ровном направлении. Это
+# шум окна, а не поведение. Метрики по ОБЪЁМУ (медиана выдачи, промахи, доля
+# символов) на тех же сутках держались в коридоре ±3% и в окне не нуждаются —
+# расширять их значило бы размыть суточный ряд ради чужой болезни.
+TREND_HOURS = 168.0
+
+
+def _session_stats(rows: list[dict], ctx: set) -> tuple[int, int, int]:
+    """Нарезать серии по паузе и посчитать (сессии, слепые старты, контекст где-либо).
+
+    ⚠️ ОДНА реализация на оба окна. Копия сегментации разъехалась бы молча:
+    суточная и недельная цифры считались бы по-разному, а выглядело бы это как
+    осмысленная разница между окнами. Инвариант держит тест — при активности
+    целиком внутри суток окна обязаны совпасть.
+    """
+    sessions = blind = ctx_anywhere = 0
+    seen_ctx = False
+    prev_ts = None
+    for r in rows:
+        if prev_ts is None or r["_ts"] - prev_ts > SESSION_GAP_SEC:
+            if sessions and seen_ctx:
+                ctx_anywhere += 1
+            sessions += 1
+            seen_ctx = False
+            if r.get("tool") not in ctx:
+                blind += 1
+        if r.get("tool") in ctx:
+            seen_ctx = True
+        prev_ts = r["_ts"]
+    if sessions and seen_ctx:
+        ctx_anywhere += 1
+    return sessions, blind, ctx_anywhere
+
 
 def _context_tools() -> set:
     """Инструменты, сами отдающие контекст: с них начатая сессия не слепая.
@@ -205,7 +240,12 @@ def daily(hours: float = 24.0) -> dict:
     секунды, и она осознанная.
     """
     q = quality(hours)
-    rows = _read_rows(hours)
+    # Читаем ОДИН раз по широкому окну и режем срез в памяти: отдельное чтение
+    # ради недели было бы третьим проходом по мегабайтному логу за один замер.
+    trend_hours = max(float(hours), TREND_HOURS)
+    trend_rows = _read_rows(trend_hours)
+    since = time.time() - float(hours) * 3600
+    rows = [r for r in trend_rows if r["_ts"] >= since]
 
     searches = [r for r in rows if r.get("tool") == "search"]
     sizes = [int(r.get("size") or 0) for r in searches if int(r.get("size") or 0) > 0]
@@ -224,21 +264,8 @@ def daily(hours: float = 24.0) -> dict:
     # Исходный замер 26.08 давал пару ровно поэтому: контекст где-либо 54%,
     # контекст первым вызовом 21%.
     ctx = _context_tools()
-    sessions, blind, ctx_anywhere, prev_ts = 0, 0, 0, None
-    seen_ctx = False
-    for r in rows:
-        if prev_ts is None or r["_ts"] - prev_ts > SESSION_GAP_SEC:
-            if sessions and seen_ctx:
-                ctx_anywhere += 1
-            sessions += 1
-            seen_ctx = False
-            if r.get("tool") not in ctx:
-                blind += 1
-        if r.get("tool") in ctx:
-            seen_ctx = True
-        prev_ts = r["_ts"]
-    if sessions and seen_ctx:
-        ctx_anywhere += 1
+    sessions, blind, ctx_anywhere = _session_stats(rows, ctx)
+    w_sessions, w_blind, w_ctx = _session_stats(trend_rows, ctx)
 
     nf = len(finishes)
     return {
@@ -259,4 +286,11 @@ def daily(hours: float = 24.0) -> dict:
         "blind_rate": round(blind / sessions, 3) if sessions else 0.0,
         "ctx_anywhere": ctx_anywhere,
         "ctx_rate": round(ctx_anywhere / sessions, 3) if sessions else 0.0,
+        # Те же доли на окне тренда — по ним и судят о направлении.
+        "trend_hours": trend_hours,
+        "sessions_7d": w_sessions,
+        "blind_7d": w_blind,
+        "blind_rate_7d": round(w_blind / w_sessions, 3) if w_sessions else 0.0,
+        "ctx_anywhere_7d": w_ctx,
+        "ctx_rate_7d": round(w_ctx / w_sessions, 3) if w_sessions else 0.0,
     }

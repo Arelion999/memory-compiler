@@ -131,3 +131,39 @@ async def test_endpoint_defaults_to_a_day_when_body_is_empty(knowledge_dir, monk
 
     resp = await web_daily_metrics(Req())
     assert resp.status_code == 200
+
+
+# ── доли по сессиям читаются с недельного окна (v1.74.0) ────────────────────
+# На суточном окне они шумят: сессий за сутки 2..7, одна сессия — ~17 п.п.
+# В отчёт выносится недельная цифра, суточная остаётся абсолютными числами и
+# в машиночитаемом снимке (ряд не теряет данных).
+
+WEEK = dict(SNAP, trend_hours=168.0, sessions_7d=40, blind_7d=23,
+            blind_rate_7d=0.58, ctx_anywhere_7d=28, ctx_rate_7d=0.7)
+
+
+def test_report_shows_the_weekly_share_with_its_denominator():
+    text = daily_metrics.format_report(WEEK, None)
+    assert "7 сут" in text.lower(), "надо назвать окно, иначе цифру прочтут как суточную"
+    assert "58%" in text and "23 из 40" in text, "доля и знаменатель обе нужны"
+
+
+def test_weekly_delta_compares_week_with_week():
+    """Сравнивать недельную долю с ВЧЕРАШНЕЙ СУТОЧНОЙ значило бы мерить разными
+    линейками и показывать сдвиг, которого не было."""
+    prev = dict(WEEK, blind_rate_7d=0.75, blind_rate=0.2)
+    text = daily_metrics.format_report(WEEK, prev)
+    assert "75% → 58%" in text, "ожидался сдвиг недельной доли"
+    assert "20% →" not in text, "суточная доля прошлого снимка тут ни при чём"
+
+
+def test_daily_numbers_stay_in_the_report_as_counts():
+    """Суточные сессии остаются видимыми — но числами, а не долей."""
+    text = daily_metrics.format_report(WEEK, None)
+    assert "6 из 12" in text, "за сутки показываем абсолютные числа"
+
+
+def test_old_snapshot_without_weekly_fields_does_not_break():
+    """Первый прогон после релиза: во вчерашнем снимке 7d-полей ещё нет."""
+    text = daily_metrics.format_report(WEEK, SNAP)
+    assert daily_metrics.SNAPSHOT_MARK in text and "58%" in text
