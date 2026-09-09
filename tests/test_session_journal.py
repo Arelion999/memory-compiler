@@ -380,8 +380,125 @@ def test_running_notes_helper_matches_what_append_session_merges(knowledge_dir):
     _write_running_block("testproj",
                          (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d"),
                          note="позавчерашняя заметка")
-    assert storage.running_notes_today("testproj") == [], "брошенный блок не считается"
+    assert storage.running_notes_today("testproj") == [], \
+        "брошенный блок не считается СВОИМИ заметками — подсказка обещает только их"
     storage.append_session("testproj", "новый итог")
+    latest = storage.latest_session("testproj")
+    # С v1.75.0 хвост чужого дня доезжает, но ОТДЕЛЬНОЙ секцией и со своей датой:
+    # смешать его с «По ходу» значило бы соврать, что это работа текущей сессии.
+    assert "позавчерашняя заметка" in latest, "содержимое брошенного блока не теряем"
+    tail = latest.split("**Из незакрытых сессий:**")
+    assert len(tail) == 2, "хвост обязан ехать своей секцией"
+    assert "позавчерашняя заметка" in tail[1], "и лежать внутри неё"
+    assert "позавчерашняя заметка" not in tail[0], "а не среди своих заметок по ходу"
+
+
+# ── брошенные блоки вливаются с датой (v1.75.0) ─────────────────────────────
+# Замер по проду 09.09: 13 брошенных блоков «в работе» в 9 проектах, 30 заметок
+# в них, и 10 журналов из 43 упёрлись в MAX_SESSIONS. У gw2 четыре слота из
+# шести занимали огрызки по одной-две заметки, у crowdsource в брошенном блоке
+# висели 12 заметок — самое содержательное, что там было.
+#
+# ⚠️ ЭТО НЕ ОТМЕНА ПРАВИЛА v1.65.0. Там запрещено ПРОДОЛЖАТЬ вчерашний блок как
+# текущий: дни слипались, и «на чём остановились» врало. Здесь блок закрывается,
+# а строки переезжают в новый итог ОТДЕЛЬНОЙ секцией с датой — атрибуция явная.
+
+def _running_block(day, *notes):
+    return "## %s 11:37 %s\n\n%s" % (day, storage.RUNNING_MARK,
+                                     "\n".join("- 11:37 %s" % n for n in notes))
+
+
+def _yesterday(days=1):
+    from datetime import datetime, timedelta
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def test_abandoned_block_is_merged_with_its_date(proj):
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n%s\n" % (proj, _running_block(_yesterday(3), "разобран перелив")),
+        encoding="utf-8")
+    storage.append_session(proj, "итог сегодняшнего дня")
+
+    latest = storage.latest_session(proj)
+    assert "разобран перелив" in latest, "содержимое брошенного блока обязано доехать"
+    assert _yesterday(3) in latest, "без даты вливание врёт о том, когда это было"
+
+
+def test_abandoned_block_frees_its_slot(proj):
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n%s\n" % (proj, _running_block(_yesterday(2), "хвост")),
+        encoding="utf-8")
+    storage.append_session(proj, "итог")
+
     blocks = storage._split_session_blocks(
-        storage._session_path("testproj").read_text(encoding="utf-8"))
-    assert "позавчерашняя заметка" not in blocks[0], "и в итог не влился"
+        storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 1, "брошенный блок изымается, а не остаётся вторым"
+
+
+def test_days_do_not_get_mixed_into_one_heap(proj):
+    """Ровно то, чем опасно вливание: разные дни обязаны остаться различимыми."""
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n%s\n%s%s\n" % (
+            proj, _running_block(_yesterday(2), "первый день"),
+            storage.SESSION_SEP, _running_block(_yesterday(5), "пятый день")),
+        encoding="utf-8")
+    storage.append_session(proj, "итог")
+
+    latest = storage.latest_session(proj)
+    assert _yesterday(2) in latest and _yesterday(5) in latest
+    i2, i5 = latest.index(_yesterday(2)), latest.index(_yesterday(5))
+    assert latest.index("первый день") > i2, "заметка стоит под своей датой"
+    assert latest.index("пятый день") > i5
+
+
+def test_merged_text_does_not_create_pseudo_blocks(proj):
+    """Позитивный контроль против регрессии v1.58.0: подзаголовки внутри блока
+    не должны читаться как новые сессии — иначе журнал снова разъедется."""
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n%s\n" % (proj, _running_block(_yesterday(2), "хвост")),
+        encoding="utf-8")
+    storage.append_session(proj, "итог")
+    storage.append_session(proj, "второй итог")
+
+    blocks = storage._split_session_blocks(
+        storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 2, "ровно два блока: два итога, брошенный влит"
+
+
+def test_todays_running_block_still_merges_as_before(proj):
+    """Позитивный контроль: сегодняшний блок вливается прежним путём, без секции
+    «из незакрытых» — это не чужой день, а та же сессия."""
+    from datetime import datetime
+
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n%s\n" % (proj, _running_block(
+            datetime.now().strftime("%Y-%m-%d"), "своя заметка")),
+        encoding="utf-8")
+    storage.append_session(proj, "итог")
+
+    latest = storage.latest_session(proj)
+    assert "своя заметка" in latest
+    assert "незакрыт" not in latest.lower(), "свой же день чужим не объявляем"
+
+
+def test_closed_blocks_are_left_alone(proj):
+    """Позитивный контроль: обычные закрытые сессии не трогаются."""
+    storage.append_session(proj, "вчерашний итог")
+    storage.append_session(proj, "сегодняшний итог")
+    blocks = storage._split_session_blocks(
+        storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 2 and "вчерашний итог" in blocks[1]
+
+
+def test_empty_abandoned_block_leaves_no_heading(proj):
+    """Пустой брошенный блок просто исчезает — заголовка ради пустоты не заводим."""
+    storage._session_path(proj).write_text(
+        "# Сессии: %s\n\n## %s 11:37 %s\n" % (proj, _yesterday(4), storage.RUNNING_MARK),
+        encoding="utf-8")
+    storage.append_session(proj, "итог")
+
+    latest = storage.latest_session(proj)
+    assert "незакрыт" not in latest.lower(), "вливать нечего — секции быть не должно"
+    blocks = storage._split_session_blocks(
+        storage._session_path(proj).read_text(encoding="utf-8"))
+    assert len(blocks) == 1

@@ -3160,10 +3160,40 @@ def append_session(project: str, summary: str, decisions: str = "",
     if notes:
         blocks = blocks[1:]
 
+    # ⚠️ БРОШЕННЫЕ БЛОКИ ВЛИВАЮТСЯ С ДАТОЙ (v1.75.0), а не висят вечно. Замер по
+    # проду 09.09: 13 незакрытых блоков в 9 проектах, 30 заметок в них, и 10
+    # журналов из 43 упёрлись в MAX_SESSIONS — у gw2 четыре слота из шести
+    # занимали огрызки по одной-две заметки, у crowdsource в брошенном блоке
+    # лежали 12 заметок, самое содержательное, что там было. Чистка их выбросила
+    # бы, пометка ничего не меняет: слот занят, заметки в итог не доезжают.
+    #
+    # ⚠️ ПРАВИЛО v1.65.0 НЕ ОТМЕНЕНО. Там запрещено ПРОДОЛЖАТЬ вчерашний блок как
+    # текущий: дни слипались, и «на чём остановились» врало. Здесь блок
+    # закрывается, а строки переезжают в новый итог ОТДЕЛЬНОЙ секцией со своей
+    # датой — читатель видит, что это хвост другого дня.
+    #
+    # ⚠️ ДАТА-ПОДЗАГОЛОВОК НЕ НАЧИНАЕТСЯ С «## »: `_split_session_blocks` режет
+    # журнал именно по нему, и заголовок внутри блока разъехался бы на
+    # псевдо-сессии — ровно регрессия v1.58.0. Держит отдельный тест.
+    today = datetime.now().strftime("%Y-%m-%d")
+    abandoned, kept = [], []
+    for b in blocks:
+        head = b.splitlines()[0] if b else ""
+        if RUNNING_MARK in head and not head.startswith("## %s" % today):
+            lines = [l for l in b.splitlines()[1:] if l.strip()]
+            if lines:                       # пустой хвост вливать нечего
+                abandoned.append((head[3:13], lines))
+            continue
+        kept.append(b)
+    blocks = kept
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     new_block = ["## %s" % now, "", "**Что сделано:** %s" % (summary or "—")]
     if notes:
         new_block.append("\n**По ходу:**\n" + "\n".join(notes))
+    if abandoned:
+        new_block.append("\n**Из незакрытых сессий:**\n" + "\n".join(
+            "*%s:*\n%s" % (day, "\n".join(lines)) for day, lines in abandoned))
     if decisions:
         new_block.append("\n**Решения:** %s" % decisions)
     if open_questions:
