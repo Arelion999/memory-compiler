@@ -42,20 +42,38 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Поиск по базе знаний</title>
 <style>
+  /* Тема — ОТ ХОСТА, а не от ОС. prefers-color-scheme в песочном iframe
+     отражает тему Windows, а не тему приложения; хост присылает свою в
+     hostContext.theme, скрипт ставит её в data-theme. Медиа-запрос остаётся
+     запасным путём на случай, если хост темы не прислал. Цвета — тоже от
+     хоста: стандартные переменные --color-* из hostContext.styles.variables
+     (спека 2026-01-26, раздел Theming), свои — только fallback. */
   :root {
-    --bg: transparent; --fg: #1f2328; --muted: #656d76;
-    --card: #ffffff; --line: #d0d7de; --accent: #0969da;
+    --fb-bg: transparent; --fb-fg: #1f2328; --fb-muted: #656d76;
+    --fb-card: #ffffff; --fb-line: #d0d7de; --fb-accent: #0969da;
+  }
+  :root[data-theme="dark"] {
+    --fb-fg: #e6edf3; --fb-muted: #8b949e;
+    --fb-card: #161b22; --fb-line: #30363d; --fb-accent: #4493f8;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --fg: #e6edf3; --muted: #8b949e;
-      --card: #161b22; --line: #30363d; --accent: #4493f8;
+    :root:not([data-theme="light"]) {
+      --fb-fg: #e6edf3; --fb-muted: #8b949e;
+      --fb-card: #161b22; --fb-line: #30363d; --fb-accent: #4493f8;
     }
+  }
+  :root {
+    --bg: var(--color-background-primary, var(--fb-bg));
+    --fg: var(--color-text-primary, var(--fb-fg));
+    --muted: var(--color-text-secondary, var(--fb-muted));
+    --card: var(--color-background-secondary, var(--fb-card));
+    --line: var(--color-border-primary, var(--fb-line));
+    --accent: var(--color-text-info, var(--fb-accent));
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
-    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 14px/1.5 var(--font-sans, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
   }
   .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .head b { font-size: 15px; }
@@ -89,7 +107,7 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
   .article {
     background: var(--card); border: 1px solid var(--line); border-radius: 6px;
     padding: 10px 12px; margin: 0; white-space: pre-wrap; word-break: break-word;
-    font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font: 13px/1.55 var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
   }
 </style>
 </head>
@@ -117,6 +135,33 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
   // ui/notifications/size-changed. Не прислать размер = остаться в дефолтной
   // высоте с полосой прокрутки на полторы карточки.
   var maxHeight = null, fixedHeight = false;
+
+  // Тема и палитра хоста. Без этого панель красится по теме ОС: в песочном
+  // iframe prefers-color-scheme берётся из Windows, а тема Claude Desktop может
+  // быть другой — и панель выходит светлой в тёмном чате (и наоборот). Хост
+  // отдаёт theme и styles.variables в hostContext при ui/initialize и шлёт
+  // частичные обновления в ui/notifications/host-context-changed (переключили
+  // тему — панель обязана перекраситься, не дожидаясь нового поиска).
+  function applyHost(ctx) {
+    if (!ctx || typeof ctx !== "object") return;
+    var doc = document.documentElement;
+    if (ctx.theme === "light" || ctx.theme === "dark") {
+      doc.setAttribute("data-theme", ctx.theme);
+      doc.style.colorScheme = ctx.theme;
+    }
+    var st = ctx.styles || {};
+    var vars = st.variables || {};
+    for (var k in vars) {
+      if (typeof vars[k] === "string" && k.indexOf("--") === 0) doc.style.setProperty(k, vars[k]);
+    }
+    var fonts = st.css && st.css.fonts;
+    if (typeof fonts === "string" && fonts && !document.getElementById("host-fonts")) {
+      var tag = document.createElement("style");
+      tag.id = "host-fonts";
+      tag.textContent = fonts;
+      document.head.appendChild(tag);
+    }
+  }
 
   function findDims(o, depth) {
     // containerDimensions живёт в HostContext результата ui/initialize. Точный
@@ -250,6 +295,8 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     } else if (m.method === "ui/notifications/tool-cancelled") {
       root.textContent = "";
       root.appendChild(el("div", "empty", "Запрос отменён."));
+    } else if (m.method === "ui/notifications/host-context-changed") {
+      applyHost(m.params);
     }
   });
 
@@ -258,6 +305,7 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     capabilities: {},
     clientInfo: { name: "memory-compiler-search-view", version: "1" }
   }).then(function (result) {
+    applyHost(result && result.hostContext);
     var dims = findDims(result, 0);
     if (dims) {
       fixedHeight = dims.height !== undefined && dims.height !== null;

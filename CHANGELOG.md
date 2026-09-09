@@ -2,6 +2,42 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.74.2 — 2026-09-09
+
+Панель поиска красится по теме хоста, а не по теме Windows.
+
+### Fixed
+
+- **Панель MCP Apps показывалась на светлой подложке в тёмном чате.** Вьюха
+  `search` брала тему только из `prefers-color-scheme`, а body оставляла
+  прозрачным. В песочном iframe медиа-запрос отражает тему ОС, а не Claude
+  Desktop, и после обновления приложения 09.09.2026 (сборка 1.49585) подложка
+  под прозрачным body стала светлее чата. Теперь вьюха применяет
+  `hostContext.theme` (→ `data-theme`, `color-scheme`) и стандартные переменные
+  `--color-*`/`--font-*` из `hostContext.styles.variables` при `ui/initialize`,
+  слушает `ui/notifications/host-context-changed` и красит body цветом
+  `--color-background-primary` хоста. Свои цвета остались запасными: хост без
+  темы и палитры даёт прежнюю картинку.
+
+### Почему
+
+Ровно так работает собственный виджет Anthropic в `app.asar` десктопа: тему
+ставит из `hostContext.theme`, переменные льёт в `:root`, а в комментарии к
+своему CSS пишет, что голый медиа-запрос «следует за ОС, даже когда настройка
+claude.ai с ней не согласна». Спека 2026-01-26, раздел Theming, перечисляет
+имена переменных; своих придумывать не пришлось.
+
+### Решения
+
+- ⚠️ Явная светлая тема хоста перебивает тёмную ОС: тёмный fallback в
+  медиа-запросе стоит под `:root:not([data-theme="light"])`, иначе хост со
+  светлой темой на тёмной Windows получил бы тёмную панель. Держат
+  `test_view_takes_theme_from_host_not_from_os` и
+  `test_view_paints_with_host_palette_and_own_fallback`.
+- Шрифты хоста (`styles.css.fonts`) вставляются одним `<style>`; при
+  `default-src 'none'` они не загрузятся, и стек `--font-sans` уйдёт в свой
+  fallback — это ожидаемо и безвредно.
+
 ## v1.74.1 — 2026-09-08
 
 Обещание вливания заметок даётся по тому же правилу, по которому оно происходит.

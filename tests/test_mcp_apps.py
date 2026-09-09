@@ -150,6 +150,34 @@ def test_cards_are_keyboard_reachable():
     assert 'setAttribute("role", "button")' in SEARCH_VIEW_HTML
 
 
+def test_view_takes_theme_from_host_not_from_os():
+    """Тема панели — от ХОСТА. prefers-color-scheme в песочном iframe отражает
+    тему Windows, а не Claude Desktop: при тёмном чате и светлой ОС панель
+    выходила светлой (и наоборот). Хост отдаёт theme в hostContext при
+    ui/initialize и шлёт обновления в host-context-changed — оба пути обязаны
+    вести в data-theme, а медиа-запрос оставаться лишь запасным."""
+    assert "result.hostContext" in SEARCH_VIEW_HTML
+    assert "ui/notifications/host-context-changed" in SEARCH_VIEW_HTML
+    assert 'setAttribute("data-theme", ctx.theme)' in SEARCH_VIEW_HTML
+    assert ':root[data-theme="dark"]' in SEARCH_VIEW_HTML
+    # медиа-запрос не должен перебивать явную светлую тему хоста
+    assert ':root:not([data-theme="light"])' in SEARCH_VIEW_HTML
+
+
+def test_view_paints_with_host_palette_and_own_fallback():
+    """Цвета — стандартные переменные --color-* из hostContext.styles.variables
+    (спека 2026-01-26, Theming), свои значения только fallback: body без
+    фона хоста прозрачен и показывает подложку iframe, которая после
+    обновления Claude Desktop 09.09.2026 стала светлее чата."""
+    for var in ("--color-background-primary", "--color-background-secondary",
+                "--color-text-primary", "--color-text-secondary",
+                "--color-border-primary", "--font-sans"):
+        assert f"var({var}," in SEARCH_VIEW_HTML, f"вьюха не берёт {var} у хоста"
+    assert "doc.style.setProperty(k, vars[k])" in SEARCH_VIEW_HTML
+    # чужие ключи в переменные не льём: только начинающиеся с --
+    assert 'k.indexOf("--") === 0' in SEARCH_VIEW_HTML
+
+
 def test_view_js_is_valid_syntax(tmp_path):
     """Синтаксическая ошибка во вьюхе = пустая панель БЕЗ единой жалобы: консоль
     песочного iframe нам не видна, сервер отдал ресурс успешно, тесты Python
