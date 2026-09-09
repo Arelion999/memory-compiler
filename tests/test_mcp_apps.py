@@ -265,3 +265,80 @@ def test_notice_is_rendered_as_text_not_markup():
     здесь проверяем, что подсказка вообще доходит до отрисовки."""
     assert "data.notice" in SEARCH_VIEW_HTML
     assert "notice" in SEARCH_VIEW_HTML
+
+
+# ─── Диагностика показывается, только когда хосту есть что сказать (v1.75.1) ──
+# Замер 2026-09-09 (Claude Desktop 1.49585): hostContext при initialize НЕТ,
+# theme не прислан, styles.variables нет, containerDimensions нет. Блок из
+# v1.74.3 при этом всё равно рисовался и сообщал «НЕТ / не прислан / нет» —
+# место занимала ровно та ситуация, где информации ноль.
+#
+# ⚠️ УДАЛИТЬ БЛОК СОВСЕМ БЫЛО БЫ ДОРОЖЕ. Проверка панели стоит полного
+# перезапуска приложения: клиент кэширует HTML вьюхи на всю свою жизнь
+# (v1.74.3), и без зонда смена поведения хоста заметится случайно. Поэтому
+# условие ПЕРЕВЁРНУТО: пусто — блока нет, хост заговорил — блок появляется сам
+# и служит сигналом, что можно включать поддержку темы из v1.74.2.
+
+
+def _extract_js_function(name):
+    """Тело функции верхнего уровня из вьюхи — по балансу фигурных скобок.
+
+    Тот же приём, что в tests/test_graph_worker.py: JS живёт внутри строки
+    Python, и разбирать его иначе нечем.
+    """
+    start = SEARCH_VIEW_HTML.index("function %s(" % name)
+    depth, i = 0, SEARCH_VIEW_HTML.index("{", start)
+    while True:
+        ch = SEARCH_VIEW_HTML[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return SEARCH_VIEW_HTML[start:i + 1]
+        i += 1
+
+
+def _run_predicate(diag_js):
+    """Прогнать hostSpoke в node с заданным аргументом — проверяем ПОВЕДЕНИЕ."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node недоступен")
+    js = _extract_js_function("hostSpoke") + "\nconsole.log(JSON.stringify(!!hostSpoke(%s)));" % diag_js
+    done = subprocess.run([node, "-e", js], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip())
+
+
+def test_diag_is_hidden_when_host_said_nothing():
+    assert _run_predicate("{init: null, changes: 0, vars: {}}") is False
+
+
+def test_diag_appears_when_host_sends_context():
+    assert _run_predicate("{init: {theme: 'dark'}, changes: 0, vars: {}}") is True
+
+
+def test_diag_appears_after_host_context_changed():
+    assert _run_predicate("{init: null, changes: 1, vars: {}}") is True
+
+
+def test_diag_appears_when_variables_arrive():
+    assert _run_predicate("{init: null, changes: 0, vars: {'--color-text-primary': '#fff'}}") is True
+
+
+def test_predicate_survives_missing_argument():
+    """Панель не должна падать, если объекта диагностики ещё нет."""
+    assert _run_predicate("undefined") is False
+
+
+def test_view_calls_the_predicate_before_rendering_diag():
+    """Позитивный контроль: блок рисуется ПОД условием, а не всегда."""
+    assert "hostSpoke(hostDiag)" in SEARCH_VIEW_HTML
+    assert "root.appendChild(renderDiag())" in SEARCH_VIEW_HTML
+    idx = SEARCH_VIEW_HTML.index("root.appendChild(renderDiag())")
+    line_start = SEARCH_VIEW_HTML.rfind(chr(10), 0, idx)
+    assert "if (" in SEARCH_VIEW_HTML[line_start:idx], "вызов обязан стоять под условием"
