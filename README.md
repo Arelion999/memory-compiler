@@ -256,7 +256,7 @@ A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
 
 ### MCP Apps
 
-Search results render as an interactive panel inside the chat, not as a wall of text. This is the `io.modelcontextprotocol/ui` extension (spec 2026-01-26): the `search` tool carries `_meta.ui.resourceUri`, the host fetches `ui://memory-compiler/search-results.html` and renders it in a sandboxed iframe, talking to it over JSON-RPC on `postMessage`.
+Search results render as an interactive panel inside the chat, not as a wall of text. This is the `io.modelcontextprotocol/ui` extension (spec 2026-01-26): the `search` tool carries `_meta.ui.resourceUri`, the host fetches `ui://memory-compiler/search-results.html?v=<server version>` (the version in the query string, otherwise the client keeps showing a cached panel for the rest of its session) and renders it in a sandboxed iframe, talking to it over JSON-RPC on `postMessage`.
 
 The point is not the frame — it is that **the model is not in the loop**. Clicking a result issues `tools/call read_article` straight from the iframe to the server and shows the article in the panel. Reading five articles costs five clicks instead of five model turns: no generation, no article bodies filling the context, no waiting.
 

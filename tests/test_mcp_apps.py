@@ -64,6 +64,21 @@ def test_ui_resource_returns_the_view_html():
     assert got[0].content.lstrip().startswith("<!DOCTYPE html>")
 
 
+def test_ui_resource_uri_carries_server_version():
+    """Клиент забирает HTML вьюхи один раз и держит на всю MCP-сессию: рестарты
+    контейнера сквозь mcp-remote кэш не сбрасывают (2026-09-09: прод отдавал
+    новую вьюху, панель рисовала старую). Новая версия = новый URI. Старый URI
+    из кэша и голый путь обязаны отвечать той же вьюхой, чужой путь — нет."""
+    from memory_compiler import config
+    from memory_compiler.tools import UI_SEARCH_PATH
+    assert UI_SEARCH_RESOURCE == f"{UI_SEARCH_PATH}?v={config.VERSION}"
+    for uri in (UI_SEARCH_PATH, f"{UI_SEARCH_PATH}?v=0.0.0", UI_SEARCH_RESOURCE):
+        got = asyncio.run(read_resource(uri))
+        assert got[0].content == SEARCH_VIEW_HTML, uri
+    other = asyncio.run(read_resource("ui://memory-compiler/other.html?v=1"))
+    assert "❌" in other[0].content
+
+
 def test_ui_resource_absent_from_listing(knowledge_dir):
     """Спека разрешает не показывать ui:// в resources/list, и мы не показываем:
     листинг — это статьи базы, шаблон вьюхи там посторонний."""
@@ -176,6 +191,16 @@ def test_view_paints_with_host_palette_and_own_fallback():
     assert "doc.style.setProperty(k, vars[k])" in SEARCH_VIEW_HTML
     # чужие ключи в переменные не льём: только начинающиеся с --
     assert 'k.indexOf("--") === 0' in SEARCH_VIEW_HTML
+
+
+def test_view_shows_host_diagnostics_collapsed():
+    """Единственный канал из песочного iframe наружу — сама панель: консоли нет,
+    сети нет. Свёрнутый блок показывает, что реально прислал хост (замер
+    2026-09-09: НИЧЕГО — ни hostContext, ни theme, ни variables). Раскрытым по
+    умолчанию быть не должен — это отладка, а не выдача."""
+    assert "диагностика хоста" in SEARCH_VIEW_HTML
+    assert "hostDiag" in SEARCH_VIEW_HTML
+    assert "d.open = true" not in SEARCH_VIEW_HTML
 
 
 def test_view_js_is_valid_syntax(tmp_path):

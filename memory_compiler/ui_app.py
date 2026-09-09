@@ -100,6 +100,8 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     padding: 8px 10px; margin-bottom: 10px;
     white-space: pre-wrap; word-break: break-word;
   }
+  .diag { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .diag summary { cursor: pointer; }
   .back {
     font: inherit; font-size: 13px; cursor: pointer; color: var(--accent);
     background: none; border: none; padding: 0; margin-bottom: 8px;
@@ -142,8 +144,13 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
   // отдаёт theme и styles.variables в hostContext при ui/initialize и шлёт
   // частичные обновления в ui/notifications/host-context-changed (переключили
   // тему — панель обязана перекраситься, не дожидаясь нового поиска).
+  // Диагностика: что реально прислал хост. Из песочного iframe консоли нет, сети
+  // нет, поэтому единственный канал наружу — сама панель. Блок свёрнут.
+  var hostDiag = { init: null, changes: 0, vars: {} };
+
   function applyHost(ctx) {
     if (!ctx || typeof ctx !== "object") return;
+    if (hostDiag.init === null) hostDiag.init = ctx; else hostDiag.changes++;
     var doc = document.documentElement;
     if (ctx.theme === "light" || ctx.theme === "dark") {
       doc.setAttribute("data-theme", ctx.theme);
@@ -152,7 +159,7 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     var st = ctx.styles || {};
     var vars = st.variables || {};
     for (var k in vars) {
-      if (typeof vars[k] === "string" && k.indexOf("--") === 0) doc.style.setProperty(k, vars[k]);
+      if (typeof vars[k] === "string" && k.indexOf("--") === 0) { doc.style.setProperty(k, vars[k]); hostDiag.vars[k] = vars[k]; }
     }
     var fonts = st.css && st.css.fonts;
     if (typeof fonts === "string" && fonts && !document.getElementById("host-fonts")) {
@@ -273,9 +280,43 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
       });
       root.appendChild(list);
     }
+    root.appendChild(renderDiag());
     // После вёрстки, а не в этом кадре: scrollHeight до перерасчёта layout'а
     // вернул бы высоту ПРЕДЫДУЩЕГО содержимого.
     requestAnimationFrame(sendSize);
+  }
+
+  // Замер 2026-09-09 (Claude Desktop 1.49585): hostContext при initialize НЕТ,
+  // theme не прислан, styles.variables нет, containerDimensions нет. То есть
+  // всё, что панель умеет брать у хоста, пока спит; цвета — свои, по
+  // prefers-color-scheme. Блок оставлен свёрнутым внизу: когда хост начнёт
+  // что-то присылать, это будет видно без новой отладочной сборки.
+  function renderDiag() {
+    var d = el("details", "diag");
+    d.appendChild(el("summary", null, "диагностика хоста"));
+    var lines = [];
+    var init = hostDiag.init;
+    lines.push("hostContext при initialize: " + (init ? "есть, ключи: " + Object.keys(init).join(", ") : "НЕТ"));
+    lines.push("theme от хоста: " + (init && init.theme ? init.theme : "не прислан"));
+    lines.push("host-context-changed получено: " + hostDiag.changes);
+    var vk = Object.keys(hostDiag.vars);
+    lines.push("styles.variables: " + (vk.length ? vk.length + " шт." : "нет"));
+    ["--color-background-primary", "--color-background-secondary", "--color-text-primary", "--font-sans"].forEach(function (k) {
+      if (hostDiag.vars[k] !== undefined) lines.push("  " + k + " = " + hostDiag.vars[k]);
+    });
+    if (vk.length) lines.push("  все ключи: " + vk.join(" "));
+    var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    lines.push("prefers-color-scheme: " + (mq && mq.matches ? "dark" : "light"));
+    var cs = getComputedStyle(document.documentElement);
+    lines.push("data-theme: " + (document.documentElement.getAttribute("data-theme") || "нет") +
+      ", color-scheme: " + (cs.colorScheme || "?"));
+    lines.push("фон body (computed): " + getComputedStyle(document.body).backgroundColor);
+    lines.push("containerDimensions: " + (init && findDims(init, 0) ? JSON.stringify(findDims(init, 0)) : "нет") +
+      ", fixedHeight=" + fixedHeight + ", maxHeight=" + maxHeight);
+    lines.push("размер документа: " + document.documentElement.scrollWidth + "×" + document.documentElement.scrollHeight);
+    d.appendChild(el("pre", "article", lines.join("\n")));
+    d.addEventListener("toggle", function () { requestAnimationFrame(sendSize); });
+    return d;
   }
 
   function render(data) {

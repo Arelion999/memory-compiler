@@ -809,9 +809,17 @@ _RESOURCE_SCHEME = "memory://"
 # отрисуется, и выглядеть это будет как «клиент не умеет MCP Apps».
 # В resources/list ui:// НЕ показываем — спека разрешает, а листинг у нас про
 # статьи базы. Держит tests/test_mcp_apps.py.
+# ⚠️ В URI — ВЕРСИЯ СЕРВЕРА, и это не украшение: клиент забирает HTML вьюхи один
+# раз и держит его на всю свою MCP-сессию, рестарты контейнера сквозь mcp-remote
+# кэш не сбрасывают. Замер 2026-09-09: прод отдавал новую вьюху (зонд
+# resources/read показывал маркер), а панель в чате рисовала старую — правки
+# v1.74.2 в ней не существовало. Новая версия = новый URI = свежая загрузка;
+# read_resource сравнивает ПУТЬ без query, так что старый URI из кэша тоже
+# отвечает.
 UI_SCHEME = "ui://"
 UI_MIME = "text/html;profile=mcp-app"
-UI_SEARCH_RESOURCE = "ui://memory-compiler/search-results.html"
+UI_SEARCH_PATH = "ui://memory-compiler/search-results.html"
+UI_SEARCH_RESOURCE = f"{UI_SEARCH_PATH}?v={config.VERSION}"
 
 
 def _is_meta_file(name: str) -> bool:
@@ -895,7 +903,7 @@ async def read_resource(uri) -> list[ReadResourceContents]:
         # Вьюха MCP Apps. Отдаётся до всякой работы с базой: это статика, ни
         # проекта, ни файла тут нет, и путь в knowledge/ по ui:// не строится.
         from memory_compiler.ui_app import SEARCH_VIEW_HTML
-        if uri_s == UI_SEARCH_RESOURCE:
+        if uri_s.split("?", 1)[0] == UI_SEARCH_PATH:
             return [ReadResourceContents(content=SEARCH_VIEW_HTML, mime_type=UI_MIME)]
         return notice(f"❌ Неизвестный ui-ресурс: {uri_s}")
     if not uri_s.startswith(_RESOURCE_SCHEME):
