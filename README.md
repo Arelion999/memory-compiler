@@ -366,6 +366,8 @@ The `memory-autopilot` skill automates the whole cycle — it looks up context, 
 
 Installation: copy `skills/memory-autopilot/SKILL.md` to `~/.claude/skills/memory-autopilot/SKILL.md`.
 
+The server itself warns a session about other sessions' writes to the project and reminds it about `session_note` after long work without a write. It tracks these snapshots per MCP session — and Claude Desktop, when memory-compiler is also listed in `claude_desktop_config.json`, may hand its own server instance to Code-tab chats, i.e. one MCP session for all of them. To let the server tell chats apart, the client passes the chat id in any call as the service argument `_client_session`: the server strips it before the tool runs and keeps it out of the audit log, and without it behaves as before. In Claude Code a PreToolUse hook on `mcp__memory-compiler__.*` does this by returning `updatedInput` (the original arguments plus `_client_session` = `session_id`) together with `permissionDecision: "allow"`.
+
 ### Manual mode
 
 ```

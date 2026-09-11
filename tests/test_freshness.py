@@ -189,3 +189,119 @@ def test_note_text_is_shown_in_the_footer():
     freshness.consume(a, "infra")
     freshness.note_write("infra", "session_note", "прод отдаёт 502 после рестарта", b)
     assert "прод отдаёт 502" in freshness.consume(a, "infra")
+
+
+# ── ключ по id чата клиента (v1.76.0) ───────────────────────────────────────
+# Замер 11.09.2026: Claude Desktop отдаёт чатам Code серверы из
+# claude_desktop_config.json через свой мост (mcp-remote), и у ВСЕХ таких чатов
+# одна MCP-сессия на сервере. Ключ по объекту сессии склеивал разные чаты: новый
+# чат на первом касании infra получил «25 минут без записи» от чата, работавшего
+# там час назад. Mcp-Session-Id при этом никто не переиспользует (проверено
+# локальным зондом), поэтому сброс по initialize не лечит. Лечит id чата, который
+# клиент кладёт в аргументы вызова: аргументы едут через мост как есть, а
+# заголовки у mcp-remote статические.
+
+def _shared_bridge(monkeypatch):
+    """Одна MCP-сессия на все чаты — как у моста Desktop. first_touch_context
+    заменён маркером: тесту важен путь первого касания, а не содержимое базы."""
+    from memory_compiler import handlers, tools
+
+    class Ctx:
+        session = FakeSession()
+
+    class FakeApp:
+        request_context = Ctx()
+
+    monkeypatch.setattr(tools, "app", FakeApp())
+    monkeypatch.setattr(handlers, "first_touch_context", lambda project: "\n\n📌 FIRST " + project)
+    return tools
+
+
+def _silence(key, project):
+    """Ключ давно работал с проектом и молчит дольше порога подсказки."""
+    old = time.time() - freshness.NOTE_HINT_SEC - 60
+    freshness._seen[(key, project)] = old
+    freshness._started[(key, project)] = old
+
+
+def _footer(out, base):
+    return "".join(b.text for b in out[len(base):])
+
+
+def test_new_chat_on_shared_mcp_session_gets_its_own_key(monkeypatch):
+    """Новый чат на старом ключе: чат A давно работал с infra через мост и
+    замолчал, чат B открыт позже и пришёл в ту же MCP-сессию. B обязан получить
+    первое касание, а не подсказку о чужом молчании."""
+    from mcp.types import TextContent
+    tools = _shared_bridge(monkeypatch)
+    base = [TextContent(type="text", text="ответ")]
+
+    tools._append_freshness("read_article", {"project": "infra"}, base, "chat-a")
+    _silence(freshness.key_for(None, "chat-a"), "infra")
+
+    out_b = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, "chat-b"), base)
+    assert "FIRST infra" in out_b, "новый чат не получил первое касание"
+    assert "session_note" not in out_b, "новый чат унаследовал молчание чужого чата"
+
+    # позитивный контроль: то же молчание у ХОЗЯИНА ключа даёт подсказку — значит,
+    # у B её нет из-за отдельного ключа, а не потому что подсказка сломана
+    out_a = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, "chat-a"), base)
+    assert "session_note" in out_a
+
+
+def test_without_client_id_chats_on_one_mcp_session_share_state(monkeypatch):
+    """Клиент без id чата (вкладка Chat в Desktop, чужой MCP-клиент) остаётся на
+    ключе по MCP-сессии. Так выглядел баг, и так же он выглядит для клиентов,
+    которые id не передают, — фиксируем явно, а не держим в голове."""
+    from mcp.types import TextContent
+    tools = _shared_bridge(monkeypatch)
+    base = [TextContent(type="text", text="ответ")]
+
+    tools._append_freshness("read_article", {"project": "infra"}, base)
+    _silence(freshness.key_for(tools.app.request_context.session), "infra")
+
+    out = _footer(tools._append_freshness("read_article", {"project": "infra"}, base), base)
+    assert "session_note" in out and "FIRST" not in out
+
+
+def test_client_session_key_survives_reconnect_and_route_switch():
+    """Ключ по id чата не зависит от объекта MCP-сессии: переподключение и смена
+    маршрута (свой HTTP ↔ мост Desktop) снимок не теряют."""
+    chat = "0b7a1f3e-5c2d-4e8f-9a61-2d4c8e0f7b35"
+    assert freshness.key_for(FakeSession(), chat) == freshness.key_for(FakeSession(), chat)
+    assert freshness.key_for(FakeSession(), chat) != freshness.key_for(
+        FakeSession(), "7c19e4a2-8b3f-4d05-a6e7-91f2b0c3d584")
+    # и не пересекается с ключами MCP-сессий
+    assert not freshness.key_for(None, chat).startswith("s")
+
+
+def test_bad_client_session_falls_back_to_mcp_session():
+    s = FakeSession()
+    fallback = freshness.key_for(s)
+    for bad in (None, "", 42, "a b", "x" * 200, "../etc", "id\n"):
+        assert freshness.key_for(s, bad) == fallback, repr(bad)
+
+
+def test_call_tool_strips_client_session_before_dispatch_and_audit(monkeypatch):
+    """Аргумент служебный: хендлер с ним упал бы на лишнем kwarg, аудиту он не
+    нужен. При этом id чата обязан дойти до freshness."""
+    import asyncio
+    from mcp.types import TextContent
+    tools = _shared_bridge(monkeypatch)
+    dispatched, audited = {}, {}
+
+    async def fake_dispatch(name, arguments):
+        dispatched.update(arguments)
+        return [TextContent(type="text", text="ok")]
+
+    monkeypatch.setattr(tools, "_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tools, "audit_log",
+                        lambda name, args, size, error=None: audited.update(args))
+
+    asyncio.run(tools.call_tool("read_article", {
+        "project": "infra", "filename": "x.md", freshness.CLIENT_SESSION_ARG: "chat-a"}))
+
+    assert dispatched == {"project": "infra", "filename": "x.md"}
+    assert freshness.CLIENT_SESSION_ARG not in audited
+    assert not freshness.is_first_touch(freshness.key_for(None, "chat-a"), "infra"), \
+        "id чата не дошёл до freshness"

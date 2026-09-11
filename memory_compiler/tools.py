@@ -1371,6 +1371,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Count every tool call (not only predefined keys)
     stats[name] = stats.get(name, 0) + 1
 
+    # Id чата от клиента (v1.76.0) — служебный аргумент, а не параметр
+    # инструмента: хендлер упал бы на лишнем kwarg, аудиту он не нужен.
+    # Используется только ключом свежести (_append_freshness).
+    client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
+
     # Normalize project name in arguments — single source of truth.
     # Eliminates MyProj vs myproj splits regardless of how the caller spelled it.
     # 'all' is a special filter sentinel — preserve as-is.
@@ -1407,7 +1412,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
     # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
     # и до подсчёта размера — футер тоже часть ответа.
-    result = _append_freshness(name, arguments, result)
+    result = _append_freshness(name, arguments, result, client_session)
 
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)
@@ -1457,19 +1462,23 @@ _CONTEXT_TOOLS = {"start_task", "load_session", "get_active_context",
                   "open_questions", "get_context", "get_summary"}
 
 
-def _append_freshness(name: str, arguments: dict, result: list) -> list:
+def _append_freshness(name: str, arguments: dict, result: list,
+                      client_session: str | None = None) -> list:
     """Дописать к ответу предупреждение о чужих записях в этом проекте.
 
     ⚠️ Отдельным блоком, а не приклейкой к существующему тексту: у search есть
     outputSchema и resource_link-блоки, а 414 ассертов в тестах сравнивают тексты
     ответов дословно. Отдельный TextContent появляется ТОЛЬКО когда есть что
     сказать, поэтому обычные ответы остаются байт-в-байт прежними.
+
+    ⚠️ Ключ — id чата от клиента, если он пришёл (v1.76.0), и только потом объект
+    MCP-сессии: у моста Claude Desktop одна сессия на все чаты Code.
     """
     try:
         session = app.request_context.session
     except Exception:
         return result                     # вне запроса (REST, тесты) — не мешаем
-    key = freshness.key_for(session)
+    key = freshness.key_for(session, client_session)
     project = arguments.get("project") if isinstance(arguments, dict) else None
     # ⚠️ Спрашиваем ДО consume: тот делает touch и признак первого касания стирает.
     first = (freshness.is_first_touch(key, project or "")

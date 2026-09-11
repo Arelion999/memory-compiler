@@ -51,9 +51,31 @@ MAX_SEEN = 500
 # не работает: у stale_facts за 4.5 месяца ноль вызовов.
 NOTE_HINT_SEC = 25 * 60
 
+# Служебный аргумент вызова — id чата на стороне клиента (v1.76.0). call_tool
+# вынимает его до аудита и хендлера. Зачем: Claude Desktop отдаёт чатам Code
+# серверы из claude_desktop_config.json через свой мост (mcp-remote), и у ВСЕХ
+# таких чатов одна MCP-сессия. Ключ по объекту сессии склеивал их снимки: новый
+# чат на первом касании получал «25 минут без записи» от чужой работы (замер
+# 2026-09-11). Через мост доезжают только аргументы — заголовки у mcp-remote
+# статические, а Mcp-Session-Id клиенты не переиспользуют, так что сброс по
+# initialize этого не лечит.
+CLIENT_SESSION_ARG = "_client_session"
+_CLIENT_SESSION_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+_CLIENT_SESSION_MAX = 128
 
-def key_for(session: Any) -> str:
-    """Стабильный ключ MCP-сессии. Пустая строка = вне запроса (тесты, REST)."""
+
+def key_for(session: Any, client_session: Any = None) -> str:
+    """Стабильный ключ сессии для снимка свежести. Пустая строка = вне запроса.
+
+    Id чата от клиента важнее объекта MCP-сессии: он различает чаты за общим
+    мостом и переживает переподключение и смену маршрута. Кривой id молча
+    игнорируется — ключ остаётся прежним, по MCP-сессии.
+    """
+    if (isinstance(client_session, str)
+            and 0 < len(client_session) <= _CLIENT_SESSION_MAX
+            and set(client_session) <= _CLIENT_SESSION_CHARS):
+        return "c:" + client_session
     if session is None:
         return ""
     try:

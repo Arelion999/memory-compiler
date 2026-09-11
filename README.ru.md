@@ -366,6 +366,8 @@ pytest tests/ -v
 
 Установка: скопируйте `skills/memory-autopilot/SKILL.md` в `~/.claude/skills/memory-autopilot/SKILL.md`.
 
+Сервер сам предупреждает сессию о чужих записях в проекте и напоминает про `session_note` при долгой работе без записи. Эти снимки он ведёт по MCP-сессии — а Claude Desktop, если memory-compiler есть и в `claude_desktop_config.json`, может отдавать чатам вкладки Code свой экземпляр сервера, то есть одну MCP-сессию на все чаты. Чтобы сервер их различал, клиент передаёт id чата служебным аргументом `_client_session` в любом вызове: сервер вынимает его до вызова инструмента и в аудит не пишет, а без аргумента работает по-прежнему. В Claude Code это делает PreToolUse-хук на `mcp__memory-compiler__.*`, отвечающий `updatedInput` (исходные аргументы плюс `_client_session` = `session_id`) вместе с `permissionDecision: "allow"`.
+
 ### Ручной режим
 
 ```
