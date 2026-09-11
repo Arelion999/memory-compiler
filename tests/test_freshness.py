@@ -372,3 +372,46 @@ def test_tool_ok_log_without_meta_reports_false(monkeypatch):
     rec = _tool_ok_record(monkeypatch, None, "claude-ai")
     assert rec.client == "claude-ai"
     assert rec.tool_use_id is False
+
+
+# ── _client_session объявлен в схемах (v1.77.0) ─────────────────────────────
+# Проба 11.09.2026 через мост Claude Desktop: PreToolUse-хук дописал маркер к
+# ОБЪЯВЛЕННОМУ аргументу query у search — сервер получил изменённый запрос, а
+# необъявленный _client_session тот же путь выбрасывал. Хост updatedInput не
+# перетирает, режется всё, чего нет в схеме. Поэтому параметр объявлен у КАЖДОГО
+# инструмента, иначе мостовые чаты Desktop так и остаются на общем ключе.
+
+def test_every_tool_declares_client_session():
+    import asyncio
+    from memory_compiler.tools import list_tools
+
+    tools_list = asyncio.run(list_tools())
+    assert tools_list, "list_tools пуст"
+    for tool in tools_list:
+        schema = tool.inputSchema or {}
+        spec = (schema.get("properties") or {}).get(freshness.CLIENT_SESSION_ARG)
+        assert isinstance(spec, dict), f"{tool.name}: {freshness.CLIENT_SESSION_ARG} не объявлен"
+        assert spec.get("type") == "string", tool.name
+        assert freshness.CLIENT_SESSION_ARG not in (schema.get("required") or []), \
+            f"{tool.name}: служебный параметр не может быть обязательным"
+        assert spec.get("description"), f"{tool.name}: без описания модель начнёт заполнять его сама"
+
+
+def test_client_session_description_follows_language(monkeypatch):
+    """Описание на языке MC_LANG: иначе при en в схеме останется кириллица, а при
+    ru — английский текст среди русских описаний."""
+    import asyncio
+    import re
+    from memory_compiler import i18n
+    from memory_compiler.tools import list_tools
+
+    def desc():
+        tool = asyncio.run(list_tools())[0]
+        return tool.inputSchema["properties"][freshness.CLIENT_SESSION_ARG]["description"]
+
+    monkeypatch.setattr(i18n, "MC_LANG", "en")
+    en = desc()
+    monkeypatch.setattr(i18n, "MC_LANG", "ru")
+    ru = desc()
+    assert not re.search(r"[а-яёА-ЯЁ]", en)
+    assert re.search(r"[а-яёА-ЯЁ]", ru)

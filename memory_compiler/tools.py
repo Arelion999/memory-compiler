@@ -59,6 +59,31 @@ def _mark_required(tools: list[Tool]) -> list[Tool]:
     return tools
 
 
+# --- Служебный параметр _client_session (v1.77.0) ---------------------------
+# Мост Claude Desktop пропускает к серверу только аргументы из схемы: правка
+# объявленного query у search от PreToolUse-хука доехала, а необъявленный
+# _client_session тот же путь выбросил (проба 2026-09-11). Объявляется ЗДЕСЬ, у
+# всех инструментов разом, — как и маркер, чтобы на новом инструменте не забыть.
+# Сервер вынимает аргумент в call_tool до аудита и хендлера.
+_CLIENT_SESSION_DESC_RU = "Служебное: id чата для свежести контекста, ставит хук клиента. Не заполнять."
+_CLIENT_SESSION_DESC_EN = "Service field: chat id for context freshness, set by the client hook. Do not fill."
+
+
+def _declare_client_session(tools: list[Tool]) -> list[Tool]:
+    """Объявить необязательный строковый _client_session у каждого инструмента.
+
+    Идёт последним шагом list_tools: ни перевод, ни маркер обязательности
+    служебное описание не трогают. Язык читается так же, как в _mark_required.
+    Без pattern и maxLength: кривое значение должно откатываться на ключ
+    MCP-сессии в freshness.key_for, а не валить вызов на валидации схемы.
+    """
+    desc = _CLIENT_SESSION_DESC_EN if i18n.MC_LANG == "en" else _CLIENT_SESSION_DESC_RU
+    for tool in tools:
+        props = tool.inputSchema.setdefault("properties", {})
+        props[freshness.CLIENT_SESSION_ARG] = {"type": "string", "description": desc}
+    return tools
+
+
 # --- Tool annotations (MCP hints для клиента, напр. Claude Desktop) ---------
 # Классификация статична (per tool). Принцип: «может мутировать» => readOnlyHint=False,
 # даже если дефолтные аргументы читают (lint fix=False, compile dry_run=True) — иначе
@@ -790,8 +815,8 @@ async def list_tools() -> list[Tool]:
     for t in tools:
         t.annotations = _annotations_for(t.name)
     # Маркер ПОСЛЕ локализации: иначе он лёг бы на русский текст и был бы затёрт
-    # английским переводом описания.
-    return _mark_required(localize_tools(tools))
+    # английским переводом описания. Служебный параметр — последним шагом.
+    return _declare_client_session(_mark_required(localize_tools(tools)))
 
 
 # --- Resources (P1): статьи базы как memory://<проект>/<файл> ----------------
