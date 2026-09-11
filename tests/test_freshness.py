@@ -305,3 +305,70 @@ def test_call_tool_strips_client_session_before_dispatch_and_audit(monkeypatch):
     assert freshness.CLIENT_SESSION_ARG not in audited
     assert not freshness.is_first_touch(freshness.key_for(None, "chat-a"), "infra"), \
         "id чата не дошёл до freshness"
+
+
+# ── диагностика маршрута вызова (v1.76.1) ───────────────────────────────────
+# В чатах Claude Desktop updatedInput хука до сервера не доходит (проверено
+# 11.09.2026), поэтому следующий шаг — боковой канал: хук сообщает серверу пару
+# (tool_use_id → чат), сервер находит чат по _meta.claudecode/toolUseId вызова.
+# Сначала надо увидеть, доезжает ли этот номер через мост Desktop, — отсюда поля
+# client и tool_use_id в записи «tool ok».
+
+def _tool_ok_record(monkeypatch, meta_extra, client_name):
+    import asyncio
+    import logging
+    from mcp import types
+    from memory_compiler import tools
+
+    class Session:
+        client_params = types.InitializeRequestParams(
+            protocolVersion="2025-11-25", capabilities=types.ClientCapabilities(),
+            clientInfo=types.Implementation(name=client_name, version="0"))
+
+    class Ctx:
+        session = Session()
+        meta = types.RequestParams.Meta(**meta_extra) if meta_extra is not None else None
+        request = None
+
+    class FakeApp:
+        request_context = Ctx()
+
+    async def fake_dispatch(name, arguments):
+        return [types.TextContent(type="text", text="ok")]
+
+    monkeypatch.setattr(tools, "app", FakeApp())
+    monkeypatch.setattr(tools, "_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tools, "audit_log", lambda *a, **k: None)
+
+    records = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            if record.getMessage() == "tool ok":
+                records.append(record)
+
+    logger = logging.getLogger("mc.tool")
+    grab, level = Grab(), logger.level
+    logger.addHandler(grab)
+    logger.setLevel(logging.INFO)
+    try:
+        asyncio.run(tools.call_tool("read_article", {"project": "infra", "filename": "x.md"}))
+    finally:
+        logger.removeHandler(grab)
+        logger.setLevel(level)
+    assert len(records) == 1, "нет записи tool ok"
+    return records[0]
+
+
+def test_tool_ok_log_marks_tool_use_id_from_meta(monkeypatch):
+    rec = _tool_ok_record(monkeypatch, {"claudecode/toolUseId": "toolu_01abc"}, "claude-code")
+    assert rec.client == "claude-code"
+    assert rec.tool_use_id is True
+
+
+def test_tool_ok_log_without_meta_reports_false(monkeypatch):
+    """Позитивный контроль: признак не залипает в True, а клиент берётся из
+    initialize, а не подставляется константой."""
+    rec = _tool_ok_record(monkeypatch, None, "claude-ai")
+    assert rec.client == "claude-ai"
+    assert rec.tool_use_id is False

@@ -1418,7 +1418,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
     audit_log(name, audit_args, total)
-    _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000), "size": total})
+    # Маршрут вызова (v1.76.1): имя клиента из initialize и признак номера вызова
+    # в _meta. По ним видно, доезжает ли claudecode/toolUseId через мост Claude
+    # Desktop, — на этом стоит боковой канал «вызов → чат».
+    origin = {"client": "", "tool_use_id": False}
+    try:
+        ctx = app.request_context
+        extra = (ctx.meta.model_extra or {}) if ctx.meta is not None else {}
+        origin["tool_use_id"] = bool(extra.get("claudecode/toolUseId"))
+        params = ctx.session.client_params
+        origin["client"] = params.clientInfo.name if params is not None else ""
+    except Exception:
+        pass                              # вне запроса (REST, тесты) — поля по умолчанию
+    _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000),
+                                "size": total, **origin})
     # У search объявлен outputSchema — обязаны вернуть structuredContent (SDK валидирует).
     # Строим из уже готовых resource_link-блоков content: программный клиент получает
     # машиночитаемый список, человекочитаемый текст + ссылки остаются в content.
