@@ -15,13 +15,14 @@
 """
 
 import os
-import shutil
 import subprocess
 
 import pytest
 
-BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash недоступен")
+from tests.bash_helper import find_bash
+
+BASH, NO_BASH = find_bash()
+pytestmark = pytest.mark.skipif(BASH is None, reason=NO_BASH)
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "scripts", "mc-daily-metrics.sh")
@@ -92,6 +93,9 @@ def test_key_is_taken_from_env_file_and_sent_as_bearer(env):
 def test_key_never_lands_in_the_log(env):
     """Лог замера читают глазами и грепают — секрету там не место."""
     done, log, _ = env()
+    # Позитивный контроль: пустой лог тоже «без ключа» — так тест проходил на заглушке
+    # WSL 13.09.2026, когда скрипт не исполнялся вовсе.
+    assert "OK" in log, "лог пуст — скрипт не исполнялся"
     assert "секретный-ключ" not in log
 
 

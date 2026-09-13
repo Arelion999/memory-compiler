@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.bash_helper import find_bash
+
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 SH = (SCRIPTS / "release.sh").read_text(encoding="utf-8")
 PS1 = (SCRIPTS / "release.ps1").read_text(encoding="utf-8")
@@ -50,9 +52,9 @@ def test_both_scripts_still_scan_staged():
 
 
 def test_bash_script_is_valid_syntax():
-    bash = shutil.which("bash")
-    if not bash:
-        pytest.skip("bash не найден — проверка синтаксиса release.sh пропущена")
+    bash, no_bash = find_bash()
+    if bash is None:
+        pytest.skip("проверка синтаксиса release.sh пропущена — " + no_bash)
     done = subprocess.run([bash, "-n", str(SCRIPTS / "release.sh")],
                           capture_output=True, text=True)
     assert done.returncode == 0, f"release.sh невалиден:\n{done.stderr}"

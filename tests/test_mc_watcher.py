@@ -10,14 +10,15 @@
 
 import os
 import pathlib
-import shutil
 import subprocess
 import time
 
 import pytest
 
-BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash недоступен")
+from tests.bash_helper import find_bash
+
+BASH, NO_BASH = find_bash()
+pytestmark = pytest.mark.skipif(BASH is None, reason=NO_BASH)
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "scripts", "mc-watcher.sh")
@@ -240,6 +241,9 @@ def test_docker_failure_keeps_previous_snapshot(tmp_path):
     proc = subprocess.run([BASH, BUNDLE_SCRIPT], env=env, capture_output=True, timeout=60)
 
     assert proc.returncode == 1
+    # Позитивный контроль: код 1 и нетронутый снимок даёт и bash, который скрипт не
+    # запустил вовсе, — так тест проходил на заглушке WSL 13.09.2026.
+    assert "FAILED" in (tmp_path / "bundle.log").read_text(encoding="utf-8")
     assert good.read_text(encoding="utf-8") == "ХОРОШИЙ СНИМОК"
     assert not list(backups.glob("*.tmp")), "временный файл остался мусором"
 
