@@ -28,6 +28,7 @@ from memory_compiler.search import (
 # новому → удалённая статья оставалась бы фантомом. Обращаемся через модуль.
 import memory_compiler.search as _search
 from memory_compiler import embed_queue
+from memory_compiler import reflexes
 from memory_compiler.storage import (
     today_log_path, project_dir, find_existing_article,
     merge_into_article, is_duplicate_entry, make_preview,
@@ -92,7 +93,7 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
 
 async def save_lesson(topic: str, content: str, project: str, tags: list = None,
                       force_new: bool = False, supersedes: str = "",
-                      verified: str = "") -> list[TextContent]:
+                      verified: str = "", triggers: list = None) -> list[TextContent]:
     try:
         safe_project_dir(project)
     except ValueError as e:
@@ -160,18 +161,23 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         await asyncio.to_thread(regenerate_index)
         action = f"\u2705 Создано: {project}/{article_path.name}"
 
-    # 3. Git-линковка — извлечь и добавить git-ссылки
+    # 3. Git-линковка — извлечь и добавить git-ссылки. Раздел обновляется, не стирая
+    # записи, которые merge_into_article дописал после него (см. upsert_git_refs).
     git_refs = extract_git_refs(content, topic)
     if git_refs:
-        refs_text = format_git_refs(git_refs)
+        from memory_compiler.storage import upsert_git_refs
         article_text = article_path.read_text(encoding="utf-8")
-        if "## Git-ссылки" not in article_text:
-            article_text = article_text.rstrip() + f"\n\n## Git-ссылки\n{refs_text}\n"
-        else:
-            # Обновить существующую секцию — дополнить новыми
-            existing_end = article_text.index("## Git-ссылки") + len("## Git-ссылки")
-            article_text = article_text[:existing_end] + f"\n{refs_text}\n"
-        article_path.write_text(article_text, encoding="utf-8")
+        article_path.write_text(upsert_git_refs(article_text, git_refs), encoding="utf-8")
+
+    # 3a. Рефлексы (v1.78.0): при чём статье всплывать самой — раздел «## Рефлексы».
+    reflex_note = ""
+    if triggers:
+        article_text = article_path.read_text(encoding="utf-8")
+        new_text, added, rejected = reflexes.add_triggers(article_text, triggers)
+        if new_text != article_text:
+            article_path.write_text(new_text, encoding="utf-8")
+            reflexes.invalidate()
+        reflex_note = reflexes.describe_added(added, rejected)
 
     # 4. Update search indexes
     article_text = article_path.read_text(encoding="utf-8")
@@ -247,6 +253,8 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     result = action
     if superseded_ok:
         result += f"\n⚠️ Отменены этой поправкой: {', '.join(superseded_ok)}"
+    if reflex_note:
+        result += "\n" + reflex_note
 
     if git_refs:
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
@@ -949,7 +957,8 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
 
 
-async def edit_article(project: str, filename: str, content: str, append: bool = False) -> list[TextContent]:
+async def edit_article(project: str, filename: str, content: str = "", append: bool = False,
+                       triggers: list = None) -> list[TextContent]:
     try:
         fpath = safe_article_path(project, filename)
     except ValueError as e:
@@ -958,24 +967,28 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
         return [TextContent(type="text", text=f"Статья не найдена: {project}/{filename}")]
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    has_content = bool((content or "").strip())
+    if not has_content and not triggers:
+        return [TextContent(type="text", text="❌ Нечего менять: передай content и/или triggers.")]
+
     old_text = fpath.read_text(encoding="utf-8")
     # Секретность определяется ДО записи: тело такой статьи не должно
     # существовать в открытом виде (инвариант save_secret/read_article).
     is_secret = is_secret_article(old_text, filename)
-    if is_secret:
+    if is_secret and has_content:
         from memory_compiler.config import MC_ENCRYPT_KEY
         if not MC_ENCRYPT_KEY:
             return [TextContent(type="text", text=(
                 "❌ Секретная статья, но MC_ENCRYPT_KEY не задан — правка отклонена, "
                 "чтобы не раскрыть секрет в plaintext."))]
 
-    if append:
+    if has_content and append:
         # Для секрета шифруем дописываемое тело отдельным ENC:-блоком
         # (read_article расшифровывает построчно), заголовок секции — нет.
         body_add = encrypt_content(content) if is_secret else content
         text = old_text.rstrip() + f"\n\n### {ts}\n{body_add}\n"
         fpath.write_text(text, encoding="utf-8")
-    else:
+    elif has_content:
         # Сохраняем ПОЛНУЮ шапку (титул + все **Ключ:** строки, включая
         # **Секрет:** да и **Обновлено:**), обрываемся на пустой строке после
         # метаблока или на первом '## ' — НЕ на **Теги:** (старый баг терял
@@ -1001,6 +1014,17 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
         body = encrypt_content(content) if is_secret else content
         fpath.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
 
+    # Рефлексы (v1.78.0): раздел пишется открытым текстом и в секрете — это адреса и
+    # тексты ошибок, а не содержимое секрета; тело статьи не расшифровывается.
+    reflex_note = ""
+    if triggers:
+        cur = fpath.read_text(encoding="utf-8")
+        new_text, added, rejected = reflexes.add_triggers(cur, triggers)
+        if new_text != cur:
+            fpath.write_text(new_text, encoding="utf-8")
+            reflexes.invalidate()
+        reflex_note = reflexes.describe_added(added, rejected)
+
     # Индексация: у секрета в индекс/эмбеддинги идёт ТОЛЬКО плейсхолдер
     # (титул + теги), как в save_secret — тело не попадает в поиск.
     if is_secret:
@@ -1014,12 +1038,18 @@ async def edit_article(project: str, filename: str, content: str, append: bool =
     await _index_embed(index_src, filename, project)
 
     # Cascade-mark: refresh marker on lines that link to this file
-    cascaded = mark_dependents(project, filename, ts)
+    # Одни триггеры содержимое не меняют — зависимым нечего помечать обновлёнными.
+    cascaded = mark_dependents(project, filename, ts) if has_content else 0
 
     log_event(project, "edit_article", f"{filename}" + (f" (cascade: {cascaded})" if cascaded else ""))
     await asyncio.to_thread(git_commit, f"edit: {filename} [{project}]")
 
-    msg = f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}"
+    if has_content:
+        msg = f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}"
+    else:
+        msg = f"🧷 Статья: {project}/{filename}"
+    if reflex_note:
+        msg += "\n" + reflex_note
     if cascaded:
         msg += f"\n\U0001f504 Маркер обновления проставлен в {cascaded} зависимых статьях"
     return [TextContent(type="text", text=msg)]
@@ -2100,12 +2130,13 @@ def _journal_gap_hint(project: str) -> str:
 
 
 async def finish_task(topic: str, content: str, project: str, tags: list = None,
-                      session_summary: str = "", open_questions: str = "") -> list[TextContent]:
+                      session_summary: str = "", open_questions: str = "",
+                      triggers: list = None) -> list[TextContent]:
     """Завершить задачу: save_lesson + save_session. Один вызов вместо двух."""
     parts = []
 
     # 1. Сохранить урок
-    lesson_result = await save_lesson(topic, content, project, tags)
+    lesson_result = await save_lesson(topic, content, project, tags, triggers=triggers)
     parts.append(lesson_result[0].text)
 
     # 2. Сохранить сессию

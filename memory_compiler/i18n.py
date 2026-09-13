@@ -15,6 +15,13 @@ import os
 # (fr, опечатка, пустая строка) даёт русский вывод, а не падение.
 MC_LANG = os.environ.get("MC_LANG", "ru").lower()
 
+_TRIGGERS_EN = (
+    'When the article must surface ON ITS OWN, without a search: a list of strings '
+    '"error: <verbatim error line>", "target: <host, IP, domain, container>", '
+    '"file: <file path>". The client hook shows the article when the agent hits that '
+    'error, goes to that target or reads that file. The error goes verbatim, not '
+    'paraphrased; never put passwords here')
+
 # {имя инструмента: {"description": str, "params": {имя параметра: str}}}
 TOOLS_EN: dict[str, dict] = {
     'save_lesson': {
@@ -33,6 +40,7 @@ TOOLS_EN: dict[str, dict] = {
                            'Always set it when an earlier conclusion turns out to be wrong: without '
                            'it both articles are returned as equals, and the next session takes the '
                            'one ranked higher, not the one that is correct'),
+            'triggers': _TRIGGERS_EN,
         },
     },
     'get_context': {
@@ -157,8 +165,9 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'project': 'Project name',
             'filename': 'Article file name',
-            'content': 'New content (full replacement of the article body)',
+            'content': 'New content (full replacement of the article body). May be omitted when triggers is given',
             'append': 'True — append to the end, False — replace the body',
+            'triggers': _TRIGGERS_EN,
         },
     },
     'context_gaps': {
@@ -255,6 +264,7 @@ TOOLS_EN: dict[str, dict] = {
             'content': 'Problem + solution + key facts',
             'project': 'Project name',
             'session_summary': 'What was done in the session',
+            'triggers': _TRIGGERS_EN,
             'open_questions': ('What is still UNCLEAR — a specific unresolved question. Not a list of planned work: the task list belongs in the session summary, this field is for what needs an answer'),
         },
     },

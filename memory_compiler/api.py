@@ -42,6 +42,7 @@ import time as _time
 from memory_compiler import obs
 from memory_compiler import analytics
 from memory_compiler import embed_queue
+from memory_compiler import reflexes
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -188,6 +189,33 @@ async def web_related(request: Request):
             "rel": round(related_display_score(score), 3),   # доля для полоски (от порога шума)
         })
     return JSONResponse({"related": items})
+
+
+async def web_reflex(request: Request):
+    """Памятки для хука клиента (v1.78.0): ошибка инструмента, цель на железе, файл.
+
+    Хук зовёт ручку на каждую ошибку и на первое чтение файла, поэтому она дешёвая:
+    ни модели, ни поиска — сверка с триггерами индекса в памяти (reflexes). В аудит
+    не пишется, как и весь REST; след — структурный лог «reflex»."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    if not isinstance(data, dict) or data.get("kind") not in reflexes.KINDS:
+        return JSONResponse({"error": "kind must be error, target or file"}, status_code=400)
+    kind, text = data["kind"], data.get("text")
+    cwd = data["cwd"] if isinstance(data.get("cwd"), str) else ""
+    raw_exclude = data.get("exclude")
+    exclude = ([e for e in raw_exclude if isinstance(e, str)][:200]
+               if isinstance(raw_exclude, list) else [])
+    t0 = _time.perf_counter()
+    memos = await asyncio.to_thread(reflexes.find_memos, kind, text, cwd, exclude)
+    rendered = reflexes.render(kind, memos, reflexes.describe(kind, text))
+    # Не влезшие в бюджет памятки не отдаём: хук пометил бы их показанными.
+    shown = reflexes.shown_in(memos, rendered)
+    obs.get_logger("reflex").info("reflex", extra={
+        "kind": kind, "memos": len(shown), "ms": round((_time.perf_counter() - t0) * 1000)})
+    return JSONResponse({"memos": [m.as_dict() for m in shown], "text": rendered})
 
 
 async def web_ask(request: Request):
@@ -971,6 +999,10 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         # синхронный rebuild — только на холодном первом старте (см. startup_prepare_index).
         count = _search_mod.startup_prepare_index()
         print(f"Whoosh index ready: {count} documents")
+        # Рефлексы (v1.78.0): индекс триггеров строится обходом всей базы. Первый запрос
+        # хука не должен его ждать — у хука таймаут 1.5 с, и памятка молча не пришла бы.
+        reflex_warm_task = asyncio.create_task(  # noqa: strong ref, иначе GC
+            asyncio.to_thread(reflexes.refresh_index, True))
         # Embeddings: load from cache if compatible; otherwise rebuild in
         # background so we don't block server startup (rebuild with BGE-M3 or
         # other long-context model can take 5-15 minutes and would prevent
@@ -1075,6 +1107,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/version", endpoint=web_version),
             Route("/api/search", endpoint=web_search),
             Route("/api/related", endpoint=web_related),
+            Route("/api/reflex", endpoint=web_reflex, methods=["POST"]),
             Route("/api/timeline", endpoint=web_timeline),
             Route("/api/ask", endpoint=web_ask),
             Route("/api/save", endpoint=web_save, methods=["POST"]),

@@ -84,6 +84,16 @@ def _declare_client_session(tools: list[Tool]) -> list[Tool]:
     return tools
 
 
+# --- Рефлексы памяти (v1.78.0) ------------------------------------------------
+# Описание — единственный канал до модели (required у строк клиент срезает, см.
+# test_tool_schemas): что это, в каком виде и чего туда НЕ класть.
+_TRIGGERS_DESC = (
+    "Когда статья должна всплыть САМА, без поиска: список строк «ошибка: <дословная строка "
+    "ошибки>», «цель: <хост, IP, домен, контейнер>», «файл: <путь файла>». Хук клиента "
+    "покажет статью, когда агент получит такую ошибку, пойдёт на эту цель или прочитает этот "
+    "файл. Ошибку — дословно, не пересказом; пароли сюда не класть")
+
+
 # --- Tool annotations (MCP hints для клиента, напр. Claude Desktop) ---------
 # Классификация статична (per tool). Принцип: «может мутировать» => readOnlyHint=False,
 # даже если дефолтные аргументы читают (lint fix=False, compile dry_run=True) — иначе
@@ -135,7 +145,8 @@ async def list_tools() -> list[Tool]:
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"},
                     "verified": {"type": "string", "description": "ЧЕМ проверен факт: прогон тестов, живой вызов на проде, вывод команды, ответ API. Ставить, когда вывод получен инструментом, а не выведен косвенно — иначе следующая сессия примет догадку за проверенное"},
-                    "supersedes": {"type": "string", "description": "Имена файлов статей, которые эта поправка ОТМЕНЯЕТ (через запятую). Ставить всегда, когда выяснилось, что прежний вывод неверен: без этого обе статьи выдаются равноправно и следующая сессия возьмёт ту, что выше по релевантности, а не ту, что верна"}
+                    "supersedes": {"type": "string", "description": "Имена файлов статей, которые эта поправка ОТМЕНЯЕТ (через запятую). Ставить всегда, когда выяснилось, что прежний вывод неверен: без этого обе статьи выдаются равноправно и следующая сессия возьмёт ту, что выше по релевантности, а не ту, что верна"},
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC}
                 },
                 "required": ["topic", "content", "project"]
             }
@@ -362,10 +373,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "project": {"type": "string", "description": "Имя проекта"},
                     "filename": {"type": "string", "description": "Имя файла статьи"},
-                    "content": {"type": "string", "description": "Новое содержимое (полная замена тела статьи)"},
-                    "append": {"type": "boolean", "default": False, "description": "True — дописать в конец, False — заменить тело"}
+                    "content": {"type": "string", "description": "Новое содержимое (полная замена тела статьи). Можно не передавать, если передан triggers"},
+                    "append": {"type": "boolean", "default": False, "description": "True — дописать в конец, False — заменить тело"},
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC}
                 },
-                "required": ["project", "filename", "content"]
+                "required": ["project", "filename"]
             }
         ),
         Tool(
@@ -520,7 +532,8 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "session_summary": {"type": "string", "description": "Что сделано в сессии"},
-                    "open_questions": {"type": "string", "description": "Что осталось НЕЯСНЫМ — конкретный нерешённый вопрос. Не список запланированных работ: перечень задач живёт в итоге сессии, а сюда идёт то, на что нужен ответ"}
+                    "open_questions": {"type": "string", "description": "Что осталось НЕЯСНЫМ — конкретный нерешённый вопрос. Не список запланированных работ: перечень задач живёт в итоге сессии, а сюда идёт то, на что нужен ответ"},
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC}
                 },
                 "required": ["topic", "content", "project"]
             }

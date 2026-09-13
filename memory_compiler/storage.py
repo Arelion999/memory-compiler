@@ -1158,6 +1158,56 @@ def format_git_refs(refs: dict[str, list[str]]) -> str:
     return "\n".join(parts)
 
 
+_GIT_LABEL_TYPES = {"Коммиты": "commit", "Issues/PR": "issue", "Теги": "tag", "Ветки": "branch"}
+
+
+def upsert_git_refs(text: str, refs: dict[str, list[str]]) -> str:
+    """Дописать git-ссылки в раздел «## Git-ссылки»: меняются только строки-метки.
+
+    ⚠️ До v1.78.0 save_lesson заменял ВСЁ после заголовка раздела. merge_into_article
+    дописывает записи в конец файла, то есть ПОСЛЕ раздела, и повторное сохранение с
+    git-ссылкой (коммит, тег vX.Y) стирало только что слитую запись вместе с прежними
+    ссылками. Граница раздела — ближайший «## » или «### ». Прочие строки внутри
+    остаются на месте: update_cross_references дописывает ссылку «См. также» в конец
+    файла, то есть в тело последнего раздела. Заголовок внутри блока кода разделом
+    не считается."""
+    if not refs:
+        return text
+    lines = text.rstrip("\n").split("\n")
+    start, in_fence = None, False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif not in_fence and line.strip() == "## Git-ссылки":
+            start = i
+            break
+    if start is None:
+        return text.rstrip() + f"\n\n## Git-ссылки\n{format_git_refs(refs)}\n"
+    end = start + 1
+    while end < len(lines) and not lines[end].startswith(("## ", "### ")):
+        end += 1
+    merged: dict[str, set] = {}
+    keep, label_at = [], None
+    for line in lines[start + 1:end]:
+        m = re.match(r"^\*\*([^*]+):\*\*\s*(.*)$", line.strip())
+        if m and m.group(1) in _GIT_LABEL_TYPES:
+            merged.setdefault(_GIT_LABEL_TYPES[m.group(1)], set()).update(
+                v.strip() for v in m.group(2).split(",") if v.strip())
+            if label_at is None:
+                label_at = len(keep)
+            continue
+        keep.append(line)
+    for ref_type, values in refs.items():
+        merged.setdefault(ref_type, set()).update(values)
+    labels = format_git_refs({t: sorted(v) for t, v in merged.items() if v}).split("\n")
+    at = 0 if label_at is None else label_at
+    body = keep[:at] + labels + keep[at:]
+    while body and not body[-1].strip():
+        body.pop()
+    lines[start + 1:end] = body + ([""] if end < len(lines) else [])
+    return "\n".join(lines) + "\n"
+
+
 # ─── Cross-references ────────────────────────────────────────────────────────
 
 

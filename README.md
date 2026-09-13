@@ -238,6 +238,28 @@ The backfill is interruptible and resumable (the state is the frontmatter itself
 7. An update to matching tracking articles (version, IP, port, URL) — the current value is owned by tracking, with a guard against version regression
 8. A git commit
 
+### Memory reflexes
+
+Search finds knowledge only when the model thinks to ask. A reflex fires on its own: the client hook sends an event, and the server answers with notes from the base right at the moment of action.
+
+| Client event | What arrives |
+|---|---|
+| A command failed (`PostToolUseFailure`) | the article with the fix for that error |
+| Going to a host, router or database (`PreToolUse`) | articles and pointers to the access details for that target |
+| Reading a file (`PostToolUse` on `Read`) | notes attached to that file |
+
+An article declares what it surfaces on with a `## Рефлексы` section (lines `- ошибка: …`, `- цель: …`, `- файл: …`; English `error:`/`target:`/`file:` work too) or with the `triggers` parameter of `save_lesson`, `finish_task`, `edit_article`. A file trigger needs a path with a directory (`memory_compiler/ui.py`); a bare name is rejected. A target has a fallback channel — an article title with that address, which is also how pointers to secrets with access details arrive. It works only for address-like values: an IP, a domain, a host name with a digit or a hyphen.
+
+Matching on a word mentioned in the body is deliberately absent, and so is a verbatim channel for errors: both were measured and produce noise — generic messages like "connection refused" appear verbatim in logs quoted by articles. Delivery rules:
+- at most three notes;
+- each is shown once per session;
+- superseded articles never arrive;
+- secrets are never decrypted — only the title and a pointer to `read_article`.
+
+The endpoint is `POST /api/reflex` with `{"kind": "error|target|file", "text": …, "cwd": …, "exclude": [...]}`; the response carries `memos` and a ready `text`. The author's hook is the `reflex` subcommand of the guard script in `~/.claude/hooks` and is not part of the repository: it puts the response `text` into `additionalContext`.
+
+The basis is a measurement on 13.09.2026 over 873 sessions. Of 432 errors in eleven recurring classes, 225 happened when the fix was already in the base, and after an error the agent looked into the base in 13% of cases.
+
 ### Web interface
 
 A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
@@ -273,7 +295,7 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 ### REST API
 
-20 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
+21 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
 
 ### Automation
 
