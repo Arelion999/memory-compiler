@@ -41,8 +41,8 @@ from pathlib import Path
 import memory_compiler.config as cfg
 from memory_compiler.search import SERVICE_FILES
 from memory_compiler.storage import (
-    SUPERSEDED_MARK, _parse_frontmatter, article_body_lines, article_title_tags,
-    parse_meta_value,
+    _parse_frontmatter, article_body_lines, article_title_tags, parse_meta_value,
+    superseded_link,
 )
 
 KINDS = ("error", "target", "file")
@@ -341,11 +341,11 @@ def _read_article(path: Path, project: str):
         body = _parse_frontmatter(raw)[1]
     except Exception:
         body = raw
-    head = body.split("\n")[:14]
-    # Метку отмены mark_superseded при длинном frontmatter ставит строкой 1 — внутрь
-    # него (ревью 13.09.2026), поэтому смотрим и начало сырого файла.
-    if any(l.startswith(SUPERSEDED_MARK) for l in head + raw.split("\n")[:14]):
+    # «Отменена» решает та же функция, что у storage.superseded_by: своя проверка по
+    # началу сырого файла с ним расходилась (ревью 13.09.2026).
+    if superseded_link(raw):
         return None
+    head = body.split("\n")[:14]
     date = verified = ""
     for line in head:
         if line.startswith("**Обновлено:**"):

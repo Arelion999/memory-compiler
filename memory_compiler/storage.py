@@ -3046,6 +3046,10 @@ RUNNING_MARK = "· в работе"  # пометка незакрытого б�
 # detect_contradictions отключили в v1.54.1).
 SUPERSEDED_MARK = "**Отменена:**"
 SUPERSEDES_MARK = "**Отменяет:**"
+# Метка живёт в шапке ТЕЛА: писатель ставит её не ниже строки SUPERSEDED_HEAD-1,
+# читатель ищет в первых SUPERSEDED_HEAD. Окно одно на обе стороны — разойдутся,
+# и поставленная метка перестанет находиться молча.
+SUPERSEDED_HEAD = 14
 
 
 def _article_file(project: str, filename: str) -> Path | None:
@@ -3069,20 +3073,26 @@ def mark_superseded(project: str, old_filename: str, new_filename: str,
     if path is None:
         return False
     text = path.read_text(encoding="utf-8")
-    if SUPERSEDED_MARK in text:
+    if superseded_link(text) is not None:
         return False                      # уже помечена — не дублируем
     stamp = datetime.now().strftime("%Y-%m-%d")
     note = "%s %s%s (%s)" % (SUPERSEDED_MARK, new_filename,
                              " — %s" % new_title if new_title else "", stamp)
-    lines = text.splitlines()
-    # ставим в шапку — сразу после метаданных, до тела: предупреждение обязано
-    # попасться на глаза раньше отменённого содержания
+    # ставим в шапку — сразу после метаданных, до записей: предупреждение обязано
+    # попасться на глаза раньше отменённого содержания.
+    # ⚠️ Шапка — от ТЕЛА после frontmatter, сам frontmatter уходит обратно байт-в-байт.
+    # По сырому файлу за contexts: (медиана 13 строк, p90 40) метаданных не находили,
+    # и метка вставала строкой 1 — ВНУТРЬ YAML: он ломался, а читатели тела её не
+    # видели (код-ревью v1.78.0, 13.09.2026).
+    body = _parse_frontmatter(text)[1]
+    front = text[:len(text) - len(body)]
+    lines = body.splitlines()
     insert_at = 1
-    for i, line in enumerate(lines[:12]):
+    for i, line in enumerate(lines[:SUPERSEDED_HEAD - 1]):
         if line.startswith(("**Дата:**", "**Проект:**", "**Теги:**", "**Обновлено:**")):
             insert_at = i + 1
     lines.insert(insert_at, note)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text(front + "\n".join(lines) + "\n", encoding="utf-8")
     return True
 
 
@@ -3091,7 +3101,22 @@ def superseded_by(project: str, filename: str) -> tuple[str, str] | None:
     path = _article_file(project, filename)
     if path is None:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines()[:14]:
+    return superseded_link(path.read_text(encoding="utf-8"))
+
+
+def superseded_link(text: str) -> tuple[str, str] | None:
+    """(файл поправки, её заголовок) из шапки тела статьи — или None.
+
+    ⚠️ ЕДИНСТВЕННОЕ место, где решается «статья отменена»: superseded_by,
+    project_corrections, «уже помечена» в mark_superseded и рефлексы ходят сюда.
+    Своя проверка у каждого и развела модули (ревью 13.09.2026): писатель считал
+    помеченной статью, где метка лишь упомянута в тексте, project_corrections искал её
+    в первых 900 символах сырого файла, рефлексы — ещё и в начале сырого файла.
+    Шапка — от тела после frontmatter, как в article_title_tags: срез сырого файла за
+    contexts: до неё не достаёт."""
+    if SUPERSEDED_MARK not in text:
+        return None                       # YAML разбираем только у статей с меткой
+    for line in _parse_frontmatter(text)[1].splitlines()[:SUPERSEDED_HEAD]:
         if line.startswith(SUPERSEDED_MARK):
             rest = line[len(SUPERSEDED_MARK):].strip()
             rest = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)\s*$", "", rest)
@@ -3400,12 +3425,10 @@ def project_corrections(project: str) -> list[tuple[str, str]]:
         if f.name.startswith("_"):
             continue
         try:
-            head = f.read_text(encoding="utf-8")[:900]
+            text = f.read_text(encoding="utf-8")
         except OSError:
             continue
-        if SUPERSEDED_MARK not in head:
-            continue
-        link = superseded_by(project, f.name)
+        link = superseded_link(text)
         if link and link[0] not in seen:
             seen[link[0]] = link[1]
     return sorted(seen.items())

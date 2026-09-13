@@ -179,19 +179,27 @@ def test_superseded_service_and_daily_are_skipped(knowledge_dir, fresh):
     assert [m.file for m in rx.find_memos("target", "10.20.30.40")] == ["new.md"]
 
 
-def test_superseded_mark_inside_frontmatter_is_respected(knowledge_dir, fresh):
-    """mark_superseded при длинном frontmatter ставит метку строкой 1 — внутрь него."""
-    pdir = knowledge_dir / "testproj"
+@pytest.mark.parametrize("where, superseded", [
+    ("body_head", True), ("in_frontmatter", False), ("mentioned_in_entries", False)])
+def test_superseded_skip_agrees_with_storage(knowledge_dir, fresh, where, superseded):
+    """«Статья отменена» рефлексы решают той же функцией, что storage.superseded_by. В
+    v1.78.0 они смотрели ещё и начало СЫРОГО файла — обход бага mark_superseded, который
+    ставил метку внутрь длинного frontmatter, — и расходились с superseded_by. Писатель
+    починен, скан боевой базы 13.09.2026: четыре метки, все в шапке тела. Строка внутри
+    YAML — порча файла, а не метка, и отменённой такую статью не считает никто."""
+    from memory_compiler import storage
+    mark = "**Отменена:** new.md — Новое (2026-02-01)\n"
     front = "---\ncontexts:\n" + "".join(
         f"  - heading: h{i}\n    context: c{i}\n" for i in range(8)) + "---\n"
-    body = ("# Старое\n\n**Дата:** 2026-01-01 10:00\n\n## Записи\n\n### 2026-01-01 10:00\nбыло\n\n"
-            "## Рефлексы\n- цель: nas-old\n")
-    marked = front.replace("---\n", "---\n**Отменена:** new.md — Новое (2026-02-01)\n", 1)
-    (pdir / "old.md").write_text(marked + body, encoding="utf-8")
-    assert rx.find_memos("target", "nas-old") == []
-    # позитивный контроль: та же статья без метки находится
-    (pdir / "old2.md").write_text(front + body, encoding="utf-8")
-    assert [m.file for m in rx.find_memos("target", "nas-old")] == ["old2.md"]
+    head = "# Старое\n\n**Дата:** 2026-01-01 10:00\n**Теги:** t\n"
+    tail = "\n## Записи\n\n### 2026-01-01 10:00\nбыло\n\n## Рефлексы\n- цель: nas-old\n"
+    text = {"body_head": front + head + mark + tail,
+            "in_frontmatter": front.replace("---\n", "---\n" + mark, 1) + head + tail,
+            "mentioned_in_entries": front + head + tail.replace("было\n", "было\n" + "\n" * 14 + mark)}
+    (knowledge_dir / "testproj" / "old.md").write_text(text[where], encoding="utf-8")
+    assert (storage.superseded_by("testproj", "old.md") is not None) == superseded
+    # позитивный контроль в самих вариантах: без метки в шапке памятка находится
+    assert (rx.find_memos("target", "nas-old") == []) == superseded
 
 
 def test_target_title_channel_ranks_home_project_then_secret(knowledge_dir, fresh):
