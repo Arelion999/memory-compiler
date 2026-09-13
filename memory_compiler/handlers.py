@@ -93,7 +93,8 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
 
 async def save_lesson(topic: str, content: str, project: str, tags: list = None,
                       force_new: bool = False, supersedes: str = "",
-                      verified: str = "", triggers: list = None) -> list[TextContent]:
+                      verified: str = "", triggers: list = None,
+                      verify: list = None) -> list[TextContent]:
     try:
         safe_project_dir(project)
     except ValueError as e:
@@ -178,6 +179,16 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
             article_path.write_text(new_text, encoding="utf-8")
             reflexes.invalidate()
         reflex_note = reflexes.describe_added(added, rejected)
+
+    # Проверка (v1.79.0): чем подтвердить факт об узле живой командой.
+    if verify:
+        cur = article_path.read_text(encoding="utf-8")
+        new_text, v_added, v_rejected = reflexes.add_verify(cur, verify)
+        if new_text != cur:
+            article_path.write_text(new_text, encoding="utf-8")
+            reflexes.invalidate()
+        note = reflexes.describe_verify(v_added, v_rejected)
+        reflex_note = (reflex_note + "\n" + note).strip() if note else reflex_note
 
     # 4. Update search indexes
     article_text = article_path.read_text(encoding="utf-8")
@@ -958,7 +969,7 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
 
 
 async def edit_article(project: str, filename: str, content: str = "", append: bool = False,
-                       triggers: list = None) -> list[TextContent]:
+                       triggers: list = None, verify: list = None) -> list[TextContent]:
     try:
         fpath = safe_article_path(project, filename)
     except ValueError as e:
@@ -968,8 +979,9 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     has_content = bool((content or "").strip())
-    if not has_content and not triggers:
-        return [TextContent(type="text", text="❌ Нечего менять: передай content и/или triggers.")]
+    if not has_content and not triggers and not verify:
+        return [TextContent(type="text",
+                            text="❌ Нечего менять: передай content, triggers и/или verify.")]
 
     old_text = fpath.read_text(encoding="utf-8")
     # Секретность определяется ДО записи: тело такой статьи не должно
@@ -1024,6 +1036,29 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
             fpath.write_text(new_text, encoding="utf-8")
             reflexes.invalidate()
         reflex_note = reflexes.describe_added(added, rejected)
+
+    # Проверка (v1.79.0): чем подтвердить факт об узле живой командой.
+    # ⚠️ Открытым текстом ложится и в секрет, поэтому телом секрета для проверки на
+    # утечку идёт `content` — это ЕДИНСТВЕННОЕ расшифрованное тело, которое здесь есть
+    # (то, что строкой ниже шифруется в ENC:). У правки без content его нет: хранимое
+    # тело не расшифровывается намеренно, иначе секции потребовали бы MC_ENCRYPT_KEY.
+    if verify and is_secret and not has_content:
+        # ⚠️ FAIL-CLOSED. Цитата ложится в ОТКРЫТУЮ часть секрета, а сверить её с телом
+        # тут нечем: хранимое тело намеренно не расшифровывается (иначе секционная
+        # правка потребовала бы MC_ENCRYPT_KEY — см. соседний инвариант про триггеры).
+        # Молча принять значило бы пропустить в открытый текст пароль из тела статьи.
+        reflex_note = (reflex_note + "\n⚠️ Проверка не принята: в секретную статью цитата "
+                       "идёт только вместе с content — иначе её не с чем сверить, и "
+                       "значение из тела секрета уехало бы в открытую часть.").strip()
+    elif verify:
+        cur = fpath.read_text(encoding="utf-8")
+        new_text, v_added, v_rejected = reflexes.add_verify(
+            cur, verify, secret_body=content if is_secret else "")
+        if new_text != cur:
+            fpath.write_text(new_text, encoding="utf-8")
+            reflexes.invalidate()
+        note = reflexes.describe_verify(v_added, v_rejected)
+        reflex_note = (reflex_note + "\n" + note).strip() if note else reflex_note
 
     # Индексация: у секрета в индекс/эмбеддинги идёт ТОЛЬКО плейсхолдер
     # (титул + теги), как в save_secret — тело не попадает в поиск.

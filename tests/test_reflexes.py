@@ -289,3 +289,15 @@ def test_find_serves_snapshot_while_scan_holds_lock(knowledge_dir, fresh):
         assert [m.file for m in memos] == ["snap.md"]
     finally:
         rx._lock.release()
+
+
+def test_section_bounds_accepts_custom_titles():
+    """Разбор раздела переиспользуется для «## Проверка»: логика границ и блоков кода
+    одна на оба раздела, иначе они разойдутся молча."""
+    lines = ["# Т", "", "## Проверка", "- команда: /system identity print", "", "## Записи", "х"]
+    # Конец — ближайший заголовок (не включается), поэтому пустая строка 4 ещё внутри
+    # раздела: ровно так же раздел ведёт себя и для «## Рефлексы».
+    assert rx._section_bounds(lines, rx.VERIFY_TITLES) == [(2, 5)]
+    # позитивный контроль: прежний вызов без аргумента ищет «## Рефлексы»
+    lines2 = ["## Рефлексы", "- цель: 192.0.2.10", "## Записи"]
+    assert rx._section_bounds(lines2) == [(0, 2)]

@@ -22,6 +22,12 @@ _TRIGGERS_EN = (
     'error, goes to that target or reads that file. The error goes verbatim, not '
     'paraphrased; never put passwords here')
 
+_VERIFY_EN = (
+    'How to confirm a fact about the node with a live command: a list of strings '
+    '"<read-only command> => <expected value>", e.g. "/system identity print => KHV-GW". '
+    'The command must only read state. The article needs a "target: <address>" trigger. '
+    'Never put passwords here')
+
 # {имя инструмента: {"description": str, "params": {имя параметра: str}}}
 TOOLS_EN: dict[str, dict] = {
     'save_lesson': {
@@ -41,6 +47,7 @@ TOOLS_EN: dict[str, dict] = {
                            'it both articles are returned as equals, and the next session takes the '
                            'one ranked higher, not the one that is correct'),
             'triggers': _TRIGGERS_EN,
+            'verify': _VERIFY_EN,
         },
     },
     'get_context': {
@@ -168,6 +175,7 @@ TOOLS_EN: dict[str, dict] = {
             'content': 'New content (full replacement of the article body). May be omitted when triggers is given',
             'append': 'True — append to the end, False — replace the body',
             'triggers': _TRIGGERS_EN,
+            'verify': _VERIFY_EN,
         },
     },
     'context_gaps': {

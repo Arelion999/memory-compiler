@@ -93,6 +93,11 @@ _TRIGGERS_DESC = (
     "покажет статью, когда агент получит такую ошибку, пойдёт на эту цель или прочитает этот "
     "файл. Ошибку — дословно, не пересказом; пароли сюда не класть")
 
+_VERIFY_DESC = (
+    "Чем подтвердить факт об узле живой командой: список строк «<read-only команда> => "
+    "<ожидаемое значение>», например «/system identity print => KHV-GW». Команда обязана "
+    "только читать состояние. Статье нужен триггер «цель: <адрес>». Пароли сюда не класть")
+
 
 # --- Tool annotations (MCP hints для клиента, напр. Claude Desktop) ---------
 # Классификация статична (per tool). Принцип: «может мутировать» => readOnlyHint=False,
@@ -146,7 +151,8 @@ async def list_tools() -> list[Tool]:
                     "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"},
                     "verified": {"type": "string", "description": "ЧЕМ проверен факт: прогон тестов, живой вызов на проде, вывод команды, ответ API. Ставить, когда вывод получен инструментом, а не выведен косвенно — иначе следующая сессия примет догадку за проверенное"},
                     "supersedes": {"type": "string", "description": "Имена файлов статей, которые эта поправка ОТМЕНЯЕТ (через запятую). Ставить всегда, когда выяснилось, что прежний вывод неверен: без этого обе статьи выдаются равноправно и следующая сессия возьмёт ту, что выше по релевантности, а не ту, что верна"},
-                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC}
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC},
+                    "verify": {"type": "array", "items": {"type": "string"}, "description": _VERIFY_DESC}
                 },
                 "required": ["topic", "content", "project"]
             }
@@ -375,7 +381,8 @@ async def list_tools() -> list[Tool]:
                     "filename": {"type": "string", "description": "Имя файла статьи"},
                     "content": {"type": "string", "description": "Новое содержимое (полная замена тела статьи). Можно не передавать, если передан triggers"},
                     "append": {"type": "boolean", "default": False, "description": "True — дописать в конец, False — заменить тело"},
-                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC}
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC},
+                    "verify": {"type": "array", "items": {"type": "string"}, "description": _VERIFY_DESC}
                 },
                 "required": ["project", "filename"]
             }

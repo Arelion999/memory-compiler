@@ -50,6 +50,7 @@ KIND_RU = {"error": "ошибка", "target": "цель", "file": "файл"}
 _KIND_ALIASES = {"ошибка": "error", "error": "error", "цель": "target",
                  "target": "target", "файл": "file", "file": "file"}
 SECTION_TITLES = ("## Рефлексы", "## Reflexes")
+VERIFY_TITLES = ("## Проверка", "## Verification")
 GIT_REFS_HEADING = "## Git-ссылки"
 
 REFLEX_RESCAN_SEC = 30      # чаще раза в N секунд базу не обходим
@@ -133,9 +134,47 @@ def trigger_problem(kind: str, value: str):
     return None
 
 
+# Цитату исполняет агент на боевом железе, поэтому приём строгий: один read-only
+# глагол, без цепочек и перенаправлений. Запрет сильнее разрешения: «show … && rm -rf»
+# содержит и белое, и чёрное — отвергаем.
+VERIFY_VERBS = frozenset({
+    "show", "print", "get", "export", "identity", "stat", "ls", "cat", "test",
+    "ping", "curl", "docker", "systemctl", "uptime", "version", "status", "head",
+})
+VERIFY_DENY = ("rm", "set", "add", "remove", "delete", "restart", "reboot", "reset",
+               "write", "chmod", "chown", "mv", "cp", "kill", "shutdown", "format")
+_VERIFY_CHAIN_RE = re.compile(r"[;&|><`]|\$\(")
+
+
+def verification_problem(field: str, value: str):
+    """Почему строка раздела «## Проверка» не годится, или None."""
+    if not 3 <= len(value) <= 300:
+        return "длина значения должна быть 3..300 символов"
+    if len(value.splitlines()) != 1 or any(
+            ch != "\t" and unicodedata.category(ch)[0] == "C" for ch in value):
+        return "значение — одна строка без управляющих символов"
+    if field != "команда":
+        return None
+    if _VERIFY_CHAIN_RE.search(value):
+        return "команда проверки — одна, без цепочек, конвейеров и перенаправлений"
+    # ⚠️ Режем и по дефису со слэшем, а не только по пробелам: «reset-configuration» не
+    # совпадает с «reset» по точному сравнению слов, и сброс конфигурации RouterOS проезжал
+    # как годная цитата за любым читающим глаголом (ревью 13.09.2026). Ложный отказ на
+    # именах вроде «backup-remove-old» лечится переформулировкой, ложный пропуск —
+    # исполняется на боевом железе.
+    words = [w for w in re.split(r"[\s/\-]+", value.casefold()) if w]
+    if any(w in VERIFY_DENY for w in words):
+        return "команда проверки должна только читать состояние, а не менять его"
+    if not any(w in VERIFY_VERBS for w in words):
+        return ("команда проверки должна содержать читающий глагол "
+                "(show, print, get, stat, ping, curl -I, docker ps, systemctl status)")
+    return None
+
+
 # ─── раздел «## Рефлексы» ────────────────────────────────────────────────────
-def _section_bounds(lines: list) -> list:
-    """[(начало, конец)] разделов «## Рефлексы» вне блоков кода; конец не включается.
+def _section_bounds(lines: list, titles: tuple = SECTION_TITLES) -> list:
+    """[(начало, конец)] разделов `titles` (по умолчанию «## Рефлексы») вне блоков кода;
+    конец не включается.
 
     Граница — ближайший «## » или «### »: merge_into_article дописывает записи в
     конец файла, и без этой границы раздел проглотил бы их."""
@@ -143,7 +182,7 @@ def _section_bounds(lines: list) -> list:
     while i < len(lines):
         if _FENCE_RE.match(lines[i]):
             in_fence = not in_fence
-        elif not in_fence and lines[i].strip() in SECTION_TITLES:
+        elif not in_fence and lines[i].strip() in titles:
             j = i + 1
             while (j < len(lines) and not lines[j].startswith(("## ", "### "))
                    and not _FENCE_RE.match(lines[j])):
@@ -249,6 +288,131 @@ def describe_added(added, rejected) -> str:
     return "\n".join(parts)
 
 
+def describe_verify(added, rejected) -> str:
+    """Строка для ответа инструмента: что легло в «## Проверка» и что отвергнуто."""
+    parts = [f"🔎 Проверка: +{len(added)}"] if added else []
+    for item, why in rejected:
+        parts.append(f"⚠️ Проверка «{str(item)[:80]}» не принята: {why}")
+    return "\n".join(parts)
+
+
+# ─── раздел «## Проверка» ────────────────────────────────────────────────────
+def parse_verify(text: str) -> list:
+    """[(команда, ожидается)] из разделов «## Проверка»; негодные и непарные отброшены.
+
+    Пара — «- команда: …» и следующая за ней «- ожидается: …». Одиночная команда без
+    ожидаемого значения проверкой не является: сверять будет нечего."""
+    lines = (text or "").split("\n")
+    out, seen = [], set()
+    for start, end in _section_bounds(lines, VERIFY_TITLES):
+        pending = None
+        for line in lines[start + 1:end]:
+            m = _LINE_RE.match(line)
+            if not m:
+                continue
+            field, value = m.group(1).casefold(), m.group(2)
+            if field in ("команда", "command"):
+                pending = value if not verification_problem("команда", value) else None
+            elif field in ("ожидается", "expect") and pending is not None:
+                if not verification_problem("ожидается", value) and (pending, value) not in seen:
+                    seen.add((pending, value))
+                    out.append((pending, value))
+                pending = None
+    return out
+
+
+# ⚠️ Режем тело секрета не только по пробелам: «логин UserAI/Zq7-demo-Pass9» и
+# «password=Zq7-demo-Pass9» — обычная форма записи доступов, и при разрезе по пробелам
+# пароль оставался склеенным с соседом, а сравнение по подстроке его не находило: защита
+# зависела от вёрстки строки в статье (ревью 13.09.2026).
+_SECRET_TOKEN_RE = re.compile(r"""[^\s/=:,;()\[\]{}"'<>]{8,}""")
+
+
+def secret_tokens(secret_body: str, open_text: str = "") -> frozenset:
+    """Куски тела секрета, которых не должно быть в открытых разделах статьи.
+
+    ⚠️ Что УЖЕ открыто в самой статье — не секрет: адрес узла лежит в триггере «цель:»,
+    и без него цитата к секретной статье бессмысленна. Иначе самая естественная проверка
+    («curl -I http://<адрес>/…») отвергалась бы именно там, где фича нужнее всего: на
+    секреты приходится 13% чтений базы.
+
+    Длина от 8 — граница удобства, а не свойство паролей: короткий пароль, пароль с
+    пробелом внутри и закодированное значение эта проверка не ловит."""
+    open_norm = (open_text or "").casefold()
+    return frozenset(t for t in _SECRET_TOKEN_RE.findall(secret_body or "")
+                     if t.casefold() not in open_norm)
+
+
+def secret_leak_in(value: str, tokens) -> bool:
+    """Несёт ли строка кусок тела секрета (tokens — из secret_tokens)."""
+    norm = value.casefold()
+    return any(t.casefold() in norm for t in tokens)
+
+
+def add_verify(text: str, pairs, secret_body: str = "") -> tuple:
+    """Дописать пары «команда => ожидается» в раздел «## Проверка».
+
+    Возвращает (текст, добавлено [(команда, ожидается)], отвергнуто [(строка, причина)]).
+    Раздел встаёт перед «## Git-ссылки», как у add_triggers. Статья без триггера
+    «- цель:» отвергается целиком: проверка не привязана к узлу.
+    `secret_body` — тело секретной статьи: цитата с его фрагментом отвергается, потому
+    что раздел «## Проверка» не шифруется и легла бы в файл открытым текстом."""
+    if isinstance(pairs, str):
+        pairs = [pairs]
+    added, rejected, fresh = [], [], []
+    # Набор считаем ОДИН раз: он зависит от статьи и тела секрета, а не от конкретной пары.
+    leak_tokens = secret_tokens(secret_body, text) if secret_body else frozenset()
+    if not any(k == "target" for k, _ in parse_triggers(text)):
+        return text, [], [(str(p), "статье нужен триггер «цель: <адрес>»: без узла "
+                                   "проверять нечего") for p in (pairs or [])]
+    known = set(parse_verify(text))
+    for item in pairs or []:
+        if not isinstance(item, str) or "=>" not in item:
+            rejected.append((str(item), "нужна пара «<команда> => <ожидаемое значение>»"))
+            continue
+        command, expect = (part.strip() for part in item.split("=>", 1))
+        if leak_tokens and (secret_leak_in(command, leak_tokens)
+                            or secret_leak_in(expect, leak_tokens)):
+            rejected.append((item, "в цитате значение из тела секрета: раздел «## Проверка» "
+                                   "пишется открытым текстом"))
+            continue
+        problem = (verification_problem("команда", command)
+                   or verification_problem("ожидается", expect))
+        if problem:
+            rejected.append((item, problem))
+            continue
+        if (command, expect) in known:
+            continue
+        known.add((command, expect))
+        added.append((command, expect))
+        fresh += [f"- команда: {command}", f"- ожидается: {expect}"]
+    if not fresh:
+        return text, added, rejected
+    lines = (text or "").rstrip("\n").split("\n")
+    bounds = _section_bounds(lines, VERIFY_TITLES)
+    if bounds:
+        start, end = bounds[0]
+        at = end
+        while at - 1 > start and not lines[at - 1].strip():
+            at -= 1
+        lines[at:at] = fresh
+    else:
+        git = next((i for i in _outside_fences(lines) if lines[i].strip() == GIT_REFS_HEADING), None)
+        if git is None:
+            lines += ["", VERIFY_TITLES[0], *fresh]
+        else:
+            block = [VERIFY_TITLES[0], *fresh, ""]
+            if git > 0 and lines[git - 1].strip():
+                block.insert(0, "")
+            lines[git:git] = block
+    new_text = "\n".join(lines) + "\n"
+    # Та же страховка, что у add_triggers: невидимая разбору пара мертва.
+    if any(pair not in set(parse_verify(new_text)) for pair in added):
+        return text, [], rejected + [(f"{c} => {e}", "раздел не удалось вписать в статью")
+                                     for c, e in added]
+    return new_text, added, rejected
+
+
 # ─── ключевые строки ошибки ──────────────────────────────────────────────────
 _EXIT_RE = re.compile(r"^exit code -?\d+$", re.I)
 _TRUNC_RE = re.compile(r"\.\.\.\s*\[\d+ characters truncated\]\s*\.\.\.")
@@ -283,6 +447,8 @@ class Memo:
     secret: bool
     via: str        # trigger | title
     snippet: str
+    verify: list    # [(команда, ожидается)] из «## Проверка»
+    probe: dict     # {"date": …, "level": reachable|verified|stale} или {}
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -300,6 +466,10 @@ class _Article:
     secret: bool
     triggers: list
     snippet: str
+    verify: list    # [(команда, ожидается)] из «## Проверка»
+    # ⚠️ Штампа живой проверки здесь НЕТ сознательно: индекс перечитывает статью только
+    # при смене её подписи, а штамп лежит в сайдкаре и статью не меняет — снятый здесь,
+    # он не доехал бы до карточки. Читается в момент выдачи, см. probe_stamp_of().
 
 
 class _Index:
@@ -364,7 +534,26 @@ def _read_article(path: Path, project: str):
         title_norm=title.casefold(), date=date[:10], verified=verified[:80], secret=secret,
         triggers=[(k, NORMALIZE[k](v)) for k, v in parse_triggers(body)],
         snippet="" if secret else _snippet(body),
+        verify=parse_verify(body),
     )
+
+
+def probe_stamp_of(key: str) -> dict:
+    """Штамп живой проверки статьи «проект/файл.md» — ЧИТАЕТСЯ В МОМЕНТ ВЫДАЧИ памятки.
+
+    ⚠️ НЕ ПРИ ИНДЕКСАЦИИ, и это главное. Штамп лежит в сайдкаре `.article_meta.json`, а
+    индекс перечитывает статью только при смене её подписи (mtime/ctime/размер). Файл
+    статьи от штампа не меняется — значит штамп, снятый при индексации, не доехал бы до
+    карточки НИКОГДА, пока статью не отредактируют. Живая проверка 14.09.2026 на проде:
+    `/api/probe` проштамповал три статьи, а следующий `/api/reflex` вернул `probe: {}` у
+    всех трёх. Тесты дефект пропускали, потому что ставили штамп и тут же инвалидировали
+    индекс. Здесь это дешёвый поиск по словарю, и данные всегда свежие.
+
+    ⚠️ Штамп берём, только если он целый: сайдкар правят руками и он переживает сбои
+    записи. Битый `last_probe` обязан гасить штамп, а не ронять карточку (ревью 13.09.2026).
+    """
+    stamp = cfg.article_meta.get(key, {}).get("last_probe")
+    return stamp if isinstance(stamp, dict) and stamp.get("date") and stamp.get("level") else {}
 
 
 def refresh_index(force: bool = False) -> _Index:
@@ -492,7 +681,8 @@ def find_memos(kind: str, text, cwd: str = "", exclude=None, limit: int = MEMO_L
     ranked.sort(key=lambda item: item[2].date, reverse=True)
     ranked.sort(key=lambda item: (item[0], item[2].project != home,
                                   not (kind == "target" and item[2].secret)))
-    return [Memo(a.project, a.file, a.title, a.date, a.verified, a.secret, via, a.snippet)
+    return [Memo(a.project, a.file, a.title, a.date, a.verified, a.secret, via, a.snippet,
+                 a.verify, probe_stamp_of(a.key))
             for _rank, via, a in ranked[:max(1, limit)]]
 
 
@@ -522,6 +712,15 @@ def render(kind: str, memos: list, what: str = "") -> str:
     for m in memos:
         meta = " · ".join(x for x in (m.date, f"проверено: {m.verified}" if m.verified else "") if x)
         lines = [f"• [{m.project}] {m.title}" + (f" ({meta})" if meta else "")]
+        # Штамп — подсказка, а не фильтр: протухший факт остаётся в выдаче, иначе агент
+        # пойдёт на железо вообще без записи и переоткроет её заново.
+        stamp = m.probe.get("level")
+        if stamp == "verified":
+            lines.append(f"  проверено живой командой: {m.probe['date'][:10]}")
+        elif stamp == "stale":
+            lines.append(f"  ⚠ требует перепроверки (с {m.probe['date'][:10]})")
+        for command, expect in m.verify[:2]:
+            lines.append(f"  проверить: {command} → ожидается {expect}")
         if m.secret:
             lines.append("  секрет: содержимое откроет read_article")
         elif m.snippet:

@@ -80,3 +80,41 @@ def test_no_heavy_calls_in_event_loop(module):
         "блокируют event loop:\n  " + "\n  ".join(found)
         + "\nОберни в await asyncio.to_thread(...)"
     )
+
+
+# ⚠️ ОБРАТНЫЙ СЛУЧАЙ, и он не симметричен списку выше. save_article_meta итерирует
+# article_meta в json.dumps, а track_access мутирует тот же словарь из хендлеров: вынос
+# записи в поток даёт 'dict changed size during iteration' — редкую порчу аналитики под
+# параллельной нагрузкой. Правило записано в handlers._index_embed («НАМЕРЕННО остаются
+# на loop»), но жило только комментарием: в v1.79.0 запись сайдкара из новой ручки
+# /api/probe уехала в to_thread, и ни один тест этого не заметил — второго хендлера,
+# который мутирует словарь, в тестах нет. Цена записи мала (dumps + атомарная запись
+# файла), цена гонки — испорченный сайдкар.
+LOOP_ONLY = {"save_article_meta"}
+
+
+def thread_offloaded(path: Path):
+    """Функции из LOOP_ONLY, уехавшие в to_thread."""
+    found = []
+    for call in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(call, ast.Call):
+            continue
+        if (getattr(call.func, "id", None) or getattr(call.func, "attr", "")) != "to_thread":
+            continue
+        # Первый аргумент to_thread — сама функция: ast.Name (имя) или ast.Attribute
+        # (вызов через модуль, _cfg.save_article_meta).
+        for arg in call.args[:1]:
+            name = getattr(arg, "id", None) or getattr(arg, "attr", "")
+            if name in LOOP_ONLY:
+                found.append(f"{path.name}:{call.lineno} → to_thread({name})")
+    return found
+
+
+@pytest.mark.parametrize("module", sorted(p.name for p in MC.glob("*.py")))
+def test_loop_only_functions_stay_on_loop(module):
+    """Запись сайдкара обязана идти на loop: в потоке она гоняется с track_access."""
+    found = thread_offloaded(MC / module)
+    assert not found, (
+        "уехало в поток, хотя обязано остаться на loop:\n  " + "\n  ".join(found)
+        + "\nЗвать синхронно (см. handlers._index_embed про гонку с track_access)"
+    )

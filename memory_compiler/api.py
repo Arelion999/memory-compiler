@@ -17,6 +17,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
     _discover_projects, MC_API_KEY, MC_ENCRYPT_KEY, VERSION,
+    PROBE_LEVELS, probe_stamp,
 )
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
@@ -216,6 +217,58 @@ async def web_reflex(request: Request):
     obs.get_logger("reflex").info("reflex", extra={
         "kind": kind, "memos": len(shown), "ms": round((_time.perf_counter() - t0) * 1000)})
     return JSONResponse({"memos": [m.as_dict() for m in shown], "text": rendered})
+
+
+async def web_probe(request: Request):
+    """Вердикт живой проверки от хука (v1.79.0): узел жив / факт верен / факт протух.
+
+    ⚠️ Сырого вывода команды здесь нет сознательно: вывод боевого узла — недоверенный
+    ввод, сравнение с ожидаемым делает хук, сюда приходит только вердикт."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    # ⚠️ Ручка ПИШЕТ в состояние базы, поэтому авторизация обязательна и проверяется здесь:
+    # AuthMiddleware монтируется только при заданном MC_API_KEY, и при пустом ключе ручка
+    # осталась бы открыта любому, кто дотянулся до порта. Fail-closed, как у
+    # _maybe_decrypt_secret_lines (ревью 13.09.2026).
+    if not MC_API_KEY or not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    target = data.get("target") if isinstance(data, dict) else None
+    level = data.get("level") if isinstance(data, dict) else None
+    if not isinstance(target, str) or not target.strip() or level not in PROBE_LEVELS:
+        return JSONResponse({"error": "target and level required"}, status_code=400)
+    project = data.get("project") if isinstance(data.get("project"), str) else ""
+    file = data.get("file") if isinstance(data.get("file"), str) else ""
+    if level == "reachable":
+        # «Узел жив» — свойство цели, верно для всех статей про неё.
+        memos = await asyncio.to_thread(reflexes.find_memos, "target", target, "", None, 5)
+        stamped = [f"{m.project}/{m.file}" for m in memos]
+    elif project and file:
+        # ⚠️ verified/stale относятся к КОНКРЕТНОМУ факту — статье, чью цитату исполнял хук.
+        # По цели находятся и статьи, попавшие по адресу в заголовке (секреты с доступами):
+        # штамп «проверено живой командой» на них означал бы, что их данные кто-то сверял.
+        stamped = [f"{project}/{file}"]
+    else:
+        return JSONResponse({"error": "verified/stale require project and file"},
+                            status_code=400)
+    for key in stamped:
+        probe_stamp(key, level, save=False)
+    if stamped:
+        # Один save на запрос: probe_stamp в цикле переписывал .article_meta.json целиком
+        # на каждую статью.
+        # ⚠️ НА LOOP, БЕЗ to_thread — так же, как у всех хендлеров. Запись итерирует
+        # article_meta в json.dumps, а track_access мутирует тот же словарь из соседних
+        # вызовов: в потоке это 'dict changed size during iteration' и испорченный
+        # сайдкар (правило записано в handlers._index_embed). Операция дешёвая —
+        # dumps плюс атомарная запись файла. Держит test_no_blocking_calls.
+        # ⚠️ Через МОДУЛЬ, а не импортированным именем: имя, взятое по значению, не видит
+        # подмены в тестах — проверка «сайдкар пишется один раз» зеленела бы вхолостую.
+        import memory_compiler.config as _cfg
+        _cfg.save_article_meta()
+    obs.get_logger("reflex").info(
+        "probe", extra={"level": level, "stamped": len(stamped), "target": target[:80]})
+    return JSONResponse({"stamped": stamped})
 
 
 async def web_ask(request: Request):
@@ -1108,6 +1161,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/search", endpoint=web_search),
             Route("/api/related", endpoint=web_related),
             Route("/api/reflex", endpoint=web_reflex, methods=["POST"]),
+            Route("/api/probe", endpoint=web_probe, methods=["POST"]),
             Route("/api/timeline", endpoint=web_timeline),
             Route("/api/ask", endpoint=web_ask),
             Route("/api/save", endpoint=web_save, methods=["POST"]),

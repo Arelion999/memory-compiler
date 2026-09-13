@@ -201,6 +201,26 @@ def track_access(paths: list[str]):
     save_article_meta()
 
 
+PROBE_LEVELS = ("reachable", "verified", "stale")
+
+
+def probe_stamp(key: str, level: str, save: bool = True):
+    """Штамп живой проверки факта: key — «проект/файл.md», как в track_access.
+
+    В теле статьи штампа нет сознательно: он меняется на каждую команду к железу, а
+    запись в статью тянет git add -A (5,5 с на всю базу).
+
+    `save=False` — проставить штамп без записи файла: вызывающий сохранит сайдкар один
+    раз за запрос. Полная перезапись .article_meta.json на каждую статью, да ещё
+    синхронно в event loop, — тот самый класс, которым сервер уже вешали дважды."""
+    if level not in PROBE_LEVELS:
+        return
+    entry = article_meta.setdefault(key, {"access_count": 0, "created": datetime.now().isoformat()})
+    entry["last_probe"] = {"date": datetime.now().isoformat(timespec="seconds"), "level": level}
+    if save:
+        save_article_meta()
+
+
 def decay_factor(path: str) -> float:
     """Calculate temporal decay factor (0.3 - 1.0). Recent = higher score."""
     meta = article_meta.get(path)

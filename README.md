@@ -260,6 +260,10 @@ The endpoint is `POST /api/reflex` with `{"kind": "error|target|file", "text": �
 
 The basis is a measurement on 13.09.2026 over 873 sessions. Of 432 errors in eleven recurring classes, 225 happened when the fix was already in the base, and after an error the agent looked into the base in 13% of cases.
 
+**A live node card.** A fact about a node can carry an executable quote: a `## Проверка` section with `- команда:` and `- ожидается:` lines, or the `verify` parameter of `save_lesson` and `edit_article`. The quote arrives together with the note for that target, so the agent sees what backs the fact: `/system identity print => KHV-GW`. Only a read-only command is accepted — the quote is executed against live hardware, so the whitelist of verbs is strict, and chains, redirections and substitutions are rejected.
+
+The outcome returns to the base through `POST /api/probe` with `{"target": …, "level": "reachable|verified|stale", "project": …, "file": …}`. **The client does the comparison:** output from a live node is untrusted input, and only the verdict travels to the server — otherwise someone else's banner in that output would get to decide what the knowledge base says. `verified` and `stale` require the key of the article whose quote was executed: a node's address also matches secrets with access details that landed there by title, and a "checked by a live command" stamp on those would claim somebody verified their contents. The stamp lives in the `.article_meta.json` sidecar rather than in the article body: it changes on every command to the hardware, while writing into the article drags a `git add -A` across the whole base. Into a secret article a quote is accepted only together with `content` — there is nothing else to check it against when the body is encrypted.
+
 ### Web interface
 
 A built-in mobile-friendly UI at `http://localhost:8765`. Dark and light themes.
@@ -295,7 +299,7 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 ### REST API
 
-21 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
+22 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
 
 ### Automation
 
