@@ -202,23 +202,44 @@ def track_access(paths: list[str]):
 
 
 PROBE_LEVELS = ("reachable", "verified", "stale")
+PROBE_VERDICTS = ("verified", "stale")
 
 
-def probe_stamp(key: str, level: str, save: bool = True):
+def probe_stamp(key: str, level: str, save: bool = True) -> bool:
     """Штамп живой проверки факта: key — «проект/файл.md», как в track_access.
+    Возвращает True, если штамп лёг.
 
     В теле статьи штампа нет сознательно: он меняется на каждую команду к железу, а
     запись в статью тянет git add -A (5,5 с на всю базу).
 
     `save=False` — проставить штамп без записи файла: вызывающий сохранит сайдкар один
     раз за запрос. Полная перезапись .article_meta.json на каждую статью, да ещё
-    синхронно в event loop, — тот самый класс, которым сервер уже вешали дважды."""
+    синхронно в event loop, — тот самый класс, которым сервер уже вешали дважды.
+
+    ⚠️ REACHABLE НЕ ЗАТИРАЕТ ВЕРДИКТ ПО ФАКТУ (v1.81.1). «Узел отвечает» — свойство цели,
+    verified/stale — свойство цитаты конкретной статьи, а слот у статьи один. Пока писал
+    последний, вердикт жил до следующей команды к узлу: живая проверка 14.09.2026 —
+    verified в 19:20:58, через секунду команда без цитаты прислала reachable по той же
+    цели, и в сайдкаре остался reachable. Карточка показывает ТОЛЬКО verified и stale
+    (reflexes.render), так что пропадал единственный видимый сигнал, а stale —
+    предупреждение о протухшем факте — стирался первой же посторонней командой. Сменить
+    вердикт может только новый вердикт, то есть повторный прогон цитаты. Битый штамп
+    вердиктом не считается: карточка его не показывает (probe_stamp_of), и запрет
+    перезаписи оставил бы его навсегда.
+    ⚠️ ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ: вердикты РАЗНЫХ цитат одной статьи делят тот же слот —
+    verified по цитате A затрёт stale по цитате B. Хук не сообщает, какую цитату исполнял,
+    и различить их здесь нечем: это смена контракта /api/probe, а не правка слота."""
     if level not in PROBE_LEVELS:
-        return
+        return False
     entry = article_meta.setdefault(key, {"access_count": 0, "created": datetime.now().isoformat()})
+    current = entry.get("last_probe")
+    if (level == "reachable" and isinstance(current, dict)
+            and current.get("level") in PROBE_VERDICTS and current.get("date")):
+        return False
     entry["last_probe"] = {"date": datetime.now().isoformat(timespec="seconds"), "level": level}
     if save:
         save_article_meta()
+    return True
 
 
 def decay_factor(path: str) -> float:

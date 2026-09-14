@@ -248,7 +248,7 @@ async def web_probe(request: Request):
     if level == "reachable":
         # «Узел жив» — свойство цели, верно для всех статей про неё.
         memos = await asyncio.to_thread(reflexes.find_memos, "target", targets, "", None, 5)
-        stamped = [f"{m.project}/{m.file}" for m in memos]
+        candidates = [f"{m.project}/{m.file}" for m in memos]
     elif project and file:
         # ⚠️ verified/stale относятся к КОНКРЕТНОМУ факту — статье, чью цитату исполнял хук.
         # По цели находятся и статьи, попавшие по адресу в заголовке (секреты с доступами):
@@ -256,12 +256,14 @@ async def web_probe(request: Request):
         # ⚠️ Проект — в нижний регистр, как на MCP-пути: MCP-хендлеры пишут статьи под
         # нормализованным проектом, а штамп кладётся по ключу project/file. Без приведения
         # штамп «Infra/файл» лёг бы на фантомный ключ мимо настоящей статьи «infra/файл».
-        stamped = [f"{normalize_project(project)}/{file}"]
+        candidates = [f"{normalize_project(project)}/{file}"]
     else:
         return JSONResponse({"error": "verified/stale require project and file"},
                             status_code=400)
-    for key in stamped:
-        probe_stamp(key, level, save=False)
+    # ⚠️ В ответе — только статьи, где штамп реально лёг: reachable не затирает вердикт по
+    # факту (config.probe_stamp, v1.81.1), и «проштамповано» не должно об этом врать — ни
+    # хуку, ни структурному логу ниже.
+    stamped = [key for key in candidates if probe_stamp(key, level, save=False)]
     if stamped:
         # Один save на запрос: probe_stamp в цикле переписывал .article_meta.json целиком
         # на каждую статью.

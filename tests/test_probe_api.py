@@ -230,3 +230,65 @@ def test_probe_normalizes_project_case(knowledge_dir, monkeypatch):
     assert data["stamped"] == ["infra/router.md"], data
     assert cfg.article_meta["infra/router.md"]["last_probe"]["level"] == "verified"
     assert "Infra/router.md" not in cfg.article_meta   # фантомный ключ не создан
+
+
+# ─── старшинство штампа: reachable не затирает вердикт по факту (v1.81.1) ─────────
+def test_reachable_does_not_erase_fact_verdict(knowledge_dir):
+    """«Узел отвечает» — свойство цели, verified/stale — свойство цитаты статьи.
+
+    Слот штампа один, и раньше последний писал. Живая проверка 14.09.2026: verified в
+    19:20:58, через секунду команда к тому же узлу без цитаты прислала reachable по той же
+    цели, и в сайдкаре остался reachable. Карточка показывает ТОЛЬКО verified и stale, так
+    что вердикт пропадал раньше, чем его кто-то видел, — а вместе с ним и предупреждение о
+    протухшем факте."""
+    for verdict in ("verified", "stale"):
+        key = f"testproj/{verdict}.md"
+        cfg.probe_stamp(key, verdict, save=False)
+        before = dict(cfg.article_meta[key]["last_probe"])
+        cfg.probe_stamp(key, "reachable", save=False)
+        assert cfg.article_meta[key]["last_probe"] == before, verdict
+    # Позитивный контроль: без вердикта reachable ложится как прежде. Без него проверка
+    # выше зеленела бы и на поломке «reachable не пишет вовсе».
+    cfg.probe_stamp("testproj/fresh.md", "reachable", save=False)
+    assert cfg.article_meta["testproj/fresh.md"]["last_probe"]["level"] == "reachable"
+    # Битый штамп (сайдкар правят руками) вердиктом не считается: карточка его и так не
+    # показывает (probe_stamp_of), а запрет перезаписи оставил бы его навсегда.
+    cfg.article_meta["testproj/broken.md"] = {"last_probe": {"level": "verified"}}
+    cfg.probe_stamp("testproj/broken.md", "reachable", save=False)
+    assert cfg.article_meta["testproj/broken.md"]["last_probe"]["level"] == "reachable"
+
+
+def test_probe_endpoint_keeps_verdict_through_later_reachable(knowledge_dir, monkeypatch):
+    """Сценарий инцидента целиком: через ручку и до карточки.
+
+    Хук исполнил цитату — verified; следующая команда к тому же узлу без цитаты — reachable
+    по той же цели. Вердикт обязан дожить до карточки, а ответ ручки — не врать, что статью
+    проштамповали заново. Вторым проходом то же для stale (заодно verified → stale)."""
+    import memory_compiler.api as api
+    _router(knowledge_dir, monkeypatch)
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    auth = {"authorization": "Bearer k"}
+    for verdict in ("verified", "stale"):
+        code, _ = _probe({"target": "192.0.2.10", "level": verdict,
+                          "project": "testproj", "file": "router.md"}, headers=auth)
+        assert code == 200
+        code, data = _probe({"target": ["192.0.2.10"], "level": "reachable"}, headers=auth)
+        assert code == 200
+        assert cfg.article_meta["testproj/router.md"]["last_probe"]["level"] == verdict
+        assert "testproj/router.md" not in data["stamped"], (verdict, data)
+        code, card = _call(web_reflex, {"kind": "target", "text": ["192.0.2.10"]})
+        assert code == 200 and card["memos"], card
+        assert card["memos"][0]["probe"]["level"] == verdict, (verdict, card["memos"][0])
+
+
+def test_new_verdict_still_replaces_old_one(knowledge_dir):
+    """Страж: сменить вердикт может только новый вердикт — повторный прогон цитаты.
+
+    Без этой проверки «исправление», делающее штамп вечным, прошло бы тесты выше и сломало
+    бы перепроверку: факт, починенный на узле, остался бы stale навсегда."""
+    key = "testproj/router.md"
+    cfg.probe_stamp(key, "stale", save=False)
+    cfg.probe_stamp(key, "verified", save=False)
+    assert cfg.article_meta[key]["last_probe"]["level"] == "verified"
+    cfg.probe_stamp(key, "stale", save=False)
+    assert cfg.article_meta[key]["last_probe"]["level"] == "stale"
