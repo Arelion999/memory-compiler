@@ -54,6 +54,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.api as api_mod
     import memory_compiler.maintenance as maintenance_mod
     import memory_compiler.handlers_reports as reports_mod
+    import memory_compiler.handlers_search as search_handlers_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -81,6 +82,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     # одиннадцать тестов сразу после разреза.
     monkeypatch.setattr(reports_mod, "KNOWLEDGE_DIR", knowledge_dir)
     monkeypatch.setattr(reports_mod, "PROJECTS", ["testproj", "general"])
+    # ⚠️ handlers_search (v1.83.0) — тот же класс третий раз: поиск и ask уехали из
+    # handlers и держат СВОИ KNOWLEDGE_DIR/PROJECTS. Без этих строк ask_sources и
+    # attach_corrections читают БОЕВУЮ базу вместо tmp — молча, потому что файла
+    # просто не окажется и фрагмент выйдет пустым.
+    monkeypatch.setattr(search_handlers_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(search_handlers_mod, "PROJECTS", ["testproj", "general"])
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)

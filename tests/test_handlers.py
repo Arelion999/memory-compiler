@@ -302,7 +302,10 @@ async def test_search_survives_rerank_timeout(knowledge_dir, monkeypatch):
         return candidates[:top_k]
 
     monkeypatch.setattr(smod, "rerank", _slow)
-    monkeypatch.setattr(hmod, "SEARCH_RERANK_BUDGET_S", 0.1)
+    # Константа уехала в handlers_search (v1.83.0): патч на handlers связал бы
+    # значение, которого _rerank_async уже не читает.
+    import memory_compiler.handlers_search as hsmod
+    monkeypatch.setattr(hsmod, "SEARCH_RERANK_BUDGET_S", 0.1)
     result = await search("docker", "testproj")
     assert "Test Article" in result[0].text
 
@@ -487,8 +490,8 @@ def test_search_applies_reranker(knowledge_dir, monkeypatch):
     тест интеграции включает его явно — проверяем, что ВКЛЮЧЁННЫЙ reranker применяется.
     """
     import memory_compiler.search as search_mod
-    import memory_compiler.handlers as handlers_mod
-    monkeypatch.setattr(handlers_mod, "RERANK_ENABLED", True)
+    import memory_compiler.handlers_search as handlers_search_mod
+    monkeypatch.setattr(handlers_search_mod, "RERANK_ENABLED", True)
     titles = ["postgres tuning queries", "postgres backup script", "postgres ssl client cert"]
     _seed_postgres_articles(knowledge_dir, titles)
 
@@ -1375,10 +1378,10 @@ def test_get_context_applies_reranker(knowledge_dir, monkeypatch):
     """
     import memory_compiler.search as search_mod
     import memory_compiler.config as _cfg
-    import memory_compiler.handlers as handlers_mod
+    import memory_compiler.handlers_search as handlers_search_mod
     from memory_compiler.handlers import get_context
     from memory_compiler.search import rebuild_index, rebuild_embeddings
-    monkeypatch.setattr(handlers_mod, "RERANK_ENABLED", True)
+    monkeypatch.setattr(handlers_search_mod, "RERANK_ENABLED", True)
 
     proj = knowledge_dir / "testproj"
     for i, title in enumerate(["nginx ssl config", "nginx access log rotation", "nginx upstream load balance"]):

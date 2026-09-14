@@ -2,6 +2,45 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.83.0 — 2026-09-15
+
+Поиск и ответы вынесены из `handlers.py` в отдельный модуль — третий разрез тем же приёмом.
+
+### Changed
+
+- **`memory_compiler/handlers_search.py` (680 строк)** — `search`, `get_context`, `ask` со своим
+  ядром (`ask_sources`, `ask_fragment`), тематические `search_by_tag` / `search_snippets` /
+  `search_error` / `search_decisions`, рендер выдачи (`_render_search_results`, `_fit_preview`,
+  `_query_words`, `_scores`, `_superseded_note`, `_resource_links`, `attach_corrections`,
+  `_rerank_async`) и десять констант домена вместе с ContextVar структурированной выдачи.
+  `handlers.py` 3063 → 2488 строк. Снаружи адреса НЕ изменились: `handlers` реэкспортирует все 27
+  имён, `tools.py` и тесты ходят через `handlers.<имя>` как прежде.
+  Шов выбран замером связности, а не на глаз: по-настоящему общих имён оказалось ровно два —
+  `_whoosh_async` (нужен ещё `route_project`) и `_weighted_budgets` (нужен ещё `start_task`, и его
+  вызывают девять тестов). Оба импортируются ОТЛОЖЕННО внутри функций: это рвёт цикл
+  `handlers ↔ handlers_search` и сохраняет тестам патч на `handlers`, потому что имя берётся из
+  модуля в момент вызова.
+
+### Fixed
+
+- **Два теста стерегли вхолостую — вскрыто этим разрезом.** `test_rerank_toggle` патчил
+  `RERANK_ENABLED` на `handlers`, а константа уехала в модуль-владелец: из трёх патчей упал ровно
+  один, а два других «проходили» по совпадению — дефолт и так `False`, а проверка мягкой деградации
+  при `False` возвращает тот же срез. Молчащий страж хуже падающего, поэтому файл переведён на
+  модуль-владельца целиком. `test_supersedes` патчил `KNOWLEDGE_DIR` в собственной фикстуре на
+  `tmp_path`, минуя autouse из conftest, — после выноса `attach_corrections` читал бы боевую базу
+  вместо временной, и поправка просто не находилась бы.
+
+### Notes
+
+- `tests/conftest.py`: новый модуль внесён в список держателей СВОИХ `KNOWLEDGE_DIR`/`PROJECTS` —
+  третий случай того же класса после `maintenance` и `handlers_reports`.
+- Из донора убраны шесть импортов, осиротевших после выноса (`ContextVar`, `ResourceLink`,
+  `make_preview`, `superseded_by`, `extract_snippets`, `extract_errors`): проверено, что снаружи
+  к ним не обращаются. Прочие неиспользуемые импорты были такими и до разреза — не трогали.
+- Тестов 1286 → 1288 без единого нового файла тестов: `test_no_blocking_calls` параметризован по
+  модулям пакета, и новый модуль сам попал под сторожа `to_thread`.
+
 ## v1.82.0 — 2026-09-14
 
 Живая карточка: короткая явная цель находит памятку, а вердикт живой проверки хранится по каждой цитате, а не одним слотом на статью.

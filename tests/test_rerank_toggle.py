@@ -7,7 +7,11 @@
 """
 import asyncio
 
-import memory_compiler.handlers as H
+# ⚠️ Модуль-ВЛАДЕЛЕЦ, а не handlers: _rerank_async и RERANK_ENABLED уехали в
+# handlers_search (v1.83.0). Патч на handlers связал бы значение, которого
+# _rerank_async уже не читает, — и два теста ниже зеленели бы вхолостую
+# (дефолт и так False, а fallback при False возвращает тот же срез).
+import memory_compiler.handlers_search as H
 import memory_compiler.search as S
 
 

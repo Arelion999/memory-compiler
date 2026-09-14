@@ -28,6 +28,12 @@ from memory_compiler import handlers, storage
 def proj(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(handlers, "KNOWLEDGE_DIR", tmp_path)
+    # ⚠️ У файла СВОЯ фикстура на tmp_path, а не autouse knowledge_dir из conftest,
+    # поэтому новый модуль надо патчить здесь же: attach_corrections уехал в
+    # handlers_search (v1.83.0) и со своим KNOWLEDGE_DIR читал бы боевую базу —
+    # молча, поправка просто не нашлась бы.
+    import memory_compiler.handlers_search as handlers_search
+    monkeypatch.setattr(handlers_search, "KNOWLEDGE_DIR", tmp_path)
     import memory_compiler.config as cfg
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", tmp_path)
     (tmp_path / "demo").mkdir()
