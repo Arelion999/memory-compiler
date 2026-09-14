@@ -9,8 +9,12 @@ from memory_compiler import reflexes as rx
 @pytest.mark.parametrize("command", [
     "/system identity print", "docker ps", "stat /volume1/knowledge",
     "curl -I http://192.0.2.10:8765/api/health", "systemctl status nginx",
+    "cat /etc/hostname", "ssh -p 2222 node ls",
 ])
 def test_read_only_commands_are_accepted(command):
+    """Позитивный контроль: без него «отвергнуто» проходило бы и на сломанном приёме.
+    `ssh -p 2222` — порт через пробел, это не пароль. Объединяет прежний
+    test_stable_commands_still_accepted (ревью 14.09.2026: дублировал этот набор)."""
     assert rx.verification_problem("команда", command) is None
 
 
@@ -258,3 +262,154 @@ async def test_verify_parameter_declared_in_schemas():
     schemas = {t.name: t.inputSchema for t in await tools.list_tools()}
     for name in ("save_lesson", "edit_article"):
         assert "verify" in schemas[name]["properties"], name
+
+
+@pytest.mark.parametrize("command,reason", [
+    ("uptime", "читающий глагол"),
+    ("cat /tmp/report.txt", "эфемерный путь"),
+    ("cat /proc/meminfo", "эфемерный путь"),
+    ("curl -u admin:changeme-pass9 http://192.0.2.10/rest/system/resource", "логин с паролем"),
+    ("curl http://user:changeme-pass9@192.0.2.10/api", "логин с паролем"),
+    ("mysql -pchangemePass9 -e status", "логин с паролем"),
+    ("sshpass -p changemePass9 ssh node uptime", "логин с паролем"),
+    ("docker ps --filter token=changemePass9", "логин с паролем"),
+])
+def test_volatile_and_credential_commands_are_rejected(command, reason):
+    """Цитату исполняет агент, а раздел «## Проверка» пишется открытым текстом.
+
+    Эфемерный путь протухает к следующей команде и даёт stale на здоровом факте; логин с
+    паролем в цитате уехал бы в открытый текст статьи. Замер 14.09.2026: /tmp и счётчики —
+    самый частый вид негодного кандидата, креды нашлись в сотнях read-only фрагментов.
+    Причина проверяется дословно — иначе «отвергнуто» проходило бы и не по тому основанию."""
+    problem = rx.verification_problem("команда", command)
+    assert problem is not None and reason in problem
+
+
+def test_credentials_rejected_in_expected_value():
+    problem = rx.verification_problem("ожидается", "password=changeme-pass9")
+    assert problem is not None and "логин с паролем" in problem
+    assert rx.verification_problem("ожидается", "RB5009UG") is None
+
+
+# ─── регрессии ревью качества 14.09.2026: регистр, порты, uid:gid, PGPASSWORD, sudo -S ──
+@pytest.mark.parametrize("checker,args", [
+    (rx.verification_problem, ("команда", "Get-Content -Path C:/x")),
+    (rx.verification_problem, ("команда", "Test-NetConnection -Port 443")),
+    (rx.credential_problem, ("Select-String -Pattern error app.log",)),
+    (rx.credential_problem, ("Select-Object -Property Name",)),
+    (rx.credential_problem, ("Copy-Item a b -PassThru",)),
+    (rx.verification_problem, ("команда", "redis-cli -p6379 ping")),
+    (rx.verification_problem, ("команда", "psql -p5432 -c status")),
+    (rx.trigger_problem, ("error", "Get-Content -Path 'C:/x' : Cannot find path")),
+    (rx.credential_problem, ("docker run -u 1000:1000 alpine id",)),
+    (rx.credential_problem, ("sudo -s",)),
+], ids=["powershell-path", "powershell-port", "powershell-pattern", "powershell-property",
+        "powershell-passthru", "redis-port", "psql-port",
+        "trigger-powershell-path", "docker-uid-gid", "sudo-shell"])
+def test_powershell_ports_and_uid_are_not_credentials(checker, args):
+    """Позитивный контроль к находкам I-1/I-2 ревью качества (регрессия задачи 2).
+
+    Общий `re.IGNORECASE` у кредов ловил параметры PowerShell (`-Path`, `-Port`,
+    `-PassThru`, `-Property`) — дословная ошибка PowerShell как триггер отвергалась с
+    причиной про пароль, хотя до задачи 2 принималась. «-p»/«-u» без разбора числового
+    аргумента путали порт redis/psql и uid:gid `docker run` с паролем."""
+    assert checker(*args) is None
+
+
+@pytest.mark.parametrize("value", [
+    # раунд 1 (v1.78.x): \b не срабатывает после словного символа, дефис в X-API-KEY,
+    # Authorization Bearer/Basic и sudo -S не проверялись вовсе.
+    "PGPASSWORD=changeme-pass9 psql -h 192.0.2.10",
+    "MYSQL_PWD=changeme-pass9 mysql",
+    "access_token=changeme-pass9",
+    "curl -H X-API-KEY=changeme-pass9 http://192.0.2.10/",
+    "Authorization: Bearer changeme-pass9-token",
+    "Authorization: Basic Y2hhbmdlbWU=",
+    "printf changeme-pass9 | sudo -S systemctl status nginx",
+    "--password=changeme-pass9",
+    "-p=changeme-pass9",
+    "curl -I http://192.0.2.10/health?token=changeme-pass9",
+    # раунд 2 (ревью 14.09.2026)
+    "DB_PASS=changemePass9 docker compose ps",              # п.2 pass= / *_PASS=
+    "MYSQL_PASS=changemePass9 mysql",                       # п.2
+    "pass = changemePass9",                                 # п.2 пробелы вокруг «=»
+    "New-LocalUser -Name x -Password changemePass9",        # п.3 -Password <значение>
+    "vrunner --db-user admin --db-pwd changemePass9",       # п.3 --pwd <значение>
+    "wget --password changemePass9 https://h/x",            # п.3 --password <значение>
+    "rac infobase summary list --cluster-pwd=changemePass9",  # п.3 --*-pwd= (без регрессии)
+    "Authorization: Token changemePass9",                   # п.8 Token
+    "Authorization: ApiKey changemePass9",                  # п.8 ApiKey
+    'curl -H "X-API-Key: changemePass9" https://h',          # п.9 заголовок-секрет
+    'curl -H "X-Auth-Token: changemePass9" https://h',       # п.9
+    'curl -H "PRIVATE-TOKEN: changemePass9" https://h',      # п.9
+    "curl --user admin:changemePass9 https://h",             # п.10 --user u:p
+    "curl -uadmin:changemePass9 https://h",                  # п.10 -uu:p слитно
+    "mysql -pchangemePass9 -e status",                       # п.6 слитный пароль сохранён
+])
+def test_new_credential_patterns_are_rejected(value):
+    """Явные креды в цитате/триггере отвергаются с причиной про логин с паролем.
+
+    Раунд 1 (v1.78.x) и раунд 2 (ревью 14.09.2026: pass= / *_PASS=, -Password/--pwd через
+    пробел, заголовки -H, --user / -uu:p слитно, Authorization Token/ApiKey). Причина
+    проверяется ДОСЛОВНО — иначе «не None» проходило бы и не по тому основанию."""
+    problem = rx.credential_problem(value)
+    assert problem is not None and "логин с паролем" in problem
+
+
+def test_trigger_catches_password_piped_into_sudo():
+    """`sudo -S` читает пароль со stdin — конвейер перед ним несёт креды в чистом виде,
+    даже без цепочек: у `trigger_problem` (в отличие от `verification_problem`) проверки
+    цепочек нет вовсе, и без явного правила на `sudo -S` строка проезжала бы в триггер."""
+    problem = rx.trigger_problem(
+        "error", "printf changeme-pass9 | sudo -S systemctl status nginx")
+    assert problem is not None and "логин с паролем" in problem
+
+
+@pytest.mark.parametrize("value", [
+    "date -u +%H:%M:%S",                                     # п.5 date -u + формат времени
+    "docker exec x date -u +'%H:%M:%S'",                     # п.5
+    "date -u",                                               # п.5
+    "ls -plah /volume1",                                     # п.6 пучок коротких опций
+    "ss -plnt",                                              # п.6
+    "netstat -plnt",                                         # п.6
+    "find /etc/nginx -name x.conf -path y -prune -print",   # п.6 имена опций -p*
+    "openssl req -pwfile /tmp/p -new",                       # п.6 -pwfile
+    "gcc -pthread -o x x.c",                                 # п.6
+    "openssl x509 -in cert.pem -noout -pubkey",             # п.6
+    "docker run -p8080:80 nginx",                            # п.6 порт-маппинг -p8080:80
+    "PGPASSWORD=$DB_PASS psql -h 192.0.2.10 -c status",     # п.7 ссылка на переменную
+    'curl -H "Authorization: Bearer $TOKEN" https://192.0.2.10/api',  # п.7 Bearer $VAR
+    'curl -u "admin:$API_PASS" https://192.0.2.10/rest',    # п.7 -u user:$VAR
+    'curl -H "X-API-Key: $KEY" https://h',                   # п.7 + п.9 заголовок с $VAR
+    "TOKEN=%MYTOKEN% && echo x",                             # п.7 значение %VAR%
+    "docker login --password-stdin -u admin",              # п.3 --password-stdin
+    "psql --no-password -h 192.0.2.10 -c status",          # п.3 --no-password
+    "Set-LocalUser -Name x -PasswordNeverExpires 1",       # п.3 -PasswordNeverExpires
+    "New-LocalUser -Name x -Password $pw",                 # п.3 -Password $var
+    "New-LocalUser -Name x -Password (Read-Host -AsSecureString)",  # п.3 -Password (...)
+    "bypass=1",                                             # п.2 bypass=
+    "systemctl show nginx | grep bypass",                  # п.2 слово bypass в тексте
+    "surpass=1",                                            # п.2 surpass=
+    "curl --no-pass=1 http://h",                            # п.2 --no-pass=
+    "OLDPWD=/tmp cd -",                                     # п.4 OLDPWD= (буква перед pwd)
+    'curl -H "Content-Type: application/json" https://h',   # п.9 обычный заголовок
+])
+def test_round2_false_positives_are_not_credentials(value):
+    """Ложные отказы, закрытые ревью 14.09.2026: имена/пучки опций `-p*`, `date -u +фмт`,
+    ссылки на переменные ($VAR/%VAR%), пробельные флаги PowerShell, `bypass`/`surpass`/
+    `--no-pass`, обычные заголовки. Позитивный контроль к new_credential_patterns: без
+    него правило, режущее всё подряд, тоже прошло бы тесты на отказ."""
+    assert rx.credential_problem(value) is None
+
+
+def test_credential_regex_has_no_catastrophic_backtracking():
+    """п.4: URL-ветка `://[^\\s/@]+:[^\\s/@]+@` на строке двоеточий без «@» давала
+    катастрофический бэктрекинг (50 КБ ≈ 7 с до правки; classes `[^\\s/@:]*` и `[^\\s/@]+`
+    больше не пересекаются по «:»). credential_problem публичная и длину не режет. Порог
+    0.5 с ловит именно катастрофу (секунды): реальный замер после правки — единицы мс."""
+    import time
+    for payload in ("://" + "a:" * 25000, "://" + ":" * 50000, ":" * 50000,
+                    "-p" + "1" * 50000, "-H " + "token" * 10000, "x" * 50000):
+        t0 = time.perf_counter()
+        rx.credential_problem(payload)
+        assert time.perf_counter() - t0 < 0.5, f"катастрофический бэктрекинг на {payload[:12]!r}"

@@ -70,3 +70,48 @@ def test_schemas_declare_triggers_and_edit_content_optional():
         assert spec["type"] == "array" and spec["items"] == {"type": "string"}
         assert "ошибка:" in spec["description"]
     assert "content" not in tools_by_name["edit_article"].inputSchema["required"]
+
+
+def test_trigger_with_credentials_is_rejected(knowledge_dir):
+    """Раздел «## Рефлексы» пишется открытым текстом И в секретной статье (v1.78.0).
+
+    Дословная строка ошибки легко несёт пароль: «sshpass -p … failed». Проверялись только
+    длина и общность строки, на секреты — ничего (техдолг фазы 3)."""
+    res = asyncio.run(save_lesson("Триггер с паролем", "Тело.", "testproj",
+                                  triggers=["ошибка: sshpass -p changemePass9 failed"]))
+    text = _read(knowledge_dir, "testproj", "триггер*.md")
+    assert "changemePass9" not in text
+    assert "не принят" in res[0].text
+
+
+def test_target_trigger_into_secret_still_needs_no_key(knowledge_dir, monkeypatch):
+    """Позитивный контроль к предыдущему: инвариант v1.78.0 цел."""
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "")
+    path = knowledge_dir / "testproj" / "secret_node.md"
+    path.write_text("# Доступы 192.0.2.10\n\n**Дата:** 2026-01-01 10:00\n**Секрет:** да\n\n"
+                    "ENC:abcdef\n", encoding="utf-8")
+    res = asyncio.run(edit_article("testproj", "secret_node.md",
+                                   triggers=["цель: 192.0.2.10"]))
+    assert "❌" not in res[0].text
+    assert reflexes.parse_triggers(path.read_text(encoding="utf-8")) == [
+        ("target", "192.0.2.10")]
+
+
+def test_triggers_and_verify_masked_in_audit_log(knowledge_dir):
+    """triggers/verify маскируются в аудит-логе до длины (ревью 14.09.2026).
+
+    Отвергнутая цитата проверки или триггер может нести пароль (`sshpass -p …`, `-u u:p`),
+    а `_audit.log` коммитится в git базы — до правки эти поля писались открытым текстом.
+    Ни аналитика (`analytics.quality`), ни отчёты (`handlers_reports.knowledge_gap`
+    читает query/topic/question/error_text) эти поля не читают, поэтому маскировка их
+    не ломает. Позитивный контроль: запись о вызове и немаскируемые поля остаются."""
+    from memory_compiler import storage
+    storage.audit_log("save_lesson",
+                      {"project": "testproj", "topic": "роутер KHV",
+                       "triggers": ["ошибка: sshpass -p changemePass9 failed"],
+                       "verify": ["/system identity print => changemePass9"]}, 42)
+    text = (knowledge_dir / "_audit.log").read_text(encoding="utf-8")
+    assert "changemePass9" not in text                 # пароль не утёк в файл
+    assert '"tool": "save_lesson"' in text             # запись о вызове есть
+    assert "роутер KHV" in text                        # немаскируемые поля проходят
+    assert "chars]" in text                            # triggers/verify -> только длина

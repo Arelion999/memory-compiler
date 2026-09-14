@@ -56,6 +56,18 @@ def test_reflex_endpoint_returns_only_rendered_memos(knowledge_dir, monkeypatch)
         assert f'"{f}")' in data["text"]
 
 
+def test_reflex_memo_exposes_source_targets(knowledge_dir, monkeypatch):
+    """Поле targets доезжает до хука: as_dict его включает, endpoint отдаёт как есть."""
+    monkeypatch.setattr(reflexes, "REFLEX_RESCAN_SEC", 0)
+    reflexes.invalidate()
+    (knowledge_dir / "testproj" / "node.md").write_text(
+        "# Узел A\n\n**Дата:** 2026-09-13\n\n## Записи\n\n### 2026-09-13\nтекст\n\n"
+        "## Рефлексы\n- цель: node-demo\n", encoding="utf-8")
+    code, data = _call(JsonRequest({"kind": "target", "text": ["node-demo", "192.0.2.50"]}))
+    assert code == 200
+    assert data["memos"][0]["targets"] == ["node-demo"]
+
+
 def test_reflex_endpoint_rejects_bad_input():
     assert _call(JsonRequest(raw="{не json"))[0] == 400
     assert _call(JsonRequest({"kind": "что-то", "text": "x"}))[0] == 400

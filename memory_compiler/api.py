@@ -29,7 +29,7 @@ from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, git_gc, read_audit_log,
     decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
     make_preview, tracking_timeline, _parse_frontmatter,
-    article_title_tags, parse_meta_value,
+    article_title_tags, parse_meta_value, normalize_project,
 )
 from memory_compiler.handlers import (
     compile as _compile, save_lesson, delete_article, lint as _lint, ask_sources,
@@ -234,21 +234,29 @@ async def web_probe(request: Request):
     # _maybe_decrypt_secret_lines (ревью 13.09.2026).
     if not MC_API_KEY or not _is_authed(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    target = data.get("target") if isinstance(data, dict) else None
+    # ⚠️ Цель приходит СТРОКОЙ ИЛИ СПИСКОМ (до 3): узел зовут именем ssh-соединения и
+    # адресом, а в теле команды бывают посторонние адреса — карточка нужна по любому из
+    # имён. Пусто / больше трёх / кривой уровень → 400. find_memos сам берёт первые 3.
+    raw = data.get("target") if isinstance(data, dict) else None
     level = data.get("level") if isinstance(data, dict) else None
-    if not isinstance(target, str) or not target.strip() or level not in PROBE_LEVELS:
+    targets = [t.strip() for t in (raw if isinstance(raw, list) else [raw])
+               if isinstance(t, str) and t.strip()]
+    if not targets or len(targets) > 3 or level not in PROBE_LEVELS:
         return JSONResponse({"error": "target and level required"}, status_code=400)
     project = data.get("project") if isinstance(data.get("project"), str) else ""
     file = data.get("file") if isinstance(data.get("file"), str) else ""
     if level == "reachable":
         # «Узел жив» — свойство цели, верно для всех статей про неё.
-        memos = await asyncio.to_thread(reflexes.find_memos, "target", target, "", None, 5)
+        memos = await asyncio.to_thread(reflexes.find_memos, "target", targets, "", None, 5)
         stamped = [f"{m.project}/{m.file}" for m in memos]
     elif project and file:
         # ⚠️ verified/stale относятся к КОНКРЕТНОМУ факту — статье, чью цитату исполнял хук.
         # По цели находятся и статьи, попавшие по адресу в заголовке (секреты с доступами):
         # штамп «проверено живой командой» на них означал бы, что их данные кто-то сверял.
-        stamped = [f"{project}/{file}"]
+        # ⚠️ Проект — в нижний регистр, как на MCP-пути: MCP-хендлеры пишут статьи под
+        # нормализованным проектом, а штамп кладётся по ключу project/file. Без приведения
+        # штамп «Infra/файл» лёг бы на фантомный ключ мимо настоящей статьи «infra/файл».
+        stamped = [f"{normalize_project(project)}/{file}"]
     else:
         return JSONResponse({"error": "verified/stale require project and file"},
                             status_code=400)
@@ -267,7 +275,8 @@ async def web_probe(request: Request):
         import memory_compiler.config as _cfg
         _cfg.save_article_meta()
     obs.get_logger("reflex").info(
-        "probe", extra={"level": level, "stamped": len(stamped), "target": target[:80]})
+        "probe", extra={"level": level, "stamped": len(stamped),
+                        "target": ", ".join(targets)[:80]})
     return JSONResponse({"stamped": stamped})
 
 

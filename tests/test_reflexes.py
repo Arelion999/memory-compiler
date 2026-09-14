@@ -255,6 +255,49 @@ def test_exclude_limit_and_render_budget(knowledge_dir, fresh):
     assert rx.render("target", [], "nas-main") == ""
 
 
+# ─── memo несёт цель-источник (v1.79.0, N1) ──────────────────────────────────
+def test_target_memo_carries_only_its_own_source_target(knowledge_dir, fresh):
+    """Корень критической находки: memo обязано знать, ПО КАКОЙ цели статья найдена.
+
+    Хук шлёт узел списком (имя ssh-соединения + адрес + посторонние адреса из тела
+    команды). Без поля targets он раскладывал цитату статьи про узел A под все цели и
+    ложно метил stale статью про узел B. Каждая статья несёт ТОЛЬКО свои цели-источники.
+    Позитивный контроль: без правки поле пустое/одинаковое — ассерты это ловят."""
+    _art(knowledge_dir, "testproj", "a.md", "Узел A",
+         "текст\n\n## Рефлексы\n- цель: node-demo")
+    _art(knowledge_dir, "testproj", "b.md", "Узел B",
+         "текст\n\n## Рефлексы\n- цель: 192.0.2.50")
+    memos = {m.file: m for m in
+             rx.find_memos("target", ["node-demo", "192.0.2.10", "192.0.2.50"])}
+    assert set(memos) == {"a.md", "b.md"}, memos
+    assert memos["a.md"].targets == ["node-demo"]
+    assert "192.0.2.50" not in memos["a.md"].targets
+    assert memos["b.md"].targets == ["192.0.2.50"]
+    assert "node-demo" not in memos["b.md"].targets
+
+
+def test_target_memo_via_title_carries_matched_address(knowledge_dir, fresh):
+    """Найдено по заголовку (адрес в title, без триггера) — в targets именно та цель,
+    по которой совпал заголовок, а не все запрошенные."""
+    _art(knowledge_dir, "testproj", "c.md", "Сервер 192.0.2.20 после переезда", "текст")
+    memos = rx.find_memos("target", ["node-demo", "192.0.2.20"])
+    assert [m.file for m in memos] == ["c.md"]
+    assert memos[0].via == "title"
+    assert memos[0].targets == ["192.0.2.20"]
+
+
+def test_error_and_file_memos_have_empty_targets(knowledge_dir, fresh):
+    """Каналы ошибки и файла к цели не относятся — targets пустой список."""
+    _art(knowledge_dir, "testproj", "e.md", "Ошибка SFTP",
+         "текст\n\n## Рефлексы\n- ошибка: Unable to start subsystem: sftp")
+    _art(knowledge_dir, "testproj", "f.md", "Файл ui.py",
+         "текст\n\n## Рефлексы\n- файл: memory_compiler/ui.py")
+    em = rx.find_memos("error", "Exit code 1\nUnable to start subsystem: sftp")
+    fm = rx.find_memos("file", r"C:\x\memory_compiler\ui.py")
+    assert [m.file for m in em] == ["e.md"] and em[0].targets == []
+    assert [m.file for m in fm] == ["f.md"] and fm[0].targets == []
+
+
 def test_rescan_waits_for_ttl_or_invalidate(knowledge_dir, monkeypatch):
     monkeypatch.setattr(rx, "REFLEX_RESCAN_SEC", 3600)
     rx.invalidate()

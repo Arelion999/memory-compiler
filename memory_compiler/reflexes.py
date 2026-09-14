@@ -35,7 +35,7 @@ import re
 import threading
 import time
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import memory_compiler.config as cfg
@@ -123,6 +123,9 @@ def trigger_problem(kind: str, value: str):
     if len(value.splitlines()) != 1 or any(
             ch != "\t" and unicodedata.category(ch)[0] == "C" for ch in value):
         return "значение — одна строка без управляющих символов"
+    problem = credential_problem(value)
+    if problem:
+        return problem
     norm = NORMALIZE[kind](value)
     if kind == "error" and len(norm) < MIN_ERROR_TRIGGER:
         return "слишком общая строка ошибки — нужна дословная строка подлиннее"
@@ -139,11 +142,80 @@ def trigger_problem(kind: str, value: str):
 # содержит и белое, и чёрное — отвергаем.
 VERIFY_VERBS = frozenset({
     "show", "print", "get", "export", "identity", "stat", "ls", "cat", "test",
-    "ping", "curl", "docker", "systemctl", "uptime", "version", "status", "head",
+    "ping", "curl", "docker", "systemctl", "version", "status", "head",
 })
 VERIFY_DENY = ("rm", "set", "add", "remove", "delete", "restart", "reboot", "reset",
                "write", "chmod", "chown", "mv", "cp", "kill", "shutdown", "format")
 _VERIFY_CHAIN_RE = re.compile(r"[;&|><`]|\$\(")
+
+# ⚠️ Цитата проверки и триггер рефлекса пишутся ОТКРЫТЫМ ТЕКСТОМ, в том числе в секретной
+# статье, а ставит их модель сама, без согласования с владельцем — поэтому логин с паролем,
+# токен и заголовок-секрет отсекаем здесь. Замер 14.09.2026: креды нашлись в сотнях
+# read-only фрагментов боевых команд, а формы *_PASS= / -Password / -H проходили насквозь.
+#
+# Задача правила — отсекать ЯВНЫЕ креды, полнота не самоцель: ложный отказ read-only
+# команды вреднее пропуска, поэтому спорную форму трактуем в пользу пропуска.
+#
+# ⚠️ РЕГИСТР ТОЧЕЧНЫЙ, не глобальным флагом (ревью 14.09.2026): общий re.IGNORECASE ловил
+# параметры PowerShell «-P…» (`-Path`, `-Port`, `-Pattern`, `-Property`, `-PassThru`) —
+# дословная ошибка как триггер отвергалась «из-за пароля». Ветки «-p», «-u/--user» и
+# «sudo -S» строго строчные; регистронезависимость включена точечно через (?i:...).
+#
+# Ветки по порядку альтернатив:
+#  1. `-pПАРОЛЬ` слитно. Порт и порт-маппинг (`-p6379`, `-p8080:80`) отсечены (?!\d[\d:]*),
+#     имена и пучки опций из строчных букв (`-path`, `-print`, `-plah`, `-pwfile`) —
+#     (?![a-z]+). ⚠️ ПРИНЯТЫЙ КЛАСС ложных отказов: `-p` слитно с ЗАГЛАВНОЙ
+#     (`systemctl show -pActiveState`) неотличимо от `-pMyPass9`; лечится пробелом
+#     (`-p ActiveState` проходит). ⚠️ ПРИНЯТЫЙ ПРОПУСК: пароль из одних строчных букв
+#     (`-psecret`) и чисто числовой/портовый (`-p123456`) — обратная сторона исключений.
+#  2. `-Password ЗНАЧЕНИЕ` / `--pwd ЗНАЧЕНИЕ` через пробел (?i). Значение на `-`/`$`/`(`/`%`
+#     не берём — это `--password-stdin`, `-Password $pw`, `-Password (Read-Host …)`.
+#  3. `-u u:p`, `-uu:p` слитно, `--user u:p` / `--user=u:p`. uid:gid (`1000:1000`) и
+#     `date -u +%H:%M` отсечены; ссылка на переменную в имени или пароле — не кред.
+#  4. `КЛЮЧ=ЗНАЧЕНИЕ` (?i): password/passwd/pwd/secret/token/api-key плюс `pass` под
+#     защитой (?<![a-z-]) от `bypass`/`surpass`/`--no-pass` (при этом `DB_PASS=`,
+#     `MYSQL_PASS=` ловятся — перед ними «_» или начало). `pwd` под защитой (?<![a-z])
+#     БЕЗ дефиса: `--db-pwd=`, `--cluster-pwd=`, `MYSQL_PWD=` — реальные креды (замер
+#     14.09.2026: 55 в транскриптах, перед `pwd` дефис или «_»), а `OLDPWD=` не кред
+#     (перед `pwd` буква). Значение-переменная ($/%) — не кред.
+#  5. `sshpass`. 6. `sudo -S` (строчная `-s` — интерактивная оболочка, не чтение пароля).
+#  7. `Authorization: bearer|basic|token|apikey ЗНАЧЕНИЕ` (?i); значение-переменная — нет.
+#  8. Заголовок `-H|--header '…token|key|secret|pass…: ЗНАЧЕНИЕ'` (?i). Без `auth` в имени
+#     сознательно: он ловил `Authorization` и брал схему (`Bearer`) за значение мимо
+#     отсева переменных — а `Authorization`/`Proxy-Authorization` держит ветка 7,
+#     `X-Auth-Token` остаётся под `token`. Длина имени ограничена ({0,64}), иначе строка
+#     из слова-ключа без двоеточия давала квадратичный бэктрекинг между двумя [\w-]*.
+#  9. userinfo в URL `://user:pass@`. ⚠️ Классы `[^\s/@:]*` и `[^\s/@]+` НЕ пересекаются
+#     по «:» — иначе строка двоеточий давала катастрофический бэктрекинг (50 КБ ≈ 7 с,
+#     ревью 14.09.2026); `*` в первом классе ловит и `redis://:pass@` без имени.
+#
+# ⚠️ ЯВНЫЕ ПРОПУСКИ (форма редкая или конфликтная — кодом не ловим, кандидаты в lint):
+# голая `-P` (у ssh/scp это порт, у ipmitool — пароль, различить нечем), пара 1С
+# `/N … /P …`, `docker login`, `Authorization="…"` через «=» (PowerShell-хэштейбл),
+# `SECRET_KEY=`/`ACCESS_KEY=` (нет «=» вплотную к слову secret), `-pПАРОЛЬ` из одних цифр,
+# голый `--db-pass=` через дефис (дефис отдан контролю `--no-pass`; `--db-pwd=`/`--password`
+# ловятся), именованные `-u user:group` (`www-data:www-data` неотличимо от логин:пароль —
+# в транскриптах идентичных пар нет).
+_CREDENTIAL_RE = re.compile(
+    r"(?:^|[\s=:])-p(?!\d[\d:]*(?:\s|$))(?![a-z]+(?:\s|$))\S{3,}"
+    r"|(?i:(?:^|\s)-{1,2}[\w-]*(?:password|passwd|pwd)\s+(?![-$(%])\S+)"
+    r"""|(?:^|\s)(?:-u\s*|--user[\s=]+)["']?(?![-+$%])(?!\d+:\d+(?:[\s"']|$))[^\s:"']+:(?![$%])[^\s"']+"""
+    r"|(?i:(?:(?<![a-z-])pass|password|passwd|(?<![a-z])pwd|secret|token|api[_-]?key)\s*=\s*(?![$%])\S+)"
+    r"|(?i:\bsshpass\b)"
+    r"|\bsudo\s+-S\b"
+    r"|(?i:authorization\s*:\s*(?:bearer|basic|token|apikey)\s+(?![$%])\S+)"
+    r"""|(?i:(?:-H|--header)\s*["']?[\w-]{0,64}(?:token|key|secret|pass)[\w-]{0,64}\s*:\s*(?![$%])[^\s"']+)"""
+    r"|://[^\s/@:]*:[^\s/@]+@")
+# Эфемерный путь протухает к следующей команде: факт получит stale ни за что.
+_VOLATILE_PATH_RE = re.compile(r"(?:^|\s)/(?:tmp|proc|run|dev/shm)(?:/|\s|$)", re.IGNORECASE)
+
+
+def credential_problem(value: str):
+    """Почему строку нельзя писать открытым текстом, или None."""
+    if _CREDENTIAL_RE.search(value or ""):
+        return ("в строке логин с паролем или токен, а раздел пишется открытым текстом "
+                "(в том числе в секретной статье)")
+    return None
 
 
 def verification_problem(field: str, value: str):
@@ -153,10 +225,16 @@ def verification_problem(field: str, value: str):
     if len(value.splitlines()) != 1 or any(
             ch != "\t" and unicodedata.category(ch)[0] == "C" for ch in value):
         return "значение — одна строка без управляющих символов"
+    problem = credential_problem(value)
+    if problem:
+        return problem
     if field != "команда":
         return None
     if _VERIFY_CHAIN_RE.search(value):
         return "команда проверки — одна, без цепочек, конвейеров и перенаправлений"
+    if _VOLATILE_PATH_RE.search(value):
+        return ("команда читает эфемерный путь (/tmp, /proc, /run, /dev/shm): такой факт "
+                "протухнет к следующей проверке")
     # ⚠️ Режем и по дефису со слэшем, а не только по пробелам: «reset-configuration» не
     # совпадает с «reset» по точному сравнению слов, и сброс конфигурации RouterOS проезжал
     # как годная цитата за любым читающим глаголом (ревью 13.09.2026). Ложный отказ на
@@ -449,6 +527,12 @@ class Memo:
     snippet: str
     verify: list    # [(команда, ожидается)] из «## Проверка»
     probe: dict     # {"date": …, "level": reachable|verified|stale} или {}
+    # ⚠️ Цели-ИСТОЧНИКИ, по которым статья релевантна (v1.79.0, N1): ИСХОДНЫЕ строки из
+    # запроса (как прислал хук), не нормализованные. Хук шлёт узел списком (имя соединения
+    # + адрес + посторонние адреса из команды) и обязан знать, какая статья по какой цели
+    # найдена, — иначе цитату статьи про узел A применит к узлу B. Пусто для error/file.
+    # default_factory — сеть безопасности для любого будущего позиционного Memo(...).
+    targets: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -649,31 +733,48 @@ def find_memos(kind: str, text, cwd: str = "", exclude=None, limit: int = MEMO_L
     excluded = set(exclude or [])
     found = {}
 
-    def consider(art, rank, via):
+    def consider(art, rank, via, tgts):
         if art.key not in excluded and (art.key not in found or rank < found[art.key][0]):
-            found[art.key] = (rank, via, art)
+            found[art.key] = (rank, via, art, tgts)
 
     articles = list(refresh_index().articles.values())
     if kind == "error":
         joined = "\n".join(normalize_error(line) for t in texts for line in error_key_lines(t))
         for art in articles:
             if any(k == "error" and v in joined for k, v in art.triggers):
-                consider(art, 0, "trigger")
+                consider(art, 0, "trigger", [])
     elif kind == "target":
-        wanted = [w for w in (normalize_target(t) for t in texts)
-                  if len(w) >= MIN_TARGET and w not in TARGET_STOP]
-        titled = [w for w in wanted if _ADDRESS_LIKE_RE.search(w)]
+        wanted = {w for w in (normalize_target(t) for t in texts)
+                  if len(w) >= MIN_TARGET and w not in TARGET_STOP}
+        titled = {w for w in wanted if _ADDRESS_LIKE_RE.search(w)}
+
+        def sources(matched):
+            # ИСХОДНЫЕ строки запроса (как прислал хук), в порядке text и без дублей по
+            # нормализации: хук нормализует их своим способом и разложит по своим слотам.
+            out, seen = [], set()
+            for t in texts:
+                w = normalize_target(t)
+                if w in matched and w not in seen:
+                    seen.add(w)
+                    out.append(t)
+            return out
+
         for art in articles:
-            if any(k == "target" and v in wanted for k, v in art.triggers):
-                consider(art, 0, "trigger")
-            elif any(_token_in(w, art.title_norm) for w in titled):
-                consider(art, 1, "title")
+            # Побеждает канал с меньшим rank: триггер (0) бьёт заголовок (1). Цели берутся
+            # ТОГО канала, который сработал, — elif не смешивает их для одной статьи.
+            trig = {v for k, v in art.triggers if k == "target" and v in wanted}
+            if trig:
+                consider(art, 0, "trigger", sources(trig))
+            else:
+                titl = {w for w in titled if _token_in(w, art.title_norm)}
+                if titl:
+                    consider(art, 1, "title", sources(titl))
     else:
         paths = [normalize_file(t) for t in texts]
         for art in articles:
             if any(k == "file" and (p == v or p.endswith("/" + v))
                    for k, v in art.triggers for p in paths):
-                consider(art, 0, "trigger")
+                consider(art, 0, "trigger", [])
 
     # Порядок: канал → статьи своего проекта → (для цели) секрет-указатель на доступы
     # → новее. Секрет выше даты сознательно: к цели нужнее всего доступы, а не новости.
@@ -682,8 +783,8 @@ def find_memos(kind: str, text, cwd: str = "", exclude=None, limit: int = MEMO_L
     ranked.sort(key=lambda item: (item[0], item[2].project != home,
                                   not (kind == "target" and item[2].secret)))
     return [Memo(a.project, a.file, a.title, a.date, a.verified, a.secret, via, a.snippet,
-                 a.verify, probe_stamp_of(a.key))
-            for _rank, via, a in ranked[:max(1, limit)]]
+                 a.verify, probe_stamp_of(a.key), tgts)
+            for _rank, via, a, tgts in ranked[:max(1, limit)]]
 
 
 def describe(kind: str, text) -> str:

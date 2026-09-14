@@ -162,3 +162,71 @@ def test_reflex_memo_carries_verification_quote(knowledge_dir, monkeypatch):
     assert data["memos"], data
     # В JSON кортежи пар становятся списками.
     assert data["memos"][0]["verify"] == [["/system identity print", "KHV-GW"]]
+
+
+# ─── цель списком и нижний регистр проекта (v1.79.0, N3 / M6) ──────────────────
+NODE_ARTICLE = ("# Узел NODE\n\n**Дата:** 2026-09-13\n\n## Рефлексы\n- цель: node-demo\n\n"
+                "## Записи\n\n### 2026-09-13\nработает\n")
+
+
+def test_probe_accepts_target_list(knowledge_dir, monkeypatch):
+    """Узел зовут именем ssh-соединения и адресом — карточка обязана найти статью в обоих.
+
+    Хук шлёт цель СПИСКОМ (плюс в теле команды бывают посторонние адреса), reachable
+    штампует статьи любой из целей."""
+    import memory_compiler.api as api
+    monkeypatch.setattr(reflexes, "REFLEX_RESCAN_SEC", 0)
+    reflexes.invalidate()
+    pdir = knowledge_dir / "testproj"
+    (pdir / "router.md").write_text(ARTICLE, encoding="utf-8")     # цель: 192.0.2.10
+    (pdir / "node.md").write_text(NODE_ARTICLE, encoding="utf-8")  # цель: node-demo
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    code, data = _probe({"target": ["node-demo", "192.0.2.10"], "level": "reachable"},
+                        headers={"authorization": "Bearer k"})
+    assert code == 200
+    assert sorted(data["stamped"]) == ["testproj/node.md", "testproj/router.md"], data
+
+
+def test_probe_rejects_too_many_or_broken_targets(knowledge_dir, monkeypatch):
+    """Пусто / больше трёх / битый элемент / неверный level → 400 (после авторизации)."""
+    import memory_compiler.api as api
+    _router(knowledge_dir, monkeypatch)
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    for bad in ([], ["a", "b", "c", "d"], [""], [123], "   ", None):
+        code, _ = _probe({"target": bad, "level": "reachable"},
+                         headers={"authorization": "Bearer k"})
+        assert code == 400, bad
+    # валидная цель, но чужой уровень — тоже 400
+    code, _ = _probe({"target": ["192.0.2.10"], "level": "нет"},
+                     headers={"authorization": "Bearer k"})
+    assert code == 400
+
+
+def test_probe_string_target_still_works(knowledge_dir, monkeypatch):
+    """Обратная совместимость: одиночная строка принимается как и раньше."""
+    import memory_compiler.api as api
+    _router(knowledge_dir, monkeypatch)
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    code, data = _probe({"target": "192.0.2.10", "level": "reachable"},
+                        headers={"authorization": "Bearer k"})
+    assert code == 200
+    assert data["stamped"] == ["testproj/router.md"], data
+
+
+def test_probe_normalizes_project_case(knowledge_dir, monkeypatch):
+    """verified с project='Infra' штампует статью infra/... (нижний регистр).
+
+    Сайдкар штампа кладётся по ключу project/file, а MCP-хендлеры пишут статьи под
+    нормализованным (нижним) проектом. Без приведения штамп лёг бы на фантомный ключ
+    Infra/router.md мимо настоящей статьи infra/router.md."""
+    import memory_compiler.api as api
+    monkeypatch.setattr(reflexes, "REFLEX_RESCAN_SEC", 0)
+    reflexes.invalidate()
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    code, data = _probe({"target": "192.0.2.10", "level": "verified",
+                         "project": "Infra", "file": "router.md"},
+                        headers={"authorization": "Bearer k"})
+    assert code == 200
+    assert data["stamped"] == ["infra/router.md"], data
+    assert cfg.article_meta["infra/router.md"]["last_probe"]["level"] == "verified"
+    assert "Infra/router.md" not in cfg.article_meta   # фантомный ключ не создан
