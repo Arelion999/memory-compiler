@@ -436,6 +436,28 @@ async def warm_models() -> float:
         return 0.0
 
 
+def _mcp_session_count(request) -> int | None:
+    """Сколько stateful-сессий Streamable HTTP сейчас живо. None = мерить нечем.
+
+    ⚠️ ОПОРА НА ПРИВАТНОЕ ПОЛЕ SDK (родня зонда extensions в tools.py). У
+    `StreamableHTTPSessionManager` публичных атрибутов ровно два — `handle_request`
+    и `run`; реестра живых сессий среди них нет, он лежит в
+    `_server_instances: dict[str, StreamableHTTPServerTransport]`. Отсюда защитное
+    чтение и отдельный сторож tests/test_mcp_sessions.py: переименуют поле —
+    упадёт тест, а не метрика.
+
+    ⚠️ «Нет данных» — это None, а НЕ 0. Ноль означал бы «сессий не осталось», то
+    есть ровно тот ответ, ради опровержения которого метрика и заводится: исчезнувшее
+    поле выглядело бы как здоровый сервер без сирот.
+    """
+    state = getattr(getattr(request, "app", None), "state", None)
+    manager = getattr(state, "mcp_session_manager", None)
+    if manager is None:
+        return None
+    registry = getattr(manager, "_server_instances", None)
+    return len(registry) if isinstance(registry, dict) else None
+
+
 async def web_health(request: Request):
     ix = get_index()
     # models_ready отдаётся ПУБЛИЧНО (как status/version/documents): это состояние
@@ -446,9 +468,17 @@ async def web_health(request: Request):
     # Очередь эмбеддингов — ПУБЛИЧНО, рядом с models_ready и по той же причине:
     # без неё «статья сохранена, но семантикой не находится» выглядит как поломка
     # поиска, хотя вектор просто ещё считается (v1.59.0, отложенные эмбеддинги).
+    # mcp_sessions — ПУБЛИЧНО, по тому же основанию, что models_ready и embed_pending:
+    # это состояние сервера, а не сведения о содержимом базы (ни имён проектов, ни
+    # статей число сессий не раскрывает). У Streamable HTTP сессии stateful, а
+    # session_idle_timeout в пине mcp[cli]==1.29.1 по умолчанию None — простаивающие
+    # не истекают вообще, и «копятся ли сироты» нечем было измерить: SDK пишет о
+    # рождении транспорта на уровне INFO, а логгер `mcp` у нас намеренно на WARNING
+    # (obs.py — там же рождаются транспортные -32602/-32001, поднятие зальёт лог шумом).
     payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count(),
                "models_ready": _search_mod.embed_model_ready(),
-               "embed_pending": embed_queue.pending()}
+               "embed_pending": embed_queue.pending(),
+               "mcp_sessions": _mcp_session_count(request)}
     # Детали (имена проектов = клиентов, размеры, usage-счётчики) — только под
     # настроенным auth. Публичный /api/health нужен Docker healthcheck (без токена),
     # поэтому он отдаёт лишь status/version/documents, без разведданных о базе.
@@ -1158,7 +1188,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     if MC_API_KEY:
         middleware.append(Middleware(AuthMiddleware))
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Route("/login", endpoint=web_login, methods=["GET", "POST"]),
             Route("/api/auth/login", endpoint=web_login, methods=["POST"]),
@@ -1192,3 +1222,8 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         middleware=middleware,
         lifespan=lifespan,
     )
+    # Менеджер сессий был локальной переменной фабрики, и web_health до него не
+    # дотягивался. Кладём в состояние приложения — эндпоинт читает его как
+    # request.app.state.mcp_session_manager (см. _mcp_session_count).
+    app.state.mcp_session_manager = session_manager
+    return app
