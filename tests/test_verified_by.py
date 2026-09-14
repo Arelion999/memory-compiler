@@ -15,12 +15,12 @@
 
 import pytest
 
-from memory_compiler import handlers, storage
+from memory_compiler import handlers, handlers_articles, storage
 
 
 @pytest.mark.asyncio
 async def test_verified_is_written_to_header(knowledge_dir, monkeypatch):
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "git_commit", lambda *a, **k: None)
     await handlers.save_lesson("Тема проверки", "Тело статьи.", "testproj",
                                verified="прогон pytest, 964 теста")
     art = next(p for p in (knowledge_dir / "testproj").glob("*.md")
@@ -32,7 +32,7 @@ async def test_verified_is_written_to_header(knowledge_dir, monkeypatch):
 @pytest.mark.asyncio
 async def test_header_still_parses_after_new_field(knowledge_dir, monkeypatch):
     """Главное: канон разбора шапки не должен сбиться из-за новой метки."""
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "git_commit", lambda *a, **k: None)
     await handlers.save_lesson("Разбор шапки", "Тело статьи.", "testproj",
                                tags=["альфа", "бета"], verified="живой вызов на проде")
     art = next(p for p in (knowledge_dir / "testproj").glob("*.md")
@@ -50,7 +50,7 @@ async def test_verified_does_not_leak_into_preview(knowledge_dir, monkeypatch):
     Без внесения в _HEADER_META_PREFIXES строка утекла бы в тело — и в выдачу
     поиска, и в ИИ-контексты, съедая бюджет ни за что.
     """
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "git_commit", lambda *a, **k: None)
     await handlers.save_lesson("Превью без метки", "Содержательная строка.",
                                "testproj", verified="curl к /api/health")
     art = next(p for p in (knowledge_dir / "testproj").glob("*.md")
@@ -63,7 +63,7 @@ async def test_verified_does_not_leak_into_preview(knowledge_dir, monkeypatch):
 @pytest.mark.asyncio
 async def test_field_is_optional(knowledge_dir, monkeypatch):
     """Позитивный контроль: без параметра статья прежняя, метки нет."""
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "git_commit", lambda *a, **k: None)
     await handlers.save_lesson("Без проверки", "Тело.", "testproj")
     art = next(p for p in (knowledge_dir / "testproj").glob("*.md")
                if p.name.startswith("без"))
@@ -74,7 +74,7 @@ async def test_field_is_optional(knowledge_dir, monkeypatch):
 async def test_lint_does_not_complain_about_new_field(knowledge_dir, monkeypatch):
     """Линт не должен считать новую метку дефектом — иначе выдача снова зарастёт
     шумом, из которого её только что вычистили (41 → 0 в v1.54.4)."""
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "git_commit", lambda *a, **k: None)
     await handlers.save_lesson("Линт и метка", "Тело статьи.", "testproj",
                                tags=["тест"], verified="прогон тестов")
     out = await handlers.lint("testproj", fix=False)

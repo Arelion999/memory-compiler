@@ -3,6 +3,7 @@ import asyncio
 
 import memory_compiler.config as cfg
 import memory_compiler.handlers as handlers_mod
+import memory_compiler.handlers_articles as articles_mod
 from memory_compiler import reflexes
 from memory_compiler.handlers import edit_article, finish_task, save_lesson
 from memory_compiler.tools import list_tools
@@ -30,7 +31,9 @@ def test_finish_task_passes_triggers(knowledge_dir):
 
 def test_edit_article_triggers_only_keeps_body_and_dependents(knowledge_dir, monkeypatch):
     calls = []
-    monkeypatch.setattr(handlers_mod, "mark_dependents", lambda *a, **k: calls.append(a) or 0)
+    # mark_dependents уехал в handlers_articles (v1.84.0) вместе с edit_article; патч на
+    # handlers перестал бы действовать (и упал бы AttributeError — имя из донора убрано).
+    monkeypatch.setattr(articles_mod, "mark_dependents", lambda *a, **k: calls.append(a) or 0)
     path = knowledge_dir / "testproj" / "test_article.md"
     before = path.read_text(encoding="utf-8")
     res = asyncio.run(edit_article("testproj", "test_article.md",

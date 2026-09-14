@@ -2,6 +2,43 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.84.0 — 2026-09-15
+
+Домен статей вынесен из `handlers.py` в отдельный модуль — четвёртый разрез тем же приёмом.
+
+### Changed
+
+- **`memory_compiler/handlers_articles.py` (1480 строк)** — запись и чтение статей:
+  save_lesson, edit_article, read_article, delete_article, контексты статьи (save_contexts,
+  context_gaps), справочные типы (save_runbook, get_runbook, save_decision, save_secret,
+  save_tracking, get_current, save_from_template, list_templates, save_compact), обратные
+  ссылки (backlinks) и приём извне (compile, ingest, import_obsidian, git_capture) — 30
+  функций, 6 констант. `handlers.py` 2488 → 1133 строк. Снаружи адреса не изменились:
+  `handlers` реэкспортирует все имена; `tools.py`, тесты и `handlers_reports` (тянет
+  `_validate_repo_path` отложенно) ходят через `handlers.<имя>`. Шов выбран транзитивным
+  замыканием связности: домен тянет наружу ровно один хелпер — `_cut_section_body` (нужен
+  ещё старт-контексту), он остаётся в `handlers` и импортируется в `context_gaps` отложенно.
+
+### Fixed
+
+- **Четыре теста патчили имена, уехавшие вместе с доменом, — иначе стали бы бесшумными
+  (урок v1.83.0, теперь ищется ПОЛНЫМ грепом).** `test_verified_by` (git_commit ×5),
+  `test_embed_queue`/`test_concurrency` (index_document/embed_document) экзёрсят save_lesson
+  и `_index_embed`: их git_commit и индексация резолвятся в новом модуле, патч на handlers
+  запускал бы РЕАЛЬНЫЙ git_commit в tmp. `test_reflex_triggers` патчил `mark_dependents` —
+  после чистки импортов это имя из донора убрано вовсе, и патч на handlers упал бы
+  AttributeError. Все переведены на модуль-владельца.
+
+### Notes
+
+- `tests/conftest.py`: новый модуль внесён в список держателей СВОИХ `KNOWLEDGE_DIR`/`PROJECTS`
+  — четвёртый случай класса после maintenance, handlers_reports, handlers_search.
+- Из донора убраны 27 импортов, осиротевших после выноса; проверено, что снаружи к ним не
+  обращаются (статическая проверка неопределённых имён + сравнение before/after). Прочие
+  неиспользуемые импорты были такими и до разреза — не трогали.
+- Тестов 1287 → 1289 без новых файлов тестов: `test_no_blocking_calls` параметризован по
+  модулям пакета, новый модуль сам попал под сторожа `to_thread`.
+
 ## v1.83.0 — 2026-09-15
 
 Поиск и ответы вынесены из `handlers.py` в отдельный модуль — третий разрез тем же приёмом.

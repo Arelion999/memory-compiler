@@ -129,9 +129,11 @@ def test_write_path_does_not_block_event_loop(knowledge_dir, monkeypatch):
     фоновая корутина тикает, пока save_lesson выполняет 'медленный' embed."""
     import time
     import memory_compiler.handlers as h
+    import memory_compiler.handlers_articles as ha
     # index — no-op; embed — 'тяжёлый' (0.5с). Оба вызываются внутри _index_embed → to_thread.
-    monkeypatch.setattr(h, "index_document", lambda *a, **k: None)
-    monkeypatch.setattr(h, "embed_document", lambda *a, **k: time.sleep(0.5))
+    # _index_embed уехал в handlers_articles (v1.84.0) — патчим там, не в handlers.
+    monkeypatch.setattr(ha, "index_document", lambda *a, **k: None)
+    monkeypatch.setattr(ha, "embed_document", lambda *a, **k: time.sleep(0.5))
 
     async def body():
         ticks = []

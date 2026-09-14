@@ -55,6 +55,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.maintenance as maintenance_mod
     import memory_compiler.handlers_reports as reports_mod
     import memory_compiler.handlers_search as search_handlers_mod
+    import memory_compiler.handlers_articles as articles_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -88,6 +89,11 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     # просто не окажется и фрагмент выйдет пустым.
     monkeypatch.setattr(search_handlers_mod, "KNOWLEDGE_DIR", knowledge_dir)
     monkeypatch.setattr(search_handlers_mod, "PROJECTS", ["testproj", "general"])
+    # ⚠️ handlers_articles (v1.84.0) — тот же класс четвёртый раз: запись статей уехала
+    # из handlers и держит СВОИ KNOWLEDGE_DIR/PROJECTS. Без этих строк save_lesson,
+    # edit_article, backlinks и context_gaps пишут/читают БОЕВУЮ базу вместо tmp.
+    monkeypatch.setattr(articles_mod, "KNOWLEDGE_DIR", knowledge_dir)
+    monkeypatch.setattr(articles_mod, "PROJECTS", ["testproj", "general"])
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)

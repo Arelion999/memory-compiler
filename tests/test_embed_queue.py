@@ -138,10 +138,10 @@ def test_embed_missing_queues_them(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_handler_path_does_not_wait_for_vector(monkeypatch):
     """Сквозная проверка: запись возвращается, не дожидаясь инференса."""
-    from memory_compiler import handlers
+    from memory_compiler import handlers, handlers_articles
 
     monkeypatch.setattr(embed_queue, "ASYNC_ENABLED", True)
-    monkeypatch.setattr(handlers, "index_document", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "index_document", lambda *a, **k: None)
     calls = []
     _fake_embed(monkeypatch, calls, delay=0.3)
 
@@ -157,13 +157,13 @@ async def test_handler_path_does_not_wait_for_vector(monkeypatch):
 @pytest.mark.asyncio
 async def test_sync_mode_still_waits(monkeypatch):
     """MC_EMBED_ASYNC=0 возвращает прежнее поведение — на нём стоят прочие тесты."""
-    from memory_compiler import handlers
+    from memory_compiler import handlers, handlers_articles
 
     monkeypatch.setattr(embed_queue, "ASYNC_ENABLED", False)
-    monkeypatch.setattr(handlers, "index_document", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_articles, "index_document", lambda *a, **k: None)
     calls = []
     _fake_embed(monkeypatch, calls, delay=0.1)
-    monkeypatch.setattr(handlers, "embed_document",
+    monkeypatch.setattr(handlers_articles, "embed_document",
                         __import__("memory_compiler.search", fromlist=["x"]).embed_document)
 
     await handlers._index_embed("текст", "b.md", "demo")
