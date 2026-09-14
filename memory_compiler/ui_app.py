@@ -101,6 +101,9 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     white-space: pre-wrap; word-break: break-word;
   }
   .diag { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  /* Маркер версии сервера (issue #3): виден глазом, чтобы отличить свежую вьюху
+     от старой из кэша. Тем же --muted, что и .diag, мелко, в подвале. */
+  .ver { margin-top: 10px; font-size: 11px; color: var(--muted); text-align: right; }
   .diag summary { cursor: pointer; }
   .back {
     font: inherit; font-size: 13px; cursor: pointer; color: var(--accent);
@@ -115,6 +118,7 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="root"><div class="empty">Ожидание результатов…</div></div>
+<div class="ver">memory-compiler v__MC_VERSION__</div>
 <script>
 (function () {
   "use strict";

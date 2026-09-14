@@ -59,8 +59,10 @@ def test_ui_resource_is_served_with_the_mime_the_client_declared():
 
 
 def test_ui_resource_returns_the_view_html():
+    from memory_compiler import config
     got = asyncio.run(read_resource(UI_SEARCH_RESOURCE))
-    assert got[0].content == SEARCH_VIEW_HTML
+    # Отдаётся вьюха с подставленной версией (issue #3), а не сырой шаблон.
+    assert got[0].content == SEARCH_VIEW_HTML.replace("__MC_VERSION__", config.VERSION)
     assert got[0].content.lstrip().startswith("<!DOCTYPE html>")
 
 
@@ -72,9 +74,10 @@ def test_ui_resource_uri_carries_server_version():
     from memory_compiler import config
     from memory_compiler.tools import UI_SEARCH_PATH
     assert UI_SEARCH_RESOURCE == f"{UI_SEARCH_PATH}?v={config.VERSION}"
+    served = SEARCH_VIEW_HTML.replace("__MC_VERSION__", config.VERSION)
     for uri in (UI_SEARCH_PATH, f"{UI_SEARCH_PATH}?v=0.0.0", UI_SEARCH_RESOURCE):
         got = asyncio.run(read_resource(uri))
-        assert got[0].content == SEARCH_VIEW_HTML, uri
+        assert got[0].content == served, uri
     other = asyncio.run(read_resource("ui://memory-compiler/other.html?v=1"))
     assert "❌" in other[0].content
 
@@ -342,3 +345,75 @@ def test_view_calls_the_predicate_before_rendering_diag():
     idx = SEARCH_VIEW_HTML.index("root.appendChild(renderDiag())")
     line_start = SEARCH_VIEW_HTML.rfind(chr(10), 0, idx)
     assert "if (" in SEARCH_VIEW_HTML[line_start:idx], "вызов обязан стоять под условием"
+
+
+# ─── Маркер версии в подвале + лог resources/read (issue #3) ─────────────────
+# После обновления сервера не было дешёвого способа проверить, забрал ли клиент
+# новую вьюху: три строки версий лежали только в КОММЕНТАРИЯХ JS, наружу не
+# рендерилось ничего, а read_resource молчал. Теперь версия видна строкой в
+# подвале (подстановка в read_resource, где config.VERSION под рукой), а сам
+# запрос вьюхи пишется в лог — как это делает call_tool.
+
+def test_view_template_carries_a_version_placeholder():
+    """Версия подставляется .replace() в read_resource: SEARCH_VIEW_HTML — raw-литерал
+    (f-строкой не сделать, экранировать все {} JS), поэтому в шаблоне плейсхолдер."""
+    assert "__MC_VERSION__" in SEARCH_VIEW_HTML
+
+
+def test_served_view_shows_server_version_and_no_placeholder():
+    from memory_compiler import config
+    html = asyncio.run(read_resource(UI_SEARCH_RESOURCE))[0].content
+    assert "__MC_VERSION__" not in html, "плейсхолдер не подставлен"
+    assert ("v" + config.VERSION) in html, "версия сервера не видна во вьюхе"
+
+
+def test_version_marker_is_visible_markup_not_a_js_comment():
+    """Суть issue #3: версию видно ГЛАЗОМ, а не в комментарии JS. Маркер лежит в
+    разметке подвала — ДО <script>, отдельным элементом."""
+    from memory_compiler import config
+    html = asyncio.run(read_resource(UI_SEARCH_RESOURCE))[0].content
+    before_script = html.split("<script>", 1)[0]
+    assert 'class="ver"' in before_script
+    assert ("v" + config.VERSION) in before_script, "маркер версии не в подвале разметки"
+
+
+def test_resources_read_is_logged_with_uri_and_mime():
+    """read_resource молчал: по логам нельзя было узнать, запрашивал ли клиент вьюху
+    и по какому URI. Логгер mc.* не пропагирует в root (propagate=False), поэтому
+    ловим handler'ом прямо на mc.resource."""
+    import logging
+    logger = logging.getLogger("mc.resource")
+    records, h = [], logging.Handler()
+    h.emit = lambda rec: records.append(rec)
+    logger.addHandler(h)
+    old = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        asyncio.run(read_resource(UI_SEARCH_RESOURCE))
+    finally:
+        logger.removeHandler(h)
+        logger.setLevel(old)
+    hits = [r for r in records if r.getMessage() == "resource read"]
+    assert hits, "resources/read не залогирован"
+    r = hits[-1]
+    assert "search-results" in getattr(r, "uri", ""), "в логе нет URI вьюхи"
+    assert getattr(r, "mime", None) == UI_MIME, "в логе нет MIME"
+
+
+def test_memory_scheme_read_is_also_logged():
+    """Логируется ЛЮБОЙ resources/read, не только вьюха: иначе вопрос «по какому URI
+    ходил клиент» остаётся без ответа для статей."""
+    import logging
+    logger = logging.getLogger("mc.resource")
+    records, h = [], logging.Handler()
+    h.emit = lambda rec: records.append(rec)
+    logger.addHandler(h)
+    old = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        asyncio.run(read_resource("memory://memory-compiler/нет-такой.md"))
+    finally:
+        logger.removeHandler(h)
+        logger.setLevel(old)
+    hits = [r for r in records if r.getMessage() == "resource read"]
+    assert hits and getattr(hits[-1], "uri", "").startswith("memory://")

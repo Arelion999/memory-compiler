@@ -944,12 +944,24 @@ async def read_resource(uri) -> list[ReadResourceContents]:
         return [ReadResourceContents(content=msg, mime_type=_RESOURCE_MIME)]
 
     uri_s = str(uri)
+    # resources/read молчал (issue #3): по логам нельзя было узнать, запрашивал ли клиент
+    # вьюху и по какому URI — единственный серверный след события «клиент перечитал вьюху».
+    # Пишем строкой, как call_tool: uri + mime. Работает даже если до отрисовки не дошло.
+    obs.new_request_id()
+    obs.get_logger("resource").info(
+        "resource read",
+        extra={"uri": uri_s, "mime": UI_MIME if uri_s.startswith(UI_SCHEME) else _RESOURCE_MIME},
+    )
     if uri_s.startswith(UI_SCHEME):
         # Вьюха MCP Apps. Отдаётся до всякой работы с базой: это статика, ни
         # проекта, ни файла тут нет, и путь в knowledge/ по ui:// не строится.
         from memory_compiler.ui_app import SEARCH_VIEW_HTML
         if uri_s.split("?", 1)[0] == UI_SEARCH_PATH:
-            return [ReadResourceContents(content=SEARCH_VIEW_HTML, mime_type=UI_MIME)]
+            # Версия подставляется ЗДЕСЬ, где config.VERSION под рукой: SEARCH_VIEW_HTML —
+            # raw-литерал (r\"\"\"), f-строкой его не сделать (пришлось бы экранировать все
+            # {} внутри JS), поэтому плейсхолдер + .replace() (issue #3).
+            html = SEARCH_VIEW_HTML.replace("__MC_VERSION__", config.VERSION)
+            return [ReadResourceContents(content=html, mime_type=UI_MIME)]
         return notice(f"❌ Неизвестный ui-ресурс: {uri_s}")
     if not uri_s.startswith(_RESOURCE_SCHEME):
         return notice(f"❌ Неподдерживаемый URI: {uri_s}")
