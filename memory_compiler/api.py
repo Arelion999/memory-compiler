@@ -245,6 +245,21 @@ async def web_probe(request: Request):
         return JSONResponse({"error": "target and level required"}, status_code=400)
     project = data.get("project") if isinstance(data.get("project"), str) else ""
     file = data.get("file") if isinstance(data.get("file"), str) else ""
+    # ⚠️ КОМАНДА ИСПОЛНЕННОЙ ЦИТАТЫ (v1.82.0) — необязательная: старый хук её не шлёт, а
+    # выкатывается он после сервера. Но если поле ЕСТЬ, оно обязано быть годным: ключ
+    # уходит в сайдкар и сверяется с цитатой статьи, поэтому чужой тип, пустая строка и
+    # строка длиннее цитаты (300 символов, как в verification_problem) — отказ, а не
+    # молчаливый откат к поведению без команды. `null` тоже отказ: «поле есть» и «поля
+    # нет» должны различаться явно, иначе сломанный хук чинил бы себя сам и незаметно.
+    # Проверка ДО ветки уровня: для reachable значение не нужно (probe_stamp его
+    # игнорирует — вердикт по цитате там не пишется), но кривое поле — всё равно ошибка.
+    command = None
+    if "command" in data:
+        raw_command = data["command"]
+        if not isinstance(raw_command, str) or not 1 <= len(raw_command.strip()) <= 300:
+            return JSONResponse({"error": "command must be a string of 1..300 chars"},
+                                status_code=400)
+        command = raw_command.strip()
     if level == "reachable":
         # «Узел жив» — свойство цели, верно для всех статей про неё.
         memos = await asyncio.to_thread(reflexes.find_memos, "target", targets, "", None, 5)
@@ -263,7 +278,8 @@ async def web_probe(request: Request):
     # ⚠️ В ответе — только статьи, где штамп реально лёг: reachable не затирает вердикт по
     # факту (config.probe_stamp, v1.81.1), и «проштамповано» не должно об этом врать — ни
     # хуку, ни структурному логу ниже.
-    stamped = [key for key in candidates if probe_stamp(key, level, save=False)]
+    stamped = [key for key in candidates
+               if probe_stamp(key, level, save=False, command=command)]
     if stamped:
         # Один save на запрос: probe_stamp в цикле переписывал .article_meta.json целиком
         # на каждую статью.

@@ -5,6 +5,8 @@
 import asyncio
 import json
 
+import pytest
+
 import memory_compiler.config as cfg
 from memory_compiler import reflexes
 from memory_compiler.api import web_reflex
@@ -292,3 +294,140 @@ def test_new_verdict_still_replaces_old_one(knowledge_dir):
     assert cfg.article_meta[key]["last_probe"]["level"] == "verified"
     cfg.probe_stamp(key, "stale", save=False)
     assert cfg.article_meta[key]["last_probe"]["level"] == "stale"
+
+
+# ─── вердикт по КАЖДОЙ цитате: у статьи их несколько, а слот штампа один ──────────
+QUOTE_A = "/system identity print"
+QUOTE_B = "/system resource print"
+TWO_QUOTES = ("# Роутер KHV\n\n**Дата:** 2026-09-13\n\n## Рефлексы\n- цель: 192.0.2.10\n\n"
+              f"## Проверка\n- команда: {QUOTE_A}\n- ожидается: KHV-GW\n"
+              f"- команда: {QUOTE_B}\n- ожидается: RB5009\n\n"
+              "## Записи\n\n### 2026-09-13\nработает\n")
+KEY = "testproj/router.md"
+
+
+def _two_quotes(knowledge_dir, monkeypatch):
+    """Статья про узел с ДВУМЯ цитатами проверки; возвращает заголовки авторизации."""
+    import memory_compiler.api as api
+    monkeypatch.setattr(reflexes, "REFLEX_RESCAN_SEC", 0)
+    reflexes.invalidate()
+    (knowledge_dir / "testproj" / "router.md").write_text(TWO_QUOTES, encoding="utf-8")
+    monkeypatch.setattr(api, "MC_API_KEY", "k", raising=False)
+    return {"authorization": "Bearer k"}
+
+
+def _verdict(headers, level, command=None):
+    payload = {"target": "192.0.2.10", "level": level,
+               "project": "testproj", "file": "router.md"}
+    if command is not None:
+        payload["command"] = command
+    return _probe(payload, headers=headers)
+
+
+def _card_level():
+    """Уровень штампа, каким его видит карточка узла (тот же путь, что у хука)."""
+    code, card = _call(web_reflex, {"kind": "target", "text": ["192.0.2.10"]})
+    assert code == 200 and card["memos"], card
+    return card["memos"][0]["probe"].get("level")
+
+
+def test_verified_of_another_quote_does_not_erase_stale(knowledge_dir, monkeypatch):
+    """Сценарий инцидента: цитата A протухла (stale), позже исполнили цитату B (verified).
+
+    Слот штампа один на статью, поэтому verified затирал stale и предупреждение исчезало,
+    хотя статья продолжала врать. Вердикт — свойство ЦИТАТЫ, а не статьи."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    assert _verdict(headers, "stale", QUOTE_A)[0] == 200
+    assert _verdict(headers, "verified", QUOTE_B)[0] == 200
+    checks = cfg.article_meta[KEY]["checks"]
+    assert {k: v["level"] for k, v in checks.items()} == {QUOTE_A: "stale", QUOTE_B: "verified"}
+    assert _card_level() == "stale"
+
+
+def test_new_verdict_of_the_same_quote_replaces_it(knowledge_dir, monkeypatch):
+    """Починенный на узле факт обязан выходить из stale: вердикт цитаты меняет ТОЛЬКО
+    новый прогон ТОЙ ЖЕ цитаты. Иначе правка «stale навсегда» прошла бы тест выше."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    _verdict(headers, "stale", QUOTE_A)
+    _verdict(headers, "verified", QUOTE_A)
+    assert cfg.article_meta[KEY]["checks"][QUOTE_A]["level"] == "verified"
+    assert _card_level() == "verified"
+
+
+def test_command_key_collapses_whitespace(knowledge_dir, monkeypatch):
+    """Ключ — команда со схлопнутыми пробелами: хук шлёт цитату так, как её прочитал, а в
+    статье она может стоять с двойным пробелом. Нормализация ОДНА на запись и на чтение,
+    иначе вердикт молча не найдёт свою цитату."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    assert _verdict(headers, "stale", f"  {QUOTE_A.replace(' ', '   ')} ")[0] == 200
+    assert QUOTE_A in cfg.article_meta[KEY]["checks"]
+    assert _card_level() == "stale"
+
+
+@pytest.mark.parametrize("bad", [123, ["x"], {"a": 1}, None, "", "   ", "x" * 301])
+def test_probe_rejects_broken_command(knowledge_dir, monkeypatch, bad):
+    """Поле уходит в сайдкар и сравнивается с цитатой статьи: чужой тип, пустая строка и
+    строка длиннее 300 символов отбиваются, а не оседают ключом, который не совпадёт ни с
+    чем. `null` — тоже отказ: «поле есть» и «поля нет» обязаны различаться явно, иначе
+    сломанный хук молча получал бы поведение старого. Проверка идёт ДО ветки уровня —
+    reachable с кривым полем тоже 400."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    code, _ = _probe({"target": "192.0.2.10", "level": "verified", "project": "testproj",
+                      "file": "router.md", "command": bad}, headers=headers)
+    assert code == 400, bad
+    code, _ = _probe({"target": "192.0.2.10", "level": "reachable", "command": bad},
+                     headers=headers)
+    assert code == 400, bad
+    assert "last_probe" not in cfg.article_meta.get(KEY, {})
+
+
+def test_command_of_max_length_is_accepted(knowledge_dir, monkeypatch):
+    """Позитивный контроль к отказам: 300 символов после strip — ещё годная команда.
+    Без него «отбиваем всё подряд» прошло бы тест выше."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    command = "show " + "x" * 295
+    assert len(command) == 300
+    assert _verdict(headers, "verified", f"  {command} ")[0] == 200
+    assert command in cfg.article_meta[KEY]["checks"]
+
+
+def test_reachable_does_not_write_checks(knowledge_dir, monkeypatch):
+    """«Узел жив» — свойство цели, а не цитаты: слот цитаты им не занимаем и вердикт по
+    факту им не подменяем (инвариант v1.81.1)."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    code, data = _probe({"target": "192.0.2.10", "level": "reachable", "command": QUOTE_A},
+                        headers=headers)
+    assert code == 200 and data["stamped"] == [KEY]
+    assert "checks" not in cfg.article_meta[KEY]
+
+
+def test_verdict_without_command_keeps_v1_81_1_behaviour(knowledge_dir, monkeypatch):
+    """Старый хук поля не шлёт: вердикт ложится в last_probe, блок checks не заводится,
+    карточка читает штамп по-прежнему. Хук выкатывается ПОСЛЕ сервера, поэтому этот путь
+    обязан остаться рабочим."""
+    headers = _two_quotes(knowledge_dir, monkeypatch)
+    assert _verdict(headers, "stale")[0] == 200
+    entry = cfg.article_meta[KEY]
+    assert entry["last_probe"]["level"] == "stale" and "checks" not in entry
+    assert _card_level() == "stale"
+
+
+def test_checks_cap_keeps_the_freshest(knowledge_dir):
+    """Потолок держит сайдкар в размере: цитаты переписывают, и ключей за годы накопится
+    больше, чем цитат в статье. Вытесняется давняя запись, а повторный прогон уводит
+    цитату в конец очереди — иначе действующую цитату вытеснил бы мусор от удалённых."""
+    for i in range(cfg.PROBE_CHECKS_MAX + 5):
+        cfg.probe_stamp(KEY, "verified", save=False, command=f"show cmd{i}")
+    checks = cfg.article_meta[KEY]["checks"]
+    assert len(checks) == cfg.PROBE_CHECKS_MAX
+    assert "show cmd0" not in checks and f"show cmd{cfg.PROBE_CHECKS_MAX + 4}" in checks
+    oldest = next(iter(checks))
+    cfg.probe_stamp(KEY, "verified", save=False, command=oldest)
+    cfg.probe_stamp(KEY, "verified", save=False, command="show fresh")
+    assert oldest in cfg.article_meta[KEY]["checks"], "повторный прогон не обновил очередь"
+
+
+def test_probe_stamp_ignores_command_for_reachable(knowledge_dir):
+    """Тот же запрет, но на уровне хранилища: сюда ручка приходит не одна."""
+    cfg.probe_stamp("testproj/node.md", "reachable", save=False, command=QUOTE_A)
+    assert "checks" not in cfg.article_meta["testproj/node.md"]

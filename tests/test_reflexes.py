@@ -225,6 +225,50 @@ def test_title_channel_ignores_plain_words_and_public_resolvers(knowledge_dir, f
     assert [m.file for m in rx.find_memos("target", ["bridge"])] == ["bridge.md"]
 
 
+# ─── короткие ЯВНЫЕ цели: два разных порога ──────────────────────────────────
+def test_three_char_explicit_target_is_accepted():
+    """Живой случай 14.09.2026: база 1С в реестре MCP зовётся «mot» — три символа.
+
+    Цель выбрасывалась до поиска, карточка по ней не приходила никогда, а триггер
+    «цель: mot» отвергался как «слишком общая цель». Явный триггер сравнивается ТОЧНО
+    (v in wanted), поэтому мусора от короткого имени он не даёт."""
+    assert rx.trigger_problem("target", "mot") is None
+    new, added, rejected = rx.add_triggers("# T\n", ["цель: mot"])
+    assert added == [("target", "mot")] and rejected == []
+    assert rx.parse_triggers(new) == [("target", "mot")]
+
+
+@pytest.mark.parametrize("value", ["mo", "mo.", "::1"])
+def test_shorter_targets_and_stop_list_are_still_rejected(value):
+    """Порог опущен до трёх символов, а не снят: «mo» — две буквы, «mo.» становится ими
+    после нормализации (точка снимается), «::1» проходит по длине и держится стоп-списком.
+    Позитивный контроль к соседнему тесту: без него «принимаем всё» тоже зеленело бы."""
+    assert rx.trigger_problem("target", value) is not None
+
+
+def test_short_target_is_found_by_its_own_trigger_only(knowledge_dir, fresh):
+    """Трёхсимвольная цель находит статью по явному триггеру — и только свою.
+
+    Точность: «mot» и «mot_prod» — разные узлы, сравнение точное, а не по подстроке."""
+    _art(knowledge_dir, "testproj", "mot.md", "База MOT",
+         "текст\n\n## Рефлексы\n- цель: mot")
+    _art(knowledge_dir, "testproj", "motprod.md", "База MOT PROD",
+         "текст\n\n## Рефлексы\n- цель: mot_prod")
+    assert [m.file for m in rx.find_memos("target", ["mot"])] == ["mot.md"]
+    assert [m.file for m in rx.find_memos("target", ["mot_prod"])] == ["motprod.md"]
+
+
+def test_short_target_does_not_reach_the_title_channel(knowledge_dir, fresh):
+    """Канал заголовков держит ПРЕЖНИЙ порог (MIN_TARGET): там короткое имя даёт мусор —
+    замер 13.09.2026, «admin» приводил 10 чужих секретов. Опущен только порог явного
+    триггера, и наивная правка «MIN_TARGET = 3» на всё сразу обязана уронить этот тест."""
+    _art(knowledge_dir, "testproj", "db1.md", "Бэкап db1 упал", "текст")
+    assert rx.find_memos("target", ["db1"]) == []
+    # позитивный контроль: адресоподобная цель от MIN_TARGET символов по заголовку находится
+    _art(knowledge_dir, "testproj", "db12.md", "Бэкап db12 упал", "текст")
+    assert [(m.file, m.via) for m in rx.find_memos("target", ["db12"])] == [("db12.md", "title")]
+
+
 def test_snippet_skips_meta_labels(knowledge_dir, fresh):
     _art(knowledge_dir, "testproj", "dec.md", "Решение про NAS",
          "**Тип:** decision\n## Решение\nДеплой только через ватчер.\n\n## Рефлексы\n- цель: nas-dec")

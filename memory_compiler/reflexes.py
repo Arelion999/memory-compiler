@@ -60,7 +60,14 @@ SNIPPET_MAX = 200
 TEXT_MAX = 4000             # символов на один текст события
 KEY_LINES_MAX = 15
 MIN_ERROR_TRIGGER = 12
-MIN_TARGET = 4
+# ⚠️ ДВА РАЗНЫХ ПОРОГА ДЛИНЫ ЦЕЛИ, и это не забывчивость (14.09.2026). Явный триггер
+# сравнивается ТОЧНО (v in wanted), поэтому короткое имя мусора не даёт: база 1С в реестре
+# MCP зовётся «mot» — три символа, цель выбрасывалась до поиска, карточка по ней не
+# приходила никогда, а триггер «цель: mot» отвергался как «слишком общая цель». Канал
+# заголовков ищет цель ТОКЕНОМ в чужом тексте, там короткое имя даёт мусор (замер
+# 13.09.2026: «admin» — 10 чужих секретов), и его порог остаётся прежним.
+MIN_TARGET = 4              # канал заголовков: цель ищется токеном в заголовке статьи
+MIN_TRIGGER_TARGET = 3      # явный триггер «- цель: …»: сравнение точное
 # Публичные резолверы пингуют ради проверки связи: статьи с ними в заголовке — не про
 # цель (замер 13.09.2026: 8.8.8.8 в 179 командах давал 3 памятки мимо).
 TARGET_STOP = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1",
@@ -129,7 +136,7 @@ def trigger_problem(kind: str, value: str):
     norm = NORMALIZE[kind](value)
     if kind == "error" and len(norm) < MIN_ERROR_TRIGGER:
         return "слишком общая строка ошибки — нужна дословная строка подлиннее"
-    if kind == "target" and (len(norm) < MIN_TARGET or norm in TARGET_STOP):
+    if kind == "target" and (len(norm) < MIN_TRIGGER_TARGET or norm in TARGET_STOP):
         return "слишком общая цель"
     if kind == "file" and (norm.endswith("/") or "/" not in norm):
         return ("нужен путь файла с каталогом (например memory_compiler/ui.py): "
@@ -622,7 +629,7 @@ def _read_article(path: Path, project: str):
     )
 
 
-def probe_stamp_of(key: str) -> dict:
+def probe_stamp_of(key: str, verify=None) -> dict:
     """Штамп живой проверки статьи «проект/файл.md» — ЧИТАЕТСЯ В МОМЕНТ ВЫДАЧИ памятки.
 
     ⚠️ НЕ ПРИ ИНДЕКСАЦИИ, и это главное. Штамп лежит в сайдкаре `.article_meta.json`, а
@@ -633,10 +640,41 @@ def probe_stamp_of(key: str) -> dict:
     всех трёх. Тесты дефект пропускали, потому что ставили штамп и тут же инвалидировали
     индекс. Здесь это дешёвый поиск по словарю, и данные всегда свежие.
 
+    ⚠️ ВЕРДИКТ СЧИТАЕТСЯ ПО ЦИТАТАМ, КОТОРЫЕ В СТАТЬЕ СЕЙЧАС (v1.82.0). `verify` — пары
+    «команда → ожидается» этой статьи; из `checks` учитываются записи, чья команда среди
+    них. Вердикт по УДАЛЁННОЙ цитате не всплывает: перепроверить его нечем, такой команды в
+    статье уже нет, а stale висел бы на живом факте вечно. Показываем ХУДШИЙ из учтённых
+    уровней: пока хоть одна цитата протухла, статья врёт, и предупреждение важнее галочки
+    соседней команды. Дата — самая свежая среди записей ПОКАЗАННОГО уровня, иначе
+    «требует перепроверки (с …)» указывало бы на дату чужой удачной проверки.
+
     ⚠️ Штамп берём, только если он целый: сайдкар правят руками и он переживает сбои
-    записи. Битый `last_probe` обязан гасить штамп, а не ронять карточку (ревью 13.09.2026).
-    """
-    stamp = cfg.article_meta.get(key, {}).get("last_probe")
+    записи. Битый `last_probe` обязан гасить штамп, а не ронять карточку (ревью 13.09.2026);
+    битый `checks` гасит его так же и НЕ откатывается на `last_probe` — раз статья перешла
+    на вердикты по цитатам, старое поле про неё уже не знает."""
+    entry = cfg.article_meta.get(key)
+    if not isinstance(entry, dict):
+        return {}
+    checks = entry.get("checks")
+    if checks:
+        if not isinstance(checks, dict):
+            return {}
+        current = {cfg.probe_command_key(pair[0]) for pair in (verify or [])
+                   if isinstance(pair, (list, tuple)) and pair and isinstance(pair[0], str)}
+        latest = {}
+        for command, item in checks.items():
+            if not isinstance(command, str) or not isinstance(item, dict):
+                continue
+            if cfg.probe_command_key(command) not in current:
+                continue
+            level, date = item.get("level"), item.get("date")
+            if level in cfg.PROBE_VERDICTS and isinstance(date, str) and date:
+                latest[level] = max(latest.get(level, ""), date)
+        for level in ("stale", "verified"):     # худший уровень вперёд
+            if level in latest:
+                return {"date": latest[level], "level": level}
+        return {}
+    stamp = entry.get("last_probe")
     return stamp if isinstance(stamp, dict) and stamp.get("date") and stamp.get("level") else {}
 
 
@@ -745,8 +783,9 @@ def find_memos(kind: str, text, cwd: str = "", exclude=None, limit: int = MEMO_L
                 consider(art, 0, "trigger", [])
     elif kind == "target":
         wanted = {w for w in (normalize_target(t) for t in texts)
-                  if len(w) >= MIN_TARGET and w not in TARGET_STOP}
-        titled = {w for w in wanted if _ADDRESS_LIKE_RE.search(w)}
+                  if len(w) >= MIN_TRIGGER_TARGET and w not in TARGET_STOP}
+        # Канал заголовков строже явного триггера: короткая цель ищется ТОЛЬКО триггером.
+        titled = {w for w in wanted if len(w) >= MIN_TARGET and _ADDRESS_LIKE_RE.search(w)}
 
         def sources(matched):
             # ИСХОДНЫЕ строки запроса (как прислал хук), в порядке text и без дублей по
@@ -783,7 +822,7 @@ def find_memos(kind: str, text, cwd: str = "", exclude=None, limit: int = MEMO_L
     ranked.sort(key=lambda item: (item[0], item[2].project != home,
                                   not (kind == "target" and item[2].secret)))
     return [Memo(a.project, a.file, a.title, a.date, a.verified, a.secret, via, a.snippet,
-                 a.verify, probe_stamp_of(a.key), tgts)
+                 a.verify, probe_stamp_of(a.key, a.verify), tgts)
             for _rank, via, a, tgts in ranked[:max(1, limit)]]
 
 

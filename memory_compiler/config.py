@@ -203,9 +203,22 @@ def track_access(paths: list[str]):
 
 PROBE_LEVELS = ("reachable", "verified", "stale")
 PROBE_VERDICTS = ("verified", "stale")
+# Потолок числа цитат, по которым храним вердикт. Цитаты переписывают, и ключей за годы
+# накопится больше, чем цитат в статье: вердикт удалённой команды всё равно не учитывается
+# при выдаче (reflexes.probe_stamp_of), но занимал бы место в сайдкаре.
+PROBE_CHECKS_MAX = 20
 
 
-def probe_stamp(key: str, level: str, save: bool = True) -> bool:
+def probe_command_key(command: str) -> str:
+    """Ключ вердикта — команда цитаты со схлопнутыми пробелами.
+
+    ⚠️ НОРМАЛИЗАЦИЯ ОДНА на запись и на чтение (reflexes.probe_stamp_of): хук шлёт команду
+    так, как прочитал её из карточки, а в статье она может стоять с двойным пробелом.
+    Разойдутся — вердикт молча не найдёт свою цитату, и карточка промолчит."""
+    return " ".join((command or "").split())
+
+
+def probe_stamp(key: str, level: str, save: bool = True, command: str | None = None) -> bool:
     """Штамп живой проверки факта: key — «проект/файл.md», как в track_access.
     Возвращает True, если штамп лёг.
 
@@ -226,9 +239,12 @@ def probe_stamp(key: str, level: str, save: bool = True) -> bool:
     вердикт может только новый вердикт, то есть повторный прогон цитаты. Битый штамп
     вердиктом не считается: карточка его не показывает (probe_stamp_of), и запрет
     перезаписи оставил бы его навсегда.
-    ⚠️ ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ: вердикты РАЗНЫХ цитат одной статьи делят тот же слот —
-    verified по цитате A затрёт stale по цитате B. Хук не сообщает, какую цитату исполнял,
-    и различить их здесь нечем: это смена контракта /api/probe, а не правка слота."""
+    ⚠️ ВЕРДИКТ — СВОЙСТВО ЦИТАТЫ, А НЕ СТАТЬИ (v1.82.0). Цитат у статьи несколько, а слот
+    был один: verified по цитате B затирал stale по цитате A, и предупреждение исчезало,
+    хотя статья продолжала врать. `command` — команда исполненной цитаты, её присылает хук;
+    вердикт ложится в `checks[ключ команды]`, и карточка считает по НИМ
+    (reflexes.probe_stamp_of). Прежний слот `last_probe` пишется КАК И РАНЬШЕ: хук
+    выкатывается после сервера, и вердикт без команды обязан работать по-старому."""
     if level not in PROBE_LEVELS:
         return False
     entry = article_meta.setdefault(key, {"access_count": 0, "created": datetime.now().isoformat()})
@@ -236,7 +252,18 @@ def probe_stamp(key: str, level: str, save: bool = True) -> bool:
     if (level == "reachable" and isinstance(current, dict)
             and current.get("level") in PROBE_VERDICTS and current.get("date")):
         return False
-    entry["last_probe"] = {"date": datetime.now().isoformat(timespec="seconds"), "level": level}
+    stamp = {"date": datetime.now().isoformat(timespec="seconds"), "level": level}
+    entry["last_probe"] = stamp
+    # «Узел жив» цитаты не касается: слот цитаты им не занимаем и вердикт по ней не трогаем.
+    cmd_key = probe_command_key(command) if level in PROBE_VERDICTS else ""
+    if cmd_key:
+        checks = entry.get("checks")
+        checks = dict(checks) if isinstance(checks, dict) else {}
+        checks.pop(cmd_key, None)       # повторный прогон уводит цитату в конец очереди
+        checks[cmd_key] = dict(stamp)
+        # ⚠️ Потолок по ПОРЯДКУ ЗАПИСИ, а не по дате: штампы одной секунды неразличимы, и
+        # выбор «самого старого» среди них зависел бы от обхода словаря.
+        entry["checks"] = dict(list(checks.items())[-PROBE_CHECKS_MAX:])
     if save:
         save_article_meta()
     return True

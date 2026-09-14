@@ -201,6 +201,108 @@ def test_stale_stamp_is_a_hint_not_a_hide(knowledge_dir, fresh):
     assert "перепроверк" in rx.render("target", [memo], "192.0.2.10")
 
 
+# ─── вердикт по каждой цитате: чтение штампа в момент выдачи ─────────────────
+QUOTE_A, QUOTE_B, QUOTE_C = ("/system identity print", "/system resource print",
+                             "/ip address print")
+KEY = "testproj/router.md"
+
+
+def _article_with(quotes):
+    """Статья про узел с заданными цитатами проверки (пустой список — раздела нет)."""
+    if not quotes:
+        return ARTICLE
+    section = "".join(f"- команда: {c}\n- ожидается: {e}\n" for c, e in quotes)
+    return ARTICLE.replace("## Записи", "## Проверка\n" + section + "\n## Записи")
+
+
+def _write(knowledge_dir, quotes):
+    (knowledge_dir / "testproj" / "router.md").write_text(
+        _article_with(quotes), encoding="utf-8")
+
+
+def _stamp(check_by_command):
+    import memory_compiler.config as cfg
+    cfg.article_meta[KEY] = {"checks": check_by_command}
+
+
+def test_card_shows_the_worst_verdict_among_current_quotes(knowledge_dir, fresh):
+    """У статьи несколько цитат, вердикт у каждой свой — показываем ХУДШИЙ: пока хоть одна
+    цитата протухла, статья врёт, и предупреждение важнее галочки соседней команды."""
+    _write(knowledge_dir, [(QUOTE_A, "KHV-GW"), (QUOTE_B, "RB5009")])
+    _stamp({QUOTE_A: {"date": "2026-09-10T10:00:00", "level": "stale"},
+            QUOTE_B: {"date": "2026-09-12T10:00:00", "level": "verified"}})
+    memo = rx.find_memos("target", "192.0.2.10")[0]
+    assert memo.probe == {"level": "stale", "date": "2026-09-10T10:00:00"}
+    assert "перепроверк" in rx.render("target", [memo], "192.0.2.10")
+    # Цитаты статьи — аргумент: без них сверять ключи не с чем, и вердикт не показывается.
+    assert rx.probe_stamp_of(KEY, [(QUOTE_A, "KHV-GW")])["level"] == "stale"
+    assert rx.probe_stamp_of(KEY) == {}
+
+
+def test_card_takes_the_latest_date_of_the_shown_level(knowledge_dir, fresh):
+    """Дата — самая свежая среди записей ПОКАЗАННОГО уровня, а не по статье целиком: иначе
+    «требует перепроверки (с 13.09)» указывало бы на дату чужой удачной проверки."""
+    _write(knowledge_dir, [(QUOTE_A, "KHV-GW"), (QUOTE_B, "RB5009"), (QUOTE_C, "192.0.2.10/24")])
+    _stamp({QUOTE_A: {"date": "2026-09-10T10:00:00", "level": "stale"},
+            QUOTE_B: {"date": "2026-09-13T10:00:00", "level": "verified"},
+            QUOTE_C: {"date": "2026-09-11T10:00:00", "level": "stale"}})
+    assert rx.find_memos("target", "192.0.2.10")[0].probe == {
+        "level": "stale", "date": "2026-09-11T10:00:00"}
+    # только галочки — показывается самая свежая из них
+    _stamp({QUOTE_A: {"date": "2026-09-10T10:00:00", "level": "verified"},
+            QUOTE_B: {"date": "2026-09-13T10:00:00", "level": "verified"}})
+    assert rx.find_memos("target", "192.0.2.10")[0].probe == {
+        "level": "verified", "date": "2026-09-13T10:00:00"}
+
+
+def test_verdict_of_a_removed_quote_does_not_surface(knowledge_dir, fresh):
+    """Цитату убрали из статьи — её вердикт больше не про эту статью.
+
+    Иначе stale от давно удалённой команды висел бы на живом факте вечно: перепроверить
+    его нечем, такой цитаты в статье уже нет."""
+    _write(knowledge_dir, [(QUOTE_A, "KHV-GW"), (QUOTE_B, "RB5009")])
+    _stamp({QUOTE_A: {"date": "2026-09-10T10:00:00", "level": "stale"},
+            QUOTE_B: {"date": "2026-09-12T10:00:00", "level": "verified"}})
+    assert rx.find_memos("target", "192.0.2.10")[0].probe["level"] == "stale"
+    _write(knowledge_dir, [(QUOTE_B, "RB5009")])        # цитата A удалена из статьи
+    assert rx.find_memos("target", "192.0.2.10")[0].probe["level"] == "verified"
+    _write(knowledge_dir, [])                           # цитат не осталось вовсе
+    memo = rx.find_memos("target", "192.0.2.10")[0]
+    assert memo.probe == {}
+    assert "192.0.2.10" in rx.render("target", [memo], "192.0.2.10")
+
+
+def test_empty_checks_fall_back_to_last_probe(knowledge_dir, fresh):
+    """Пустой блок checks — это «записей нет», а не «вердикты сняты»: читается last_probe,
+    как у статьи без checks вовсе (старый хук, ручной вызов ручки)."""
+    _write(knowledge_dir, [(QUOTE_A, "KHV-GW")])
+    _stamp({})
+    import memory_compiler.config as cfg
+    cfg.article_meta[KEY]["last_probe"] = {"date": "2026-09-12T10:00:00", "level": "verified"}
+    assert rx.find_memos("target", "192.0.2.10")[0].probe["level"] == "verified"
+
+
+@pytest.mark.parametrize("checks", [
+    "не словарь",
+    {QUOTE_A: "не словарь"},
+    {QUOTE_A: {"level": "verified"}},
+    {QUOTE_A: {"date": "2026-09-12T10:00:00"}},
+    {QUOTE_A: {"date": 20260912, "level": "verified"}},
+    {QUOTE_A: {"date": "2026-09-12T10:00:00", "level": "чепуха"}},
+])
+def test_broken_checks_hide_the_stamp_but_not_the_card(knowledge_dir, fresh, checks):
+    """Сайдкар правят руками и он переживает сбои записи: битая запись ГАСИТ штамп, а не
+    роняет карточку — та же граница, что у last_probe. И не откатывается на last_probe:
+    раз статья перешла на вердикты по цитатам, старое поле про неё уже не знает."""
+    import memory_compiler.config as cfg
+    _write(knowledge_dir, [(QUOTE_A, "KHV-GW")])
+    _stamp(checks)
+    cfg.article_meta[KEY]["last_probe"] = {"date": "2026-09-12T10:00:00", "level": "verified"}
+    memo = rx.find_memos("target", "192.0.2.10")[0]
+    assert memo.probe == {}
+    assert "192.0.2.10" in rx.render("target", [memo], "192.0.2.10")
+
+
 @pytest.mark.asyncio
 async def test_save_lesson_writes_verify_section(knowledge_dir):
     """Цитату задаёт пользователь при сохранении — сервер её не выдумывает."""
