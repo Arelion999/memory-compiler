@@ -118,6 +118,26 @@ async def test_correction_is_pulled_in_even_with_low_score(proj, tmp_path):
     assert files.index("popravka.md") < files.index("staroe.md"), "поправка должна идти выше"
 
 
+@pytest.mark.asyncio
+async def test_correction_that_is_itself_superseded_gets_marked(proj, tmp_path):
+    """Цепочка А→Б→В: attach_corrections подтягивает поправку Б к отменённой А, но
+    саму Б может отменять В. attach_corrections проверяет только ИСХОДНЫЕ найденные
+    статьи, а не то, что подтянула сама, — Б уезжала в выдачу с correction: true,
+    но без superseded_by. _mark_superseded_corrections добирает и этот случай."""
+    _write(tmp_path / "demo", "staroe.md", "Контур нужен")
+    _write(tmp_path / "demo", "popravka.md", "Барьера платформ нет", "Контур НЕ нужен.")
+    _write(tmp_path / "demo", "popravka2.md", "Уточнение", "Ещё точнее.")
+    storage.mark_superseded("demo", "staroe.md", "popravka.md", "Барьера платформ нет")
+    storage.mark_superseded("demo", "popravka.md", "popravka2.md", "Уточнение")
+    found = [{"project": "demo", "file": "staroe.md", "title": "Контур нужен",
+              "score": 95, "preview": "# Контур нужен\nподнимаем контур"}]
+    ranked = await handlers._mark_superseded_corrections(await handlers.attach_corrections(found))
+    items = {i["file"]: i for i in handlers._search_payload("контур", ranked, {})["results"]}
+    assert items["staroe.md"]["superseded_by"] == "popravka.md"
+    assert items["popravka.md"]["correction"] is True
+    assert items["popravka.md"]["superseded_by"] == "popravka2.md"
+
+
 # ─── длинный frontmatter (код-ревью v1.78.0, 13.09.2026) ────────────────────
 # Реалистичный `contexts:` (ИИ-пересказ секций, v1.28.0): длиннее срезов шапки И в
 # строках, И в символах — в базе медиана 13 строк, p90 40, максимум 275.

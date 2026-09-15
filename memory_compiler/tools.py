@@ -180,9 +180,10 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["query"]
             },
-            # Машиночитаемая выдача (structuredContent) для программных клиентов —
-            # список найденных статей с URI-ресурсами. Человекочитаемый текст + resource
-            # links остаются в content. Схема нестрогая (additionalProperties по умолчанию).
+            # Машиночитаемая выдача (structuredContent) для программных клиентов.
+            # С v1.87.0 structuredContent и единственный текстовый блок несут ОДИН
+            # и тот же JSON (handlers.search_json) — без resource_link. Схема
+            # нестрогая (additionalProperties по умолчанию).
             outputSchema={
                 "type": "object",
                 "properties": {
@@ -215,10 +216,12 @@ async def list_tools() -> list[Tool]:
                         }
                     },
                     # Футеры (свежесть, подсказка при первом обращении к проекту)
-                    # ДУБЛИРУЮТСЯ сюда. У search объявлен outputSchema, и клиент
-                    # берёт structuredContent — дополнительный TextContent до
-                    # модели не доходит. Проверено на проде: сервер отдавал
-                    # подсказку вторым текстовым блоком, а она никуда не ехала.
+                    # уходят СЮДА, а не отдельным текстовым блоком: с v1.87.0 у
+                    # search он один и несёт тот же JSON. Причина та же, что и в
+                    # v1.68.0: у search объявлен outputSchema, и клиент берёт
+                    # structuredContent — дополнительный TextContent до модели не
+                    # доходит. Проверено на проде: подсказка ехала вторым текстовым
+                    # блоком и никуда не доезжала.
                     "notice": {"type": "string", "description": "server-side note: freshness warning or project context hint"}
                 },
                 "required": ["query", "count", "results"]
@@ -1509,7 +1512,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 def _merge_notice_into_payload(payload: dict, notice: str) -> dict:
-    """Продублировать футер в структурированную выдачу.
+    """Вписать футер в структурированную выдачу — с v1.87.0 это ЕДИНСТВЕННОЕ
+    место, где он живёт у search: отдельного текстового блока для футера больше нет.
 
     Клиент с поддержкой outputSchema читает structuredContent и дополнительный
     TextContent модели не показывает — без этого подсказка не доезжает именно
@@ -1558,10 +1562,11 @@ def _append_freshness(name: str, arguments: dict, result: list,
                       client_session: str | None = None) -> list:
     """Дописать к ответу предупреждение о чужих записях в этом проекте.
 
-    ⚠️ Отдельным блоком, а не приклейкой к существующему тексту: у search есть
-    outputSchema и resource_link-блоки, а 414 ассертов в тестах сравнивают тексты
-    ответов дословно. Отдельный TextContent появляется ТОЛЬКО когда есть что
-    сказать, поэтому обычные ответы остаются байт-в-байт прежними.
+    ⚠️ Отдельным блоком, а не приклейкой к существующему тексту: 414 ассертов в
+    тестах сравнивают тексты ответов дословно, а отдельный TextContent появляется
+    ТОЛЬКО когда есть что сказать, поэтому обычные ответы остаются байт-в-байт
+    прежними. У search resource_link-блоков нет: отдельный футер для него
+    сворачивает в notice `_search_response` (см. `_merge_notice_into_payload`).
 
     ⚠️ Ключ — id чата от клиента, если он пришёл (v1.76.0), и только потом объект
     MCP-сессии: у моста Claude Desktop одна сессия на все чаты Code.

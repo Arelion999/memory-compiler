@@ -58,6 +58,26 @@ def test_superseded_and_correction_marks():
     assert items[1]["superseded_by"] == "new.md"
 
 
+def test_correction_mark_derived_from_superseded_target_same_project():
+    """Поправка, попавшая в выдачу через РАНЖИРОВАНИЕ (а не добавленная
+    attach_corrections), тоже обязана получить correction: true — по факту, что
+    её файл назван как superseded_by другого элемента ТОГО ЖЕ проекта, без опоры
+    на is_correction, которого у неё нет."""
+    results = [_r("p", "old.md", "Старое", superseded_by=("new.md", "Поправка")),
+               _r("p", "new.md", "Поправка")]
+    items = {i["file"]: i for i in handlers._search_payload("q", results, {})["results"]}
+    assert items["new.md"]["correction"] is True
+
+
+def test_correction_mark_ignores_target_in_another_project():
+    """Совпадение имени файла в чужом проекте не должно ставить пометку:
+    superseded_by указывает на файл ТОГО ЖЕ проекта, а не просто на одноимённый."""
+    results = [_r("p", "old.md", "Старое", superseded_by=("new.md", "Поправка")),
+               _r("z", "new.md", "Другая статья")]
+    items = {(i["project"], i["file"]): i for i in handlers._search_payload("q", results, {})["results"]}
+    assert items[("z", "new.md")].get("correction") is not True
+
+
 def test_fallback_from_is_reported():
     payload = handlers._search_payload("q", [_r("z", "a.md", "A")], {}, fallback_from="p")
     assert payload["fallback_from"] == "p"

@@ -1,7 +1,7 @@
 """Поиск и ответы: search, ask, тематические search_* и сборка JSON-выдачи search.
 
 Вынесено из handlers.py в v1.83.0: файл дорос до 3063 строк. Шов выбран замером
-связности — константы поиска (пулы, стоп-слова), ContextVar
+связности — константы поиска (пулы), ContextVar
 структурированной выдачи используются ТОЛЬКО этими функциями
 и уезжают вместе с ними.
 
@@ -197,8 +197,16 @@ def _search_payload(query: str, results: list[dict], secrets: dict,
     payload: dict = {"query": query, "count": len(results)}
     if fallback_from:
         payload["fallback_from"] = fallback_from
-    payload["results"] = [
+    items = [
         _search_item(r, secrets.get(f"{r['project']}/{r['file']}", False)) for r in results]
+    # Поправка могла попасть в выдачу через РАНЖИРОВАНИЕ, а не через
+    # attach_corrections, — тогда is_correction у неё нет. Помечаем по факту:
+    # её файл назван как superseded_by другого элемента ТОГО ЖЕ проекта.
+    targets = {(it["project"], it["superseded_by"]) for it in items if it.get("superseded_by")}
+    for it in items:
+        if (it["project"], it["file"]) in targets:
+            it["correction"] = True
+    payload["results"] = items
     return payload
 
 
@@ -226,6 +234,7 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
     # выше отменённых статей: в живом случае поправка была в той же выдаче, но
     # ниже, и агент взял верхнюю.
     results = await attach_corrections(results)
+    results = await _mark_superseded_corrections(results)
     track_access([f"{r['project']}/{r['file']}" for r in results])
 
     # Секрет входит в выдачу с флагом (панель рисует замок, открывает через
@@ -418,6 +427,22 @@ async def attach_corrections(results: list[dict]) -> list[dict]:
         # поправка уже была в выдаче — поднимаем её над отменённой
         return sorted(results, key=lambda r: bool(r.get("superseded_by")))
     return corrections + sorted(results, key=lambda r: bool(r.get("superseded_by")))
+
+
+async def _mark_superseded_corrections(results: list[dict]) -> list[dict]:
+    """Поправка, которую attach_corrections сама подтянула в выдачу, может быть
+    отменена следующей поправкой (цепочка А→Б→В).
+
+    attach_corrections проверяет superseded_by только у ИСХОДНЫХ найденных статей,
+    а не у поправок, которые подтянула сама, — такая поправка уезжала в выдачу с
+    correction: true, но без superseded_by, и цепочка обрывалась молча.
+    """
+    for r in results:
+        if r.get("is_correction") and not r.get("superseded_by"):
+            link = await asyncio.to_thread(superseded_by, r["project"], r["file"])
+            if link:
+                r["superseded_by"] = link
+    return results
 
 
 def _scores(r: dict) -> str:

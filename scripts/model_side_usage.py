@@ -171,8 +171,11 @@ def main(argv=None):
     report = measure(files, since, args.prefix)
     tpc = report["tokens_per_char"]
     total = sum(t["chars"] for t in report["tools"].values()) or 1
-    print(f"файлов {len(files)}, окно {args.days:g} дн.; расход сессий ≈ {report['token_eq'] / 1e6:.1f} млн экв. токенов"
-          f"; токенов на символ {tpc:.3f}" if tpc else f"файлов {len(files)}, окно {args.days:g} дн.")
+    header = (f"файлов {len(files)}, окно {args.days:g} дн.; расход сессий ≈ "
+              f"{report['token_eq'] / 1e6:.1f} млн экв. токенов")
+    if tpc:
+        header += f"; токенов на символ {tpc:.3f}"
+    print(header)
     for tool, t in sorted(report["tools"].items(), key=lambda kv: -kv[1]["chars"])[:12]:
         tok = f" ≈{int(t['chars'] * tpc)} ток." if tpc else ""
         print(f"  {tool:20s} n={t['n']:5d} символов={t['chars']:9d} ({100 * t['chars'] / total:4.1f}%)"
