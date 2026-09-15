@@ -1105,6 +1105,13 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         obs.setup_logging()  # структурное логирование (JSON-lines + ротация) до всего
+        # Снимки свежести чатов переживают рестарт (v1.88.1), иначе после каждого рестарта
+        # тот же чат снова получает «Первое обращение к проекту». Временный каталог
+        # контейнера, а не база знаний, — почему, см. докстринг freshness.
+        import tempfile
+        from pathlib import Path
+        from memory_compiler import freshness as _freshness
+        _freshness.STATE_PATH = Path(tempfile.gettempdir()) / "memory-compiler-freshness.json"
         git_init()
         for _w in _check_key_hygiene():  # операционная гигиена ключей (аудит #1/#2)
             print(_w)

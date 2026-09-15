@@ -15,15 +15,26 @@
 Здесь она достаётся любому клиенту (Claude Desktop, IDE, чужой MCP-клиент) без
 настройки, потому что едет вместе с ответом инструмента.
 
-⚠️ СОСТОЯНИЕ В ПАМЯТИ, И ЭТО ОСОЗНАННО. Рестарт контейнера обнуляет буфер — но
-он же рвёт MCP-сессии всех клиентов (см. статью про -32001), то есть снимки
-и так теряют смысл. Писать на диск было бы дороже и бессмысленнее.
+⚠️ СНИМКИ ЧАТОВ ПЕРЕЖИВАЮТ РЕСТАРТ (v1.88.1). Раньше всё состояние жило в памяти с
+доводом «рестарт контейнера всё равно рвёт MCP-сессии, снимки теряют смысл». Довод
+устарел в v1.76.0: ключ снимка — id чата от клиента (c:<id>), и после рестарта чат
+тот же. Итог — «Первое обращение к проекту» приходило заново после КАЖДОГО рестарта,
+а watcher перезапускает контейнер десятки раз в день (живые случаи 15.09.2026).
+Теперь _seen для ключей c:<id> пишется в STATE_PATH. Путь задаёт lifespan: временный
+каталог контейнера переживает docker restart и теряется лишь при пересоздании.
+⚠️ Не в базе знаний: .gitignore базы правят руками, и файл в /knowledge уезжал бы в
+каждый git add -A. ⚠️ Ключи MCP-сессий (s1, s2…) НЕ сохраняются: счётчик после
+рестарта начинается заново, и новая сессия унаследовала бы чужой снимок. Буфер
+записей и отсчёт молчания остаются в памяти — после рестарта теряются только
+новости о записях, сделанных ДО него.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -50,6 +61,15 @@ MAX_SEEN = 500
 # медиана 25 минут, p90 101. Инструмент, о котором надо ВСПОМНИТЬ, механизмом
 # не работает: у stale_facts за 4.5 месяца ноль вызовов.
 NOTE_HINT_SEC = 25 * 60
+# Файл снимков чатов (см. докстринг модуля). None — не сохранять: так в тестах и вне
+# сервера; путь выставляет lifespan в api.py.
+STATE_PATH: Path | None = None
+# Снимок чата, молчавшего дольше, забываем: такой чат и так начинает с чистого листа.
+SEEN_TTL_SEC = 7 * 24 * 3600
+# Файл освежается не чаще этого: TTL в нём обязан считаться от последней активности.
+SAVE_EVERY_SEC = 3600
+_loaded = [False]
+_last_save = [0.0]
 
 # Служебный аргумент вызова — id чата на стороне клиента (v1.76.0). call_tool
 # вынимает его до аудита и хендлера. Зачем: Claude Desktop отдаёт чатам Code
@@ -107,6 +127,7 @@ def is_first_touch(key: str, project: str) -> bool:
     """
     if not key or not project or project == "all":
         return False
+    _ensure_loaded()
     return (key, project) not in _seen
 
 
@@ -114,11 +135,58 @@ def touch(key: str, project: str) -> None:
     """Отметить, что сессия видела состояние проекта на этот момент."""
     if not key or not project or project == "all":
         return
+    _ensure_loaded()
     _last_project[key] = project
+    new = (key, project) not in _seen
     _seen[(key, project)] = time.time()
     if len(_seen) > MAX_SEEN:
         for k, _v in sorted(_seen.items(), key=lambda kv: kv[1])[:MAX_SEEN // 5]:
             _seen.pop(k, None)
+    # На диск — новая пара сразу, остальное не чаще раза в SAVE_EVERY_SEC. Писать только
+    # новые пары мало: TTL в файле считался бы от ПЕРВОГО касания, и чат, неделю работающий
+    # с одним проектом без новых пар на сервере, после рестарта снова стал бы новым
+    # (ревью 15.09.2026).
+    if key.startswith("c:") and (new or time.time() - _last_save[0] >= SAVE_EVERY_SEC):
+        _save_seen()
+
+
+def _ensure_loaded() -> None:
+    """Подтянуть с диска снимки чатов, сделанные до рестарта. Один раз на процесс."""
+    if _loaded[0]:
+        return
+    _loaded[0] = True
+    if STATE_PATH is None:
+        return
+    try:
+        items = json.loads(Path(STATE_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return                            # нет файла или битый — с чистого листа
+    now = time.time()
+    for item in (items if isinstance(items, list) else []):
+        try:
+            key, project, ts = item
+            ts = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if (isinstance(key, str) and key.startswith("c:") and isinstance(project, str)
+                and project and now - ts <= SEEN_TTL_SEC):
+            _seen.setdefault((key, project), ts)
+
+
+def _save_seen() -> None:
+    """Снимки чатов на диск. ⚠️ Синхронно, на loop: dumps итерирует _seen, а его
+    мутируют соседние вызовы инструментов, — в потоке это гонка (LOOP_ONLY в
+    tests/test_no_blocking_calls.py). Файл маленький: не больше MAX_SEEN пар."""
+    if STATE_PATH is None:
+        return
+    from memory_compiler.config import atomic_write_text
+    items = [[k, p, ts] for (k, p), ts in _seen.items() if k.startswith("c:")]
+    try:
+        Path(STATE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(STATE_PATH, json.dumps(items, ensure_ascii=False))
+        _last_save[0] = time.time()
+    except OSError:
+        pass                              # сторож не имеет права ронять вызов
 
 
 def consume(key: str, project: str) -> str:
@@ -134,6 +202,7 @@ def consume(key: str, project: str) -> str:
     if not project:
         return ""
 
+    _ensure_loaded()
     last = _seen.get((key, project))
     touch(key, project)
     if last is None:
@@ -200,3 +269,5 @@ def reset() -> None:
     _seen.clear()
     _last_project.clear()
     _started.clear()
+    _loaded[0] = False                    # как рестарт: файл снимков на диске остаётся
+    _last_save[0] = 0.0

@@ -110,3 +110,10 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     monkeypatch.setattr(search_mod, "_embeddings", {})
     monkeypatch.setattr(search_mod, "_embed_texts", {})
     monkeypatch.setattr(search_mod, "_chunk_hashes", {})
+    # Снимки свежести (v1.88.1) пишутся в файл, только когда путь задан, а задаёт его
+    # lifespan сервера. Тест, поднявший lifespan, иначе оставил бы путь выставленным, и
+    # следующие тесты писали бы во временный каталог машины и читали оттуда чужие снимки.
+    import memory_compiler.freshness as freshness_mod
+    monkeypatch.setattr(freshness_mod, "STATE_PATH", None)
+    monkeypatch.setattr(freshness_mod, "_loaded", [False])
+    monkeypatch.setattr(freshness_mod, "_last_save", [0.0])

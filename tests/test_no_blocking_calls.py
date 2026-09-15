@@ -90,7 +90,9 @@ def test_no_heavy_calls_in_event_loop(module):
 # /api/probe уехала в to_thread, и ни один тест этого не заметил — второго хендлера,
 # который мутирует словарь, в тестах нет. Цена записи мала (dumps + атомарная запись
 # файла), цена гонки — испорченный сайдкар.
-LOOP_ONLY = {"save_article_meta"}
+# Туда же freshness._save_seen (v1.88.1): dumps по _seen, который мутируют соседние
+# вызовы инструментов.
+LOOP_ONLY = {"save_article_meta", "_save_seen"}
 
 
 def thread_offloaded(path: Path):

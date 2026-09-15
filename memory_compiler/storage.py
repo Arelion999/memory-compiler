@@ -2,6 +2,7 @@
 Storage module: article management, git versioning, and helper utilities.
 """
 import base64
+import fnmatch
 import hashlib
 import ipaddress
 import json
@@ -583,17 +584,109 @@ def regenerate_index():
 # ─── Git versioning ──────────────────────────────────────────────────────────
 
 
+# Служебные файлы сервера, которым не место в истории базы: меняются на каждом
+# обращении, и git add -A коммитил бы их в каждой записи — _audit.log (v1.59.1),
+# .article_meta.json (14.09.2026), logs/app.jsonl (15.09.2026: 74% коммитов базы).
+# ⚠️ Раньше .gitignore писался только при первой инициализации, двумя строками, а
+# остальное дописывали на проде руками — новые установки получали тот же churn.
+# Шаблоны статей (*.md в каталогах проектов) не задевают; ручные строки вроде
+# *Conflict* сюда не входят и не трогаются.
+GITIGNORE_REQUIRED = (
+    ".whoosh_index*", ".embeddings.pkl*", "*.tmp",
+    "_audit.log", ".article_meta.json", "logs/app.jsonl*",
+)
+# Что снять с учёта, если уже отслеживается: .gitignore к таким файлам не применяется.
+# ⚠️ Точные служебные пути (у лога — с ротацией app.jsonl.N), а не маски по статьям.
+_UNTRACK_SERVICE = ("_audit.log", ".article_meta.json", "logs/app.jsonl*")
+# Журнал псевдопроекта logs — артефакт времён, когда каталог лога считался проектом
+# (config._HIDDEN_DIRS). Удаляется только с узнаваемой шапкой.
+_STRAY_JOURNAL = "logs/_log.md"
+_STRAY_JOURNAL_HEAD = "# Project journal: logs"
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(KNOWLEDGE_DIR), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+
+
 def git_init():
-    """Initialize git repo in knowledge dir if not exists."""
+    """Initialize git repo in knowledge dir if not exists; keep service files out of history."""
     git_dir = KNOWLEDGE_DIR / ".git"
     if not git_dir.exists():
         subprocess.run(["git", "init"], cwd=str(KNOWLEDGE_DIR), capture_output=True)
         subprocess.run(["git", "config", "user.email", "memory-compiler@nas"], cwd=str(KNOWLEDGE_DIR), capture_output=True)
         subprocess.run(["git", "config", "user.name", "memory-compiler"], cwd=str(KNOWLEDGE_DIR), capture_output=True)
-        # Gitignore for index/cache files
         gitignore = KNOWLEDGE_DIR / ".gitignore"
-        gitignore.write_text(".whoosh_index/\n.embeddings.pkl\n", encoding="utf-8")
+        gitignore.write_text("\n".join(GITIGNORE_REQUIRED) + "\n", encoding="utf-8")
         git_commit("init knowledge base")
+    done = tidy_service_files()
+    if done:
+        # Уборка меняет git базы на старте прода — результат обязан быть виден в логе
+        # контейнера, иначе проверить её можно только руками на NAS.
+        print("Git базы, служебные файлы вне истории: " + "; ".join(done))
+
+
+_TIDY_MESSAGE = "chore: служебные файлы сервера вне истории базы"
+
+
+def _first_line(result: subprocess.CompletedProcess) -> str:
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return lines[0][:160] if lines else "код %s" % result.returncode
+
+
+def tidy_service_files() -> list[str]:
+    """Держать служебные файлы вне истории базы. Зовётся на каждом старте сервера.
+
+    Дописывает в .gitignore недостающие шаблоны, удаляет журнал-артефакт logs/_log.md
+    и снимает с учёта служебные файлы (на диске они остаются — сервер ими пользуется).
+    ⚠️ Коммитит ТОЛЬКО эти пути, без git add -A: незакоммиченная правка статьи уйдёт со
+    своей записью, а если в индексе уже лежит чужое — коммит откладывается целиком.
+    ⚠️ Отчёт — по тому, что реально легло в коммит («D logs/app.jsonl»), сбои git — с
+    префиксом «!»: иначе занятый index.lock рапортовал бы «сделано» (ревью 15.09.2026).
+    Шаги идемпотентны, прерванную уборку доделывает следующий старт.
+    Пустой список — база в порядке, коммита нет."""
+    done: list[str] = []
+    try:
+        if _git("rev-parse", "--git-dir").returncode != 0:
+            return done
+        gitignore = KNOWLEDGE_DIR / ".gitignore"
+        current = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        have = {line.strip() for line in current.splitlines()}
+        missing = [p for p in GITIGNORE_REQUIRED if p not in have]
+        if missing:
+            sep = "" if not current or current.endswith("\n") else "\n"
+            atomic_write_text(gitignore, current + sep + "\n".join(missing) + "\n")
+        journal = KNOWLEDGE_DIR / _STRAY_JOURNAL
+        if (journal.is_file() and journal.read_text(encoding="utf-8", errors="replace")
+                .startswith(_STRAY_JOURNAL_HEAD)):
+            journal.unlink()
+        steps = [("add", "--", ".gitignore"),
+                 ("rm", "--cached", "--quiet", "--ignore-unmatch", "--", *_UNTRACK_SERVICE)]
+        if not journal.exists():
+            steps.append(("rm", "--cached", "--quiet", "--ignore-unmatch", "--", _STRAY_JOURNAL))
+        for args in steps:
+            result = _git(*args)
+            if result.returncode != 0:
+                done.append("!git %s: %s" % (args[0], _first_line(result)))
+        ours = (".gitignore", *_UNTRACK_SERVICE, _STRAY_JOURNAL)
+        staged = [line for line in _git("diff", "--cached", "--name-status", "--", *ours)
+                  .stdout.splitlines() if line.strip()]
+        if staged:
+            others = [n for n in _git("diff", "--cached", "--name-only", "-z").stdout.split("\0")
+                      if n and not any(fnmatch.fnmatchcase(n, p) for p in ours)]
+            if others:
+                done.append("!коммит отложен: в индексе чужие изменения (%d)" % len(others))
+            else:
+                result = _git("-c", "gc.auto=0", "commit", "-q", "-m", _TIDY_MESSAGE)
+                if result.returncode == 0:
+                    done += [line.replace("\t", " ") for line in staged]
+                else:
+                    done.append("!git commit: " + _first_line(result))
+    except FileNotFoundError:
+        pass  # git не установлен — хранилище работает и без истории
+    except Exception as e:  # уборка не имеет права ронять старт сервера
+        done.append("!уборка прервана: %s: %s" % (type(e).__name__, e))
+    return done
 
 
 def git_commit(message: str):

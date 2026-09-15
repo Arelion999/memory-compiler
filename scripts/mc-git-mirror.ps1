@@ -58,9 +58,16 @@ try {
         & git clone --mirror --quiet -- $Bundle $Mirror
         if ($LASTEXITCODE -ne 0) { throw "git clone вернул $LASTEXITCODE" }
     } else {
-        # Bundle выступает обычным remote: fetch дотягивает только новое.
         & git --git-dir=$Mirror fetch --quiet --prune -- $Bundle "+refs/heads/*:refs/heads/*"
         if ($LASTEXITCODE -ne 0) { throw "git fetch вернул $LASTEXITCODE" }
+        # ⚠️ Fetch из бандла НЕ дотягивает «только новое»: снимок полный (bundle create
+        # --all), согласования у бандла нет, и каждый прогон кладёт весь пак заново.
+        # Замер 15.09.2026: 17 паков на 422 МиБ при 32,8 МБ уникальных объектов.
+        # Переупаковка сводит их в один. ⚠️ --keep-unreachable обязателен: зеркало —
+        # резервная копия, и если историю базы перепишут (подмена .git 26.08.2026),
+        # голый repack -a -d выбросил бы прежние объекты вместе со старыми версиями файлов.
+        & git --git-dir=$Mirror repack -a -d -q --keep-unreachable
+        if ($LASTEXITCODE -ne 0) { throw "git repack вернул $LASTEXITCODE" }
     }
 
     # Проверяем не факт запуска, а результат: история обязана читаться.

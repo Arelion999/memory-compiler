@@ -1578,9 +1578,10 @@ def _append_freshness(name: str, arguments: dict, result: list,
     first = (freshness.is_first_touch(key, project or "")
              and name not in _CONTEXT_TOOLS)
     try:
-        note = freshness.consume(key, project or "")
-        if first:
-            note = handlers.first_touch_context(project) + note
+        # ⚠️ Своя запись — ДО consume: она сдвигает отсчёт молчания, а подсказку о нём
+        # собирает consume. В обратном порядке ответ на session_note приходил с
+        # напоминанием «больше 25 минут без записи в базу» (15.09.2026). Сноску о чужих
+        # записях порядок не меняет: свои consume отфильтровывает по ключу.
         if name in _FRESHNESS_WRITE_TOOLS and project and project != "all":
             topic = ""
             if isinstance(arguments, dict):
@@ -1589,6 +1590,9 @@ def _append_freshness(name: str, arguments: dict, result: list,
                 topic = str(arguments.get("topic") or arguments.get("filename")
                             or arguments.get("note") or "")
             freshness.note_write(project, name, topic, key)
+        note = freshness.consume(key, project or "")
+        if first:
+            note = handlers.first_touch_context(project) + note
     except Exception:
         return result                     # сторож не имеет права ронять вызов
     if note:

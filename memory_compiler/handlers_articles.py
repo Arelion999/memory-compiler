@@ -439,6 +439,42 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
 
 
+# Повтор того же дописывания узнаём в этом окне. Ответ на запись теряется по дороге
+# (рестарт контейнера, клиентский таймаут), а модель учат повторять упавшую запись:
+# 15.09.2026 одна и та же запись легла в статью дважды подряд. Тот же текст позже —
+# осознанная новая запись, а не потерянный ответ.
+APPEND_REPEAT_WINDOW_SEC = 30 * 60
+_APPEND_ENTRY_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2} \d{2}:\d{2})[ \t]*$", re.MULTILINE)
+
+
+def _repeated_append(old_text: str, content: str, now: datetime) -> Optional[str]:
+    """Метка времени записи, если `content` уже лежит ПОСЛЕДНЕЙ записью журнала статьи
+    и записан недавно; иначе None.
+
+    Сравнивается только последняя запись: если между попытками легла другая, повтор уже
+    не отличить от осознанной записи. Повтор обязан совпасть с записью ЦЕЛИКОМ: после
+    него в файле пусто или начинается раздел «## » — вызов с триггерами или проверкой
+    дописывает «## Рефлексы» / «## Проверка» уже после записи."""
+    body = (content or "").strip()
+    entries = list(_APPEND_ENTRY_RE.finditer(old_text))
+    if not body or not entries:
+        return None
+    last = entries[-1]
+    try:
+        stamp = datetime.strptime(last.group(1), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    if not (-60 <= (now - stamp).total_seconds() <= APPEND_REPEAT_WINDOW_SEC):
+        return None
+    after = old_text[last.end():].lstrip()
+    if not after.startswith(body):
+        return None
+    rest = after[len(body):]
+    if rest.strip() and not re.match(r"\s*\n## ", rest):
+        return None
+    return last.group(1)
+
+
 async def edit_article(project: str, filename: str, content: str = "", append: bool = False,
                        triggers: list = None, verify: list = None) -> list[TextContent]:
     try:
@@ -465,7 +501,18 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
                 "❌ Секретная статья, но MC_ENCRYPT_KEY не задан — правка отклонена, "
                 "чтобы не раскрыть секрет в plaintext."))]
 
-    if has_content and append:
+    # Повтор того же дописывания (ответ на первую попытку потерялся) второй раз не пишем.
+    # У секрета тело зашифровано со случайным IV — сравнивать не с чем, пишем как есть.
+    repeated = (_repeated_append(old_text, content, datetime.now())
+                if has_content and append and not is_secret else None)
+    repeat_msg = (f"⏭ Уже дописано: {project}/{filename} — та же запись лежит последней "
+                  f"(от {repeated}), повтор дубль не создал." if repeated else "")
+    if repeated and not triggers and not verify:
+        return [TextContent(type="text", text=repeat_msg)]
+
+    if has_content and append and repeated:
+        pass                              # запись уже есть; триггеры и проверка — ниже
+    elif has_content and append:
         # Для секрета шифруем дописываемое тело отдельным ENC:-блоком
         # (read_article расшифровывает построчно), заголовок секции — нет.
         body_add = encrypt_content(content) if is_secret else content
@@ -545,12 +592,14 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
 
     # Cascade-mark: refresh marker on lines that link to this file
     # Одни триггеры содержимое не меняют — зависимым нечего помечать обновлёнными.
-    cascaded = mark_dependents(project, filename, ts) if has_content else 0
+    cascaded = mark_dependents(project, filename, ts) if has_content and not repeated else 0
 
     log_event(project, "edit_article", f"{filename}" + (f" (cascade: {cascaded})" if cascaded else ""))
     await asyncio.to_thread(git_commit, f"edit: {filename} [{project}]")
 
-    if has_content:
+    if repeated:
+        msg = repeat_msg
+    elif has_content:
         msg = f"\u270f\ufe0f {'Дописано' if append else 'Обновлено'}: {project}/{filename}"
     else:
         msg = f"🧷 Статья: {project}/{filename}"

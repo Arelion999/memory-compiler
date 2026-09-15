@@ -4,6 +4,7 @@
 в базу, сессия A об этом не узнаёт и разбирается с чужими изменениями с нуля.
 """
 
+import json
 import time
 
 import pytest
@@ -273,6 +274,108 @@ def test_client_session_key_survives_reconnect_and_route_switch():
         FakeSession(), "7c19e4a2-8b3f-4d05-a6e7-91f2b0c3d584")
     # и не пересекается с ключами MCP-сессий
     assert not freshness.key_for(None, chat).startswith("s")
+
+
+# ── снимки чатов переживают рестарт (v1.88.1) ───────────────────────────────
+# 15.09.2026: после каждого рестарта контейнера (watcher, десятки в день) тот же чат
+# снова получал «Первое обращение к проекту». _seen жил в памяти с доводом «рестарт
+# всё равно рвёт MCP-сессии», а ключ снимка с v1.76.0 — id чата, и его рестарт не
+# меняет. Рестарт в тестах — freshness.reset(): память процесса пуста, файл остался.
+
+CHAT_A = "0b7a1f3e-5c2d-4e8f-9a61-2d4c8e0f7b35"
+CHAT_B = "7c19e4a2-8b3f-4d05-a6e7-91f2b0c3d584"
+
+
+def test_chat_snapshot_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    chat = freshness.key_for(None, CHAT_A)
+    assert freshness.is_first_touch(chat, "infra")
+    freshness.consume(chat, "infra")
+    freshness.reset()
+    assert not freshness.is_first_touch(chat, "infra"), "рестарт сделал старый чат новым"
+    # позитивный контроль: новый чат и новый проект после рестарта — первое касание
+    assert freshness.is_first_touch(freshness.key_for(None, CHAT_B), "infra")
+    assert freshness.is_first_touch(chat, "general")
+
+
+def test_mcp_session_keys_do_not_survive_restart(tmp_path, monkeypatch):
+    """Ключ MCP-сессии (s1, s2…) — счётчик процесса: после рестарта тот же номер
+    достанется НОВОЙ сессии, и сохранённый снимок выдал бы ей чужое «уже видела»."""
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    key = freshness.key_for(FakeSession())
+    freshness.consume(key, "infra")
+    freshness.reset()
+    assert freshness.is_first_touch(key, "infra")
+
+
+def test_expired_or_broken_state_is_ignored(tmp_path, monkeypatch):
+    path = tmp_path / "freshness.json"
+    monkeypatch.setattr(freshness, "STATE_PATH", path, raising=False)
+    ttl = getattr(freshness, "SEEN_TTL_SEC", 7 * 24 * 3600)
+    now = time.time()
+    path.write_text(json.dumps([["c:old-chat", "infra", now - ttl - 60],
+                                ["c:live-chat", "infra", now]]), encoding="utf-8")
+    assert freshness.is_first_touch("c:old-chat", "infra"), "протухший снимок не забыт"
+    assert not freshness.is_first_touch("c:live-chat", "infra"), "живой снимок не подхвачен"
+    freshness.reset()
+    path.write_text("{битый", encoding="utf-8")
+    assert freshness.is_first_touch("c:live-chat", "infra")   # битый файл вызов не роняет
+
+
+def test_snapshot_ttl_counts_from_last_activity(tmp_path, monkeypatch):
+    """Чат неделю работает с одним проектом, а новых пар (чат, проект) на сервере за это
+    время не появилось. Файл обязан освежаться сам, иначе после рестарта TTL отсчитается
+    от ПЕРВОГО касания и чат снова станет новым (ревью 15.09.2026)."""
+    path = tmp_path / "freshness.json"
+    monkeypatch.setattr(freshness, "STATE_PATH", path, raising=False)
+    chat = freshness.key_for(None, CHAT_A)
+    freshness.consume(chat, "infra")                             # первое касание, файл записан
+    stale = [[chat, "infra", time.time() - freshness.SEEN_TTL_SEC - 60]]
+    path.write_text(json.dumps(stale), encoding="utf-8")         # так файл выглядит неделю спустя
+
+    freshness.consume(chat, "infra")
+    assert json.loads(path.read_text(encoding="utf-8")) == stale, "файл переписывается на каждом вызове"
+
+    if hasattr(freshness, "_last_save"):                         # прошёл час с последней записи
+        freshness._last_save[0] -= getattr(freshness, "SAVE_EVERY_SEC", 3600) + 1
+    freshness.consume(chat, "infra")                             # чат всё ещё работает
+    freshness.reset()                                            # рестарт
+    assert not freshness.is_first_touch(chat, "infra"), "TTL отсчитан от первого касания"
+
+
+def test_restart_does_not_repeat_first_touch_in_the_same_chat(tmp_path, monkeypatch):
+    from mcp.types import TextContent
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    tools = _shared_bridge(monkeypatch)
+    base = [TextContent(type="text", text="ответ")]
+
+    out = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, CHAT_A), base)
+    assert "FIRST infra" in out
+    freshness.reset()                                            # рестарт контейнера
+    out = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, CHAT_A), base)
+    assert "FIRST" not in out, "после рестарта тот же чат снова получил первое касание"
+    out = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, CHAT_B), base)
+    assert "FIRST infra" in out, "новый чат после рестарта обязан получить первое касание"
+
+
+def test_write_call_is_not_told_that_it_does_not_write(monkeypatch):
+    """15.09.2026: ответ на session_note пришёл с подсказкой «больше 25 минут без
+    записи в базу». consume с подсказкой срабатывал раньше, чем note_write сдвигал
+    отсчёт молчания, — пишущему вызову напоминали, что он не пишет."""
+    from mcp.types import TextContent
+    tools = _shared_bridge(monkeypatch)
+    base = [TextContent(type="text", text="ответ")]
+    key = freshness.key_for(None, CHAT_A)
+
+    tools._append_freshness("read_article", {"project": "infra"}, base, CHAT_A)
+    _silence(key, "infra")
+    out = _footer(tools._append_freshness(
+        "session_note", {"project": "infra", "note": "нашёл причину"}, base, CHAT_A), base)
+    assert "без записи" not in out, "пишущий вызов получил напоминание, что не пишет"
+    # позитивный контроль: то же молчание у читающего вызова подсказку даёт
+    _silence(key, "infra")
+    out = _footer(tools._append_freshness("read_article", {"project": "infra"}, base, CHAT_A), base)
+    assert "без записи" in out
 
 
 def test_bad_client_session_falls_back_to_mcp_session():
