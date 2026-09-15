@@ -1,20 +1,19 @@
-"""Поиск и ответы: search, ask, тематические search_* и рендер выдачи.
+"""Поиск и ответы: search, ask, тематические search_* и сборка JSON-выдачи search.
 
 Вынесено из handlers.py в v1.83.0: файл дорос до 3063 строк. Шов выбран замером
-связности — константы поиска (пулы, бюджеты выдачи, стоп-слова), ContextVar
-структурированной выдачи и хелперы рендера используются ТОЛЬКО этими функциями
+связности — константы поиска (пулы, стоп-слова), ContextVar
+структурированной выдачи используются ТОЛЬКО этими функциями
 и уезжают вместе с ними.
 
-⚠️ ДВА ХЕЛПЕРА ИМПОРТИРУЮТСЯ ОТЛОЖЕННО, внутри функций: `_whoosh_async` (нужен
-ещё route_project в handlers) и `_weighted_budgets` (нужен ещё start_task, и его
-патчат девять тестов). Импорт на уровне модуля дал бы цикл handlers ↔ search,
-а отложенный вдобавок сохраняет тестам патч на handlers: имя берётся из модуля
-в момент вызова, а не связывается при импорте.
+⚠️ ХЕЛПЕР ИМПОРТИРУЕТСЯ ОТЛОЖЕННО, внутри функций: `_whoosh_async` (нужен ещё
+route_project в handlers). Импорт на уровне модуля дал бы цикл handlers ↔
+search, а отложенный вдобавок сохраняет тестам патч на handlers: имя берётся
+из модуля в момент вызова, а не связывается при импорте.
 """
 
 import asyncio
+import json
 import os
-import re
 from contextvars import ContextVar
 
 from mcp.types import TextContent, ResourceLink
@@ -160,15 +159,56 @@ def _resource_links(items) -> list[ResourceLink]:
 search_payload_var: ContextVar[dict | None] = ContextVar("search_payload", default=None)
 
 
+def search_json(payload: dict) -> str:
+    """Единственная сериализация выдачи search: этот же JSON уходит и в
+    structuredContent, и в текстовый блок. ensure_ascii=False — кириллица
+    литералом: в escape-форме буква занимает шесть символов."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _search_item(r: dict, secret: bool) -> dict:
+    """Результат выдачи — ровно то, что модель видела раньше, без дублей и превью.
+
+    uri/name — устаревшие: клиенты проверяют structuredContent по схеме из кэша
+    tools/list, где они обязательны. Уходят в v1.88.0, после перезапуска Desktop.
+    """
+    project, file = r["project"], r["file"]
+    item = {
+        "title": r.get("title", "") or "",
+        "project": project,
+        "file": file,
+        "score": _scores(r),
+        "secret": bool(secret),
+        "uri": f"memory://{project}/{file}",
+        "name": f"{project}/{file}",
+    }
+    # Пометки только когда есть что сказать: пустые поля — это символы в контексте.
+    sup = r.get("superseded_by")
+    if sup:
+        item["superseded_by"] = sup[0]
+    if r.get("is_correction"):
+        item["correction"] = True
+    return item
+
+
+def _search_payload(query: str, results: list[dict], secrets: dict,
+                    fallback_from: str | None = None) -> dict:
+    """Выдача search в порядке ранжирования (поправки уже подняты attach_corrections)."""
+    payload: dict = {"query": query, "count": len(results)}
+    if fallback_from:
+        payload["fallback_from"] = fallback_from
+    payload["results"] = [
+        _search_item(r, secrets.get(f"{r['project']}/{r['file']}", False)) for r in results]
+    return payload
+
+
 async def search(query: str, project: str = "all") -> list[TextContent]:
     from memory_compiler.handlers import _whoosh_async
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
-    # Bigger N for reranker → +25-40% precision over hybrid alone (RAG benchmarks).
     results = await _whoosh_async(query, project=project, limit=SEARCH_CANDIDATE_POOL)
 
     # Авто-фолбэк на project=all: узкий скоуп часто промахивается по общей сущности,
     # физически лежащей в другом проекте (напр. канал уведомлений / общий креденшл).
-    # Вместо «Ничего не найдено» переспрашиваем по всем проектам и помечаем выдачу.
     fallback_all = False
     if not results and project != "all":
         results = await _whoosh_async(query, project="all", limit=SEARCH_CANDIDATE_POOL)
@@ -177,64 +217,26 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
     if not results:
         # Пустую выдачу тоже объявляем явно: иначе панель прочитала бы payload
         # предыдущего вызова и показала чужие результаты под новым запросом.
-        search_payload_var.set({"query": query, "count": 0, "results": []})
-        return [TextContent(type="text", text=f"Ничего не найдено: '{query}'")]
+        payload = _search_payload(query, [], {})
+        search_payload_var.set(payload)
+        return [TextContent(type="text", text=search_json(payload))]
 
     results = await _rerank_async(query, results, top_k=8)
     # Поправки к найденному подтягиваются НЕЗАВИСИМО от релевантности и встают
     # выше отменённых статей: в живом случае поправка была в той же выдаче, но
     # ниже, и агент взял верхнюю.
     results = await attach_corrections(results)
-
     track_access([f"{r['project']}/{r['file']}" for r in results])
 
-    header = f"# Поиск: '{query}'\n"
-    if fallback_all:
-        header += (f"\n*В проекте «{project}» ничего не найдено — показаны результаты "
-                   f"по всем проектам (возможно, общая/кросс-проектная сущность).*\n")
-    links: list[ResourceLink] = []
-    found: list[dict] = []
-    secrets = {}
-    for r in results:
-        secret = is_secret_article(r.get("preview", ""), r.get("file", ""))
-        if secret:
-            r["preview"] = f"# {r['title']}\n\n[зашифровано — используй read_article для просмотра]"
-        secrets[f"{r['project']}/{r['file']}"] = secret
-    # Текст выдачи собирает ОДИН бюджет: голове полное превью, хвосту короткое
-    # (см. _render_search_results). Ссылки и структурная выдача строятся по ВСЕМ
-    # результатам независимо от того, сколько текста досталось каждому: обрезка
-    # превью не должна прятать найденное от панели MCP Apps.
-    out = [_render_search_results(results, header, query)]
-    for r in results:
-        secret = secrets.get(f"{r['project']}/{r['file']}", False)
-        scores = _scores(r)
-        # Resource link на статью — клиент открывает/прикрепляет как memory://-ресурс.
-        # Секреты не линкуем (как ресурс они недоступны).
-        if not secret:
-            links.append(ResourceLink(
-                type="resource_link",
-                uri=f"memory://{r['project']}/{r['file']}",
-                name=f"{r['project']}/{r['file']}",
-                title=r.get("title", ""),
-                description=scores,
-                mimeType="text/markdown",
-            ))
-        # А в структурированную выдачу секрет ВХОДИТ — с флагом. Панель покажет его
-        # с замком, а открывать будет через read_article (тот расшифровывает), не
-        # через memory://. uri у секрета остаётся идентификатором статьи и НЕ
-        # разрешается как ресурс — на это и указывает secret.
-        found.append({
-            "uri": f"memory://{r['project']}/{r['file']}",
-            "name": f"{r['project']}/{r['file']}",
-            "title": r.get("title", "") or "",
-            "score": scores,
-            "project": r["project"],
-            "file": r["file"],
-            "secret": bool(secret),
-        })
-
-    search_payload_var.set({"query": query, "count": len(found), "results": found})
-    return [TextContent(type="text", text="\n".join(out)), *links]
+    # Секрет входит в выдачу с флагом (панель рисует замок, открывает через
+    # read_article), но без содержимого — превью в выдаче нет вовсе.
+    secrets = {f"{r['project']}/{r['file']}": is_secret_article(r.get("preview", ""), r.get("file", ""))
+               for r in results}
+    # Одна форма выдачи (v1.87.0): тот же JSON уйдёт и в structuredContent (tools.py).
+    # Markdown-рендер и resource_link модель в Claude Code не видела ни разу.
+    payload = _search_payload(query, results, secrets, project if fallback_all else None)
+    search_payload_var.set(payload)
+    return [TextContent(type="text", text=search_json(payload))]
 
 
 # ─── ask ─────────────────────────────────────────────────────────────────────
@@ -381,78 +383,6 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(out)), *_resource_links(results)]
 
 
-# ── Бюджет выдачи search (v1.67.0) ──────────────────────────────────────────
-# `search` отдавал 8 результатов с превью в 10 строк КАЖДЫЙ — одинаково первому
-# и восьмому. Замер 26.08.2026: это 64% всех символов, которые инструменты
-# возвращают за неделю (2626 тыс. из 4125 тыс.), медиана выдачи 13132 символа.
-# Хвост столько не стоит, и это показали два независимых замера:
-#   • baseline retrieval_eval: recall@3 0.667, recall@5 0.78, recall@10 0.84 —
-#     позиции 6-8 добавляют около 6% попаданий на ~37% объёма;
-#   • 345 пар «запрос → открытая статья»: слова запроса стоят в ЗАГОЛОВКЕ у 76%,
-#     в первых трёх строках у 87%, в первых четырёх у 91%; строки 5-10 дают 9%.
-# Поэтому голове — полное превью, хвосту — короткое, на всё — общий потолок.
-# ⚠️ ПОРЯДОК И СОСТАВ НЕ ТРОГАЕМ: правка про рендер, ранжирование то же.
-SEARCH_BUDGET = 7000       # потолок на всю выдачу, символов
-
-
-SEARCH_HEAD = 3            # позиций с полным превью (по recall@3)
-
-
-SEARCH_HEAD_WEIGHT = 3.0   # во столько раз голова важнее хвоста при дележе
-
-
-def _query_words(text: str) -> set[str]:
-    """Значимые слова запроса: короткие и служебные выкидываем."""
-    return {w for w in re.sub(r"[^а-яёa-z0-9]+", " ", (text or "").lower()).split()
-            if len(w) > 3 and w not in _QUERY_STOP}
-
-
-_QUERY_STOP = {"как", "что", "где", "для", "при", "это", "или", "был", "все",
-               "еще", "ещё", "уже", "про", "него", "нужно", "надо"}
-
-
-def _fit_preview(preview: str, budget: int, qwords: set[str]) -> str:
-    """Уместить превью в бюджет, оставляя строки СО СЛОВАМИ ЗАПРОСА.
-
-    ⚠️ ОТБОР ПО ЗАПРОСУ, А НЕ ПЕРВЫЕ N СТРОК — так решил замер. Сжатие хвоста
-    первыми строками теряло сигнал: слова запроса оставались в блоке целевой
-    статьи у 74% пар против 81% при полном превью (−7 п.п.). Отбор по запросу
-    в ТОМ ЖЕ бюджете даёт 79% на хвосте и 82% в голове, то есть возвращает
-    почти всё даром. Замер: 418 golden-пар «запрос → открытая статья».
-
-    ⚠️ ПОРЯДОК СТРОК СОХРАНЯЕТСЯ: превью читают как связный текст, а
-    перетасованные цитаты читаются как обрывки.
-    """
-    lines = preview.splitlines()
-    if not lines:
-        return ""
-    head, body = lines[0], lines[1:]
-    left = budget - len(head)
-    if left <= 0 or not body:
-        return head
-    hit = [i for i, l in enumerate(body) if qwords & _query_words(l)] if qwords else []
-    rest = [i for i in range(len(body)) if i not in set(hit)]
-    chosen: set[int] = set()
-    for i in hit + rest:                      # сначала совпавшие, потом добор с начала
-        need = len(body[i]) + 1
-        if need > left:
-            continue
-        chosen.add(i)
-        left -= need
-    if not chosen:
-        return head
-    out, skipped = [head], False
-    for i in range(len(body)):
-        if i in chosen:
-            if skipped:
-                out.append("…")
-                skipped = False
-            out.append(body[i])
-        elif out:
-            skipped = True
-    return "\n".join(out)
-
-
 async def attach_corrections(results: list[dict]) -> list[dict]:
     """Подтянуть в выдачу поправки к найденным статьям и поставить их ВЫШЕ.
 
@@ -488,61 +418,6 @@ async def attach_corrections(results: list[dict]) -> list[dict]:
         # поправка уже была в выдаче — поднимаем её над отменённой
         return sorted(results, key=lambda r: bool(r.get("superseded_by")))
     return corrections + sorted(results, key=lambda r: bool(r.get("superseded_by")))
-
-
-def _render_search_results(results: list[dict], header: str = "", query: str = "") -> str:
-    """Собрать выдачу поиска в пределах SEARCH_BUDGET.
-
-    Бюджет делится тем же water-fill'ом, что и стартовый контекст: короткий
-    результат берёт своё целиком, неиспользованное достаётся длинным, вес задаёт
-    позиция. Заголовок остаётся у КАЖДОГО результата — в нём 76% сигнала, и
-    безымянная строка в выдаче бесполезна.
-    """
-    qwords = _query_words(query)
-    if not results:
-        return header
-    want, weight = [], []
-    for i, r in enumerate(results):
-        preview = r.get("preview", "") or ""
-        head_line = f"---\n### [{r['project']}] {r['title']} ({_scores(r)})\n"
-        want.append(len(head_line) + len(preview) + 1)
-        weight.append(SEARCH_HEAD_WEIGHT if i < SEARCH_HEAD else 1.0)
-    # Отложенно: тот же water-fill делит стартовый контекст, и его патчат девять тестов
-    # через handlers.<имя> — имя обязано браться из модуля в момент вызова.
-    from memory_compiler.handlers import _weighted_budgets
-    budgets = _weighted_budgets(want, weight, max(SEARCH_BUDGET - len(header), 0), floor=0)
-    parts = [header] if header else []
-    for r, bud in zip(results, budgets):
-        title_line = f"---\n### [{r['project']}] {r['title']} ({_scores(r)})\n"
-        # Отменённая статья не выдаётся молча: предупреждение идёт ПЕРЕД телом —
-        # иначе его прочтут уже после того, как поверят содержанию.
-        sup = r.get("superseded_by") or _superseded_note(r)
-        if sup:
-            title_line += (f"⚠️ **Статья отменена** поправкой «{sup[1] or sup[0]}» "
-                           f"({sup[0]}) — читать её.\n")
-        elif r.get("is_correction"):
-            title_line += "✅ **Это поправка** — она отменяет прежний вывод по теме.\n"
-        left = bud - len(title_line)
-        # ⚠️ Второго среза по строкам здесь НЕТ: превью уже собрано
-        # make_preview(n=10) в search.py. Резать одно и то же дважды значит
-        # считать бюджет по объёму, которого в выдаче не будет, — тогда он
-        # распределяется впустую, и голова получает столько же, сколько хвост.
-        body = r.get("preview", "") or ""
-        if left <= 0:
-            parts.append(title_line)       # заголовок отдаём всегда
-            continue
-        if len(body) > left:
-            body = _fit_preview(body, left, qwords)
-        parts.append(title_line + body + "\n")
-    return "".join(parts)
-
-
-def _superseded_note(r: dict):
-    """Пометка об отмене из шапки статьи (дешёвое чтение, без обхода базы)."""
-    try:
-        return superseded_by(r.get("project", ""), r.get("file", ""))
-    except Exception:
-        return None
 
 
 def _scores(r: dict) -> str:

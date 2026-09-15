@@ -202,6 +202,13 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     return n;
   }
 
+  // Где лежит статья. project/file — адрес с v1.87.0; name/uri — устаревшие
+  // поля, уходят в v1.88.0 (сервер старой версии присылает только их).
+  function where(r) {
+    if (r.project && r.file) return r.project + "/" + r.file;
+    return r.name || r.uri || "";
+  }
+
   var state = { data: null, project: null };
 
   function openArticle(r) {
@@ -209,7 +216,7 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     var back = el("button", "back", "← к результатам");
     back.addEventListener("click", function () { renderList(); });
     root.appendChild(back);
-    root.appendChild(el("div", "title", r.title || r.name || ""));
+    root.appendChild(el("div", "title", r.title || where(r)));
     var body = el("pre", "article", "Загрузка…");
     root.appendChild(body);
     requestAnimationFrame(sendSize);
@@ -245,6 +252,8 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     // Текст многострочный, поэтому white-space: pre-wrap; в DOM — только
     // textContent, как и заголовки статей.
     if (data.notice) root.appendChild(el("div", "notice", data.notice));
+    if (data.fallback_from) root.appendChild(el("div", "notice",
+      "В проекте «" + data.fallback_from + "» ничего не найдено — показаны результаты по всем проектам."));
 
     // Фильтр по проекту — поверх УЖЕ полученных результатов, без обращения к
     // серверу и без хода модели.
@@ -272,9 +281,11 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
         var li = el("li");
         li.setAttribute("role", "button");
         li.setAttribute("tabindex", "0");
-        li.appendChild(el("div", "title", (r.secret ? "🔒 " : "") + (r.title || r.name || r.uri || "")));
-        var meta = (r.name || "") + (r.score ? "  ·  " + r.score : "");
+        li.appendChild(el("div", "title", (r.secret ? "🔒 " : "") + (r.title || where(r))));
+        var meta = where(r) + (r.score ? "  ·  " + r.score : "");
         if (r.secret) meta += "  ·  зашифровано, открыть — по клику";
+        if (r.superseded_by) meta += "  ·  ⚠️ отменена → " + r.superseded_by;
+        if (r.correction) meta += "  ·  ✅ поправка";
         if (meta.trim()) li.appendChild(el("div", "meta", meta));
         li.addEventListener("click", function () { openArticle(r); });
         li.addEventListener("keydown", function (ev) {

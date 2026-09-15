@@ -556,11 +556,11 @@ from memory_compiler.handlers_reports import (  # noqa: E402,F401
 from memory_compiler.handlers_search import (  # noqa: E402,F401
     search, get_context, ask, ask_sources, ask_fragment,
     search_by_tag, search_snippets, search_error, search_decisions,
-    attach_corrections, _render_search_results, _fit_preview, _query_words,
-    _resource_links, _rerank_async, _scores, _superseded_note,
-    search_payload_var, SEARCH_BUDGET, SEARCH_HEAD, SEARCH_HEAD_WEIGHT,
+    attach_corrections, search_json, _search_payload, _search_item,
+    _resource_links, _rerank_async, _scores,
+    search_payload_var,
     SEARCH_CANDIDATE_POOL, SEARCH_RERANK_BUDGET_S, RERANK_ENABLED,
-    ASK_TOP_K, ASK_HEAD_LINES, _QUERY_STOP,
+    ASK_TOP_K, ASK_HEAD_LINES,
 )
 
 
@@ -582,10 +582,10 @@ from memory_compiler.handlers_articles import (  # noqa: E402,F401
 
 # ─── Домен сессий живёт в handlers_sessions (v1.86.0) ────────────────────────
 # Реэкспорт, а не переезд по вызывающим: tools.py и тесты ходят через
-# handlers.<имя>. В ядре остаются общие хелперы, которые домен тянет отложенно:
-# _whoosh_async (нужен route_project), _weighted_budgets (нужен handlers_search),
-# _cut_section_body (нужен handlers_articles), START_BLOCK_FLOOR (дефолт
-# _weighted_budgets).
+# handlers.<имя>. В ядре остаются хелперы, которые домен тянет отложенно:
+# _whoosh_async (нужен route_project), _weighted_budgets (с v1.87.0 нужен лишь
+# start_task — бюджет превью search, где он был общим, удалён), _cut_section_body
+# (нужен handlers_articles), START_BLOCK_FLOOR (дефолт _weighted_budgets).
 from memory_compiler.handlers_sessions import (  # noqa: E402,F401
     save_session, first_touch_context, session_note, open_questions,
     close_question, load_session, get_active_context, start_task, finish_task,

@@ -369,3 +369,11 @@ def test_volume_metrics_stay_on_the_requested_window(audit):
     d = analytics.daily(24)
     assert d["searches"] == 1 and d["search_median"] == 5000, \
         "медиана выдачи считается по суткам, иначе ряд перестанет быть суточным"
+
+
+def test_empty_search_json_stays_below_miss_threshold():
+    """С v1.87.0 size у search — длина JSON. Пустая выдача обязана оставаться ниже
+    MISS_SIZE даже при длинном запросе, иначе «поиск впустую» перестанет считаться молча."""
+    from memory_compiler import analytics, handlers
+    empty = handlers.search_json(handlers._search_payload("запрос" * 20, [], {}))
+    assert len(empty) < analytics.MISS_SIZE

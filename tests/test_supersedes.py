@@ -90,14 +90,17 @@ def test_article_cannot_supersede_itself(proj, tmp_path):
 
 @pytest.mark.asyncio
 async def test_search_warns_about_superseded_hit(proj, tmp_path):
-    """Главное поведение: отменённая статья в выдаче помечена, а не выдана молча."""
+    """Главное поведение: отменённая статья в выдаче помечена, а не выдана молча.
+    С v1.87.0 пометка — поле JSON: текстовый рендер модели не показывался вовсе."""
     _write(tmp_path / "demo", "staroe.md", "Контур 8.3.27 нужен для выката")
+    _write(tmp_path / "demo", "popravka.md", "Барьера платформ нет", "Контур НЕ нужен.")
     storage.mark_superseded("demo", "staroe.md", "popravka.md", "Барьера платформ нет")
-    results = [{"project": "demo", "file": "staroe.md", "title": "Контур 8.3.27 нужен для выката",
-                "score": 95, "preview": "# Контур 8.3.27 нужен\nподнимаем контур"}]
-    out = handlers._render_search_results(results, "# Поиск\n", query="контур 8.3.27")
-    assert "отменена" in out.lower(), "выдача обязана предупредить об отмене"
-    assert "Барьера платформ нет" in out, "и назвать поправку, чтобы было куда идти"
+    found = [{"project": "demo", "file": "staroe.md", "title": "Контур 8.3.27 нужен для выката",
+              "score": 95, "preview": "# Контур 8.3.27 нужен\nподнимаем контур"}]
+    ranked = await handlers.attach_corrections(found)
+    items = {i["file"]: i for i in handlers._search_payload("контур 8.3.27", ranked, {})["results"]}
+    assert items["staroe.md"]["superseded_by"] == "popravka.md", "выдача обязана назвать поправку"
+    assert items["popravka.md"].get("correction") is True, "и пометить саму поправку"
 
 
 @pytest.mark.asyncio

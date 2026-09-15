@@ -270,6 +270,13 @@ def test_notice_is_rendered_as_text_not_markup():
     assert "notice" in SEARCH_VIEW_HTML
 
 
+def test_view_marks_superseded_corrections_and_fallback():
+    """Пометки, которые модель получает полями JSON, человек в панели тоже видит."""
+    assert "r.superseded_by" in SEARCH_VIEW_HTML and "отменена" in SEARCH_VIEW_HTML
+    assert "r.correction" in SEARCH_VIEW_HTML and "поправка" in SEARCH_VIEW_HTML
+    assert "data.fallback_from" in SEARCH_VIEW_HTML
+
+
 # ─── Диагностика показывается, только когда хосту есть что сказать (v1.75.1) ──
 # Замер 2026-09-09 (Claude Desktop 1.49585): hostContext при initialize НЕТ,
 # theme не прислан, styles.variables нет, containerDimensions нет. Блок из

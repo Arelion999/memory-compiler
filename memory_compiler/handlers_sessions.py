@@ -13,7 +13,8 @@ v1.64.0, journal v1.81.0, handlers_search v1.83.0, handlers_articles v1.84.0). �
 
 ⚠️ КРОСС-МОДУЛЬНЫЕ ИМЕНА — ОТЛОЖЕННО ИЗ handlers, внутри функций: _whoosh_async,
 _weighted_budgets, _cut_section_body и START_BLOCK_FLOOR остаются в ядре
-(_whoosh_async нужен route_project; _weighted_budgets — handlers_search;
+(_whoosh_async нужен route_project; _weighted_budgets с дефолтом START_BLOCK_FLOOR
+с v1.87.0 нужен лишь start_task — бюджет превью search, где он был общим, удалён;
 _cut_section_body — handlers_articles); _rerank_async/stale_summary/save_lesson
 реэкспортированы handlers из других детей. Импорт на уровне модуля дал бы цикл
 handlers ↔ handlers_sessions, а отложенный вдобавок СОХРАНЯЕТ ТЕСТАМ ПАТЧ на

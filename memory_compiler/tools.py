@@ -188,6 +188,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {"type": "string"},
                     "count": {"type": "integer"},
+                    "fallback_from": {"type": "string", "description": "nothing was found in this project, so results come from all projects"},
                     "results": {
                         "type": "array",
                         "items": {
@@ -197,15 +198,20 @@ async def list_tools() -> list[Tool]:
                                 # только description инструмента и inputSchema, outputSchema
                                 # он не трогает — кириллица тут непереводима в принципе и
                                 # роняет гейт «при MC_LANG=en не осталось кириллицы».
-                                "uri": {"type": "string", "description": "memory://<project>/<file>; for a secret article it does NOT resolve as a resource — read it via read_article"},
-                                "name": {"type": "string"},
                                 "title": {"type": "string"},
-                                "score": {"type": "string"},
                                 "project": {"type": "string", "description": "argument for read_article"},
                                 "file": {"type": "string", "description": "argument for read_article"},
-                                "secret": {"type": "boolean", "description": "body is encrypted; opens only via read_article"}
+                                "score": {"type": "string"},
+                                "secret": {"type": "boolean", "description": "body is encrypted; opens only via read_article"},
+                                "superseded_by": {"type": "string", "description": "this article is superseded: read this file of the same project instead"},
+                                "correction": {"type": "boolean", "description": "this article is a correction that supersedes an earlier one"},
+                                # ⚠️ Устаревшие, уходят в v1.88.0. Клиент проверяет structuredContent
+                                # по схеме из кэша tools/list, где они обязательны, — убирать
+                                # обязательное поле только двумя релизами (замер 15.09.2026).
+                                "uri": {"type": "string", "description": "deprecated, will be removed: use project and file"},
+                                "name": {"type": "string", "description": "deprecated, will be removed: use project and file"},
                             },
-                            "required": ["uri", "name"]
+                            "required": ["title", "project", "file"]
                         }
                     },
                     # Футеры (свежесть, подсказка при первом обращении к проекту)
@@ -1471,6 +1477,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # и до подсчёта размера — футер тоже часть ответа.
     result = _append_freshness(name, arguments, result, client_session)
 
+    # У search одна форма выдачи (v1.87.0). Собираем её ДО подсчёта размера:
+    # size в аудите обязан мерить то, что получит модель, а не спрятанный текст.
+    structured = None
+    if name == "search":
+        result, structured = _search_response(arguments.get("query", ""), result)
+
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
@@ -1490,15 +1502,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000),
                                 "size": total, **origin})
     # У search объявлен outputSchema — обязаны вернуть structuredContent (SDK валидирует).
-    # Строим из уже готовых resource_link-блоков content: программный клиент получает
-    # машиночитаемый список, человекочитаемый текст + ссылки остаются в content.
-    if name == "search":
-        payload = _build_search_structured(arguments.get("query", ""), result)
-        # футер, добавленный _append_freshness последним TextContent, дублируем
-        # в структурированную выдачу — иначе он не доедет до модели (см.
-        # _merge_notice_into_payload)
-        notice = result[-1].text if result and getattr(result[-1], "type", "") == "text"             and str(getattr(result[-1], "text", "")).lstrip().startswith(("📌", "⚠️", "💡")) else ""
-        return (result, _merge_notice_into_payload(payload, notice))
+    if structured is not None:
+        return (result, structured)
     return result
 
 
@@ -1515,6 +1520,23 @@ def _merge_notice_into_payload(payload: dict, notice: str) -> dict:
     out = dict(payload)
     out["notice"] = notice.strip()
     return out
+
+
+def _search_response(query: str, blocks: list) -> tuple[list[TextContent], dict]:
+    """Одна форма выдачи search (v1.87.0): structuredContent и ЕДИНСТВЕННЫЙ
+    текстовый блок — один и тот же JSON.
+
+    Claude Code при объявленном outputSchema показывает модели structuredContent,
+    а текстовые блоки — нет (замер 15.09.2026: превью не дошло до модели ни в
+    одном из 723 поисков). Поэтому футер свежести и ошибка параметра не могут
+    жить отдельным блоком — они уходят в notice.
+    """
+    payload = _build_search_structured(query)
+    extra = [str(getattr(b, "text", "") or "").strip() for b in blocks
+             if getattr(b, "type", "") == "text"
+             and not str(getattr(b, "text", "") or "").lstrip().startswith("{")]
+    payload = _merge_notice_into_payload(payload, "\n\n".join(t for t in extra if t))
+    return [TextContent(type="text", text=handlers.search_json(payload))], payload
 
 
 # Инструменты, чья запись делает контекст ДРУГИХ сессий устаревшим.
@@ -1572,30 +1594,17 @@ def _append_freshness(name: str, arguments: dict, result: list,
     return result
 
 
-def _build_search_structured(query: str, blocks: list) -> dict:
-    """Структурированная выдача search.
+def _build_search_structured(query: str) -> dict:
+    """Структурированная выдача search — payload, собранный самим хендлером.
 
-    Основной источник — payload, собранный самим хендлером: он один знает про
-    секретность. Сборка из resource-ссылок (ниже, как фолбэк) секреты ТЕРЯЛА —
-    ссылок на них нет намеренно, и панель MCP Apps молча показывала меньше
-    результатов, чем текстовая выдача того же вызова, включая счётчик.
+    Сборки из resource-ссылок больше нет (v1.87.0): ссылок у search нет вовсе.
+    Payload не нашёлся (хендлер не дошёл до сборки) — пустая выдача того же
+    вида, а не чужой payload: панель иначе показала бы прошлый вызов.
     """
     payload = handlers.search_payload_var.get()
     if payload is not None and payload.get("query") == query:
         return payload
-    results = []
-    for b in blocks:
-        if getattr(b, "type", None) == "resource_link":
-            results.append({
-                "uri": str(b.uri),
-                "name": b.name or "",
-                "title": b.title or "",
-                "score": b.description or "",
-                "project": (b.name or "/").split("/", 1)[0],
-                "file": (b.name or "/").split("/", 1)[-1],
-                "secret": False,
-            })
-    return {"query": query, "count": len(results), "results": results}
+    return {"query": query, "count": 0, "results": []}
 
 
 async def _dispatch_tool(name: str, arguments: dict) -> list[TextContent]:

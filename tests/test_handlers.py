@@ -1,5 +1,6 @@
 """Tests for handler functions."""
 import asyncio
+import json
 import pytest
 from memory_compiler.search import rebuild_index
 from memory_compiler.handlers import (
@@ -268,12 +269,11 @@ async def test_save_lesson_does_not_report_contradictions(knowledge_dir):
 @pytest.mark.asyncio
 async def test_search(knowledge_dir):
     result = await search("docker", "testproj")
-    # Первый блок — текстовый summary (обратная совместимость)
-    assert result[0].type == "text"
-    assert "Test Article" in result[0].text
-    # За ним — resource links на найденные статьи (memory://<проект>/<файл>)
-    links = [b for b in result if getattr(b, "type", None) == "resource_link"]
-    assert any(str(l.uri).startswith("memory://testproj/test_article.md") for l in links)
+    # Одна форма выдачи (v1.87.0): единственный текстовый блок — JSON structuredContent
+    assert len(result) == 1 and result[0].type == "text"
+    payload = json.loads(result[0].text)
+    hit = next(i for i in payload["results"] if i["file"] == "test_article.md")
+    assert hit["title"] == "Test Article" and hit["project"] == "testproj"
 
 
 @pytest.mark.asyncio
@@ -328,9 +328,11 @@ async def test_search_falls_back_to_all_projects(knowledge_dir, monkeypatch):
     )
     smod.rebuild_index()
     result = await search("zzyzx", "testproj")
-    text = result[0].text
-    assert "Zzyzx" in text, f"фолбэк не нашёл статью в другом проекте: {text}"
-    assert "по всем проектам" in text, "нет пометки о кросс-проектном фолбэке"
+    # Одна форма выдачи (v1.87.0): пометка о фолбэке — поле fallback_from, а не фраза в тексте.
+    payload = json.loads(result[0].text)
+    assert any("Zzyzx" in i["title"] for i in payload["results"]), \
+        f"фолбэк не нашёл статью в другом проекте: {payload}"
+    assert payload["fallback_from"] == "testproj", "нет пометки о кросс-проектном фолбэке"
 
 
 @pytest.mark.asyncio
