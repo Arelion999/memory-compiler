@@ -56,6 +56,7 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     import memory_compiler.handlers_reports as reports_mod
     import memory_compiler.handlers_search as search_handlers_mod
     import memory_compiler.handlers_articles as articles_mod
+    import memory_compiler.handlers_sessions as sessions_mod
 
     # Patch config module (canonical source)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", knowledge_dir)
@@ -94,6 +95,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     # edit_article, backlinks и context_gaps пишут/читают БОЕВУЮ базу вместо tmp.
     monkeypatch.setattr(articles_mod, "KNOWLEDGE_DIR", knowledge_dir)
     monkeypatch.setattr(articles_mod, "PROJECTS", ["testproj", "general"])
+    # ⚠️ handlers_sessions (v1.86.0) — тот же класс пятый раз: журнал, старт/финиш
+    # задачи и стартовый контекст уехали из handlers и держат СВОЙ KNOWLEDGE_DIR.
+    # Без этой строки start_task/finish_task/load_session пишут и читают БОЕВУЮ базу
+    # вместо tmp — молча. PROJECTS модулю не нужен: open_questions читает его как
+    # memory_compiler.config.PROJECTS живьём (setattr на несуществующий атрибут упал бы).
+    monkeypatch.setattr(sessions_mod, "KNOWLEDGE_DIR", knowledge_dir)
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)

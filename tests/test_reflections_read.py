@@ -15,9 +15,13 @@ from memory_compiler import handlers, storage
 @pytest.fixture
 def proj(tmp_path, monkeypatch):
     import memory_compiler.config as cfg
+    from memory_compiler import handlers_sessions
     monkeypatch.setattr(storage, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", tmp_path)
-    monkeypatch.setattr(handlers, "KNOWLEDGE_DIR", tmp_path)
+    # start_task уехал в handlers_sessions (v1.86.0) и читает СВОЙ KNOWLEDGE_DIR;
+    # патч на handlers стал бы бесшумным no-op (_whoosh_async ниже остаётся на handlers —
+    # он там определён и тянется отложенно).
+    monkeypatch.setattr(handlers_sessions, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(cfg, "PROJECTS", ["demo"])
     (tmp_path / "demo").mkdir()
     return "demo"

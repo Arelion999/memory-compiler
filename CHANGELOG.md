@@ -2,6 +2,36 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.86.0 — 2026-09-15
+
+Пятый разрез `handlers.py`: домен сессий вынесен в `handlers_sessions.py`. Поведение не меняется — только структура. handlers.py 1133 → 609 строк.
+
+### Changed
+
+- **Домен сессий вынесен из `handlers.py` в `memory_compiler/handlers_sessions.py`** (618 строк,
+  12 функций + 6 констант): `save_session`, `session_note`, `open_questions`, `close_question`,
+  `load_session`, `get_active_context`, `first_touch_context` — журнал и вопросы; `start_task` /
+  `finish_task` — комбинированные tools старта и завершения; `_Block` / `_render_block` — сборка
+  стартового контекста в бюджете; `_journal_gap_hint`. Пятый разрез тем же приёмом
+  (handlers_reports v1.64.0, journal v1.81.0, handlers_search v1.83.0, handlers_articles v1.84.0).
+  Шов выбран замером связности (транзитивное замыкание); `handlers` реэкспортирует все вынесенные
+  имена — `tools.py` и тесты ходят через `handlers.<имя>` как прежде.
+
+### Notes
+
+- ⚠️ Общие с другими детьми хелперы ОСТАЮТСЯ в ядре и тянутся отложенно внутри функций:
+  `_whoosh_async` (нужен ещё `route_project`), `_weighted_budgets` (нужен ещё `handlers_search` —
+  это и был тот child→child, из-за которого сессии не резали раньше статей), `_cut_section_body`
+  (нужен ещё `handlers_articles`), `START_BLOCK_FLOOR` (дефолт `_weighted_budgets`). Отложенный
+  импорт ИЗ handlers вдобавок СОХРАНЯЕТ тестам патч на `handlers.<имя>`: test_reflections_read /
+  test_stale_precision патчат `handlers._whoosh_async` и зовут `handlers.start_task`.
+- ⚠️ `handlers_sessions` держит СВОЙ `KNOWLEDGE_DIR` — `tests/conftest.py` патчит его отдельно
+  (5-й случай класса). Патчи `handlers.KNOWLEDGE_DIR` в test_reflections_read / test_stale_precision
+  РЕТАРГЕЧЕНЫ на `handlers_sessions` (после переезда `start_task` они стали бы бесшумными no-op).
+- Почищены 23 осиротевших импорта в `handlers.py` (storage-хелперы сессий, `datetime`, `numpy`,
+  `track_access`, `rebuild_index/embeddings`).
+- Тесты: 1294 → 1296 (`test_no_blocking_calls` параметризован по модулям пакета — новый модуль +2).
+
 ## v1.85.0 — 2026-09-15
 
 Панель MCP Apps: видимый маркер версии в подвале и лог `resources/read` — чтобы убедиться, что клиент забрал новую вьюху (issue #3).

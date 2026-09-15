@@ -26,8 +26,11 @@ def base(tmp_path, monkeypatch):
     from memory_compiler import storage
     # KNOWLEDGE_DIR импортирован ПО ЗНАЧЕНИЮ в каждый модуль — патчить надо всюду,
     # иначе project_dir() из storage уводит скан в боевой каталог.
+    from memory_compiler import handlers_sessions
     monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", tmp_path)
-    monkeypatch.setattr(handlers, "KNOWLEDGE_DIR", tmp_path)
+    # start_task уехал в handlers_sessions (v1.86.0) и читает СВОЙ KNOWLEDGE_DIR;
+    # патч на handlers стал бы бесшумным no-op (_whoosh_async остаётся на handlers).
+    monkeypatch.setattr(handlers_sessions, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(storage, "KNOWLEDGE_DIR", tmp_path)
     monkeypatch.setattr(cfg, "PROJECTS", ["demo"])
     # Скан сроков живёт в handlers_reports (v1.64.0) и держит СВОИ значения,
