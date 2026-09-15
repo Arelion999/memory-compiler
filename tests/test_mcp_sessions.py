@@ -1,12 +1,13 @@
 """Число живых MCP-сессий в /api/health — чтобы сессии-сироты стало чем мерить.
 
-У Streamable HTTP (`/mcp`) сессии stateful, а `session_idle_timeout` в нашем пине
-`mcp[cli]==1.29.1` по умолчанию `None` — простаивающая сессия не истекает вообще.
-Вопрос «копятся ли сироты» висел без ответа именно потому, что ИЗМЕРЯТЬ НЕЧЕМ:
-SDK сообщает о рождении транспорта строкой `Created new transport with session ID`
-на уровне INFO, а логгер `mcp` у нас намеренно держится на WARNING (obs.py) — там
-рождаются транспортные `-32602`/`-32001`, и поднятие уровня зальёт лог шумом.
-Поэтому число берётся из реестра менеджера и отдаётся метрикой.
+У Streamable HTTP (`/mcp`) сессии stateful. Дефолт SDK `session_idle_timeout=None`
+означал бы, что простаивающая сессия не истекает вообще и сироты копятся до
+рестарта; с v1.86.1 фабрика передаёт SDK `MCP_SESSION_IDLE_TIMEOUT` (2 ч), и SDK
+реапит брошенные сам. Метрика осталась нужной: по ней видно, что реестр не растёт
+монотонно в тихие периоды без рестартов. Мерить приходится из реестра менеджера,
+потому что SDK сообщает о рождении транспорта строкой `Created new transport with
+session ID` на уровне INFO, а логгер `mcp` у нас намеренно держится на WARNING
+(obs.py) — там рождаются транспортные `-32602`/`-32001`, и поднятие зальёт лог шумом.
 """
 import asyncio
 import json
@@ -102,6 +103,20 @@ def test_app_state_carries_session_manager():
     assert isinstance(mgr, StreamableHTTPSessionManager), (
         "менеджер Streamable HTTP не выставлен в app.state — /api/health отдаст "
         "mcp_sessions=None на живом сервере")
+
+
+def test_session_manager_gets_idle_timeout():
+    """С v1.86.1 простаивающие сессии истекают: фабрика ОБЯЗАНА передать SDK
+    session_idle_timeout, иначе сироты снова копятся до рестарта (дефолт SDK — None,
+    «не истекают вообще»). Проверяем, что значение доехало до менеджера SDK, а не
+    просто объявлено константой — иначе правка молча откатилась бы к дефолту."""
+    from memory_compiler.api import MCP_SESSION_IDLE_TIMEOUT
+    assert MCP_SESSION_IDLE_TIMEOUT == 7200, "порог простоя изменился — обнови и это ожидание"
+    app = create_starlette_app(Server("test"))
+    mgr = app.state.mcp_session_manager
+    assert getattr(mgr, "session_idle_timeout", None) == MCP_SESSION_IDLE_TIMEOUT, (
+        "session_idle_timeout не доехал до менеджера SDK — простаивающие сессии "
+        "снова не истекают (дефолт None), реестр растёт до рестарта")
 
 
 def test_sdk_still_exposes_private_session_registry():

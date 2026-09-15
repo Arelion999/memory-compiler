@@ -488,11 +488,13 @@ async def web_health(request: Request):
     # поиска, хотя вектор просто ещё считается (v1.59.0, отложенные эмбеддинги).
     # mcp_sessions — ПУБЛИЧНО, по тому же основанию, что models_ready и embed_pending:
     # это состояние сервера, а не сведения о содержимом базы (ни имён проектов, ни
-    # статей число сессий не раскрывает). У Streamable HTTP сессии stateful, а
-    # session_idle_timeout в пине mcp[cli]==1.29.1 по умолчанию None — простаивающие
-    # не истекают вообще, и «копятся ли сироты» нечем было измерить: SDK пишет о
-    # рождении транспорта на уровне INFO, а логгер `mcp` у нас намеренно на WARNING
-    # (obs.py — там же рождаются транспортные -32602/-32001, поднятие зальёт лог шумом).
+    # статей число сессий не раскрывает). У Streamable HTTP сессии stateful; с v1.86.1
+    # session_idle_timeout=MCP_SESSION_IDLE_TIMEOUT (2 ч) — простаивающие сироты SDK
+    # реапит сам (до этого дефолт None копил их до рестарта; замер 14.09.2026 ~240/сут,
+    # почти всё — мёртвые сессии скриптов). Метрика осталась: по ней видно, что реестр
+    # не растёт монотонно в тихие периоды без рестартов. SDK пишет о рождении транспорта
+    # на уровне INFO, а логгер `mcp` у нас намеренно на WARNING (obs.py — там же рождаются
+    # транспортные -32602/-32001, поднятие зальёт лог шумом).
     payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count(),
                "models_ready": _search_mod.embed_model_ready(),
                "embed_pending": embed_queue.pending(),
@@ -998,6 +1000,16 @@ async def web_logs(request: Request):
 
 # ─── Starlette app factory ─────────────────────────────────────────────────
 
+# Простаивающие MCP-сессии истекают через 2 часа (v1.86.1, решение владельца 15.09).
+# До этого session_idle_timeout=None (дефолт SDK) — сирота (закрытый чат, скрипт без
+# DELETE, обрыв сети) висела в реестре _server_instances до рестарта контейнера, и в
+# тихий период без рестартов реестр рос без границы. Порог консервативный: активный
+# простой (обед, встреча) короче двух часов сессию переживёт, брошенную SDK реапит сам.
+# Реап ЖИВОЙ сессии даёт клиенту -32001 на следующем вызове — тот же транзиент, что
+# после рестарта контейнера (клиент переинициализируется и повторяет). Свежести не
+# касается: она ключуется по id чата (_client_session), не по объекту MCP-сессии (v1.76.0).
+MCP_SESSION_IDLE_TIMEOUT = 7200  # секунд (2 часа)
+
 
 def create_starlette_app(mcp_server: Server) -> Starlette:
     sse = SseServerTransport("/messages/")
@@ -1005,7 +1017,9 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     # не затронуты). У него нет длинного GET-стрима и pre-init окна reconnect, из-за
     # которого /sse ловил транзиентный -32602 (гонка: tool-call на новой сессии до
     # завершения initialize). Клиенты переключаются на /mcp по готовности.
-    session_manager = StreamableHTTPSessionManager(app=mcp_server)
+    session_manager = StreamableHTTPSessionManager(
+        app=mcp_server, session_idle_timeout=MCP_SESSION_IDLE_TIMEOUT
+    )
 
     async def handle_sse(request: Request):
         async with sse.connect_sse(
