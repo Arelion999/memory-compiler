@@ -183,7 +183,9 @@ async def list_tools() -> list[Tool]:
             # Машиночитаемая выдача (structuredContent) для программных клиентов.
             # С v1.87.0 structuredContent и единственный текстовый блок несут ОДИН
             # и тот же JSON (handlers.search_json) — без resource_link. Схема
-            # нестрогая (additionalProperties по умолчанию).
+            # нестрогая (additionalProperties по умолчанию) — на этом держится
+            # безопасный откат на релиз с uri/name, держит
+            # test_release2_schema_accepts_release1_payload_for_rollback.
             outputSchema={
                 "type": "object",
                 "properties": {
@@ -206,11 +208,6 @@ async def list_tools() -> list[Tool]:
                                 "secret": {"type": "boolean", "description": "body is encrypted; opens only via read_article"},
                                 "superseded_by": {"type": "string", "description": "this article is superseded: read this file of the same project instead"},
                                 "correction": {"type": "boolean", "description": "this article is a correction that supersedes an earlier one"},
-                                # ⚠️ Устаревшие, уходят в v1.88.0. Клиент проверяет structuredContent
-                                # по схеме из кэша tools/list, где они обязательны, — убирать
-                                # обязательное поле только двумя релизами (замер 15.09.2026).
-                                "uri": {"type": "string", "description": "deprecated, will be removed: use project and file"},
-                                "name": {"type": "string", "description": "deprecated, will be removed: use project and file"},
                             },
                             "required": ["title", "project", "file"]
                         }

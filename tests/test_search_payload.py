@@ -1,4 +1,5 @@
-"""Компактная выдача search (v1.87.0): один JSON без превью и resource_link.
+"""Компактная выдача search: один JSON без превью и resource_link (v1.87.0),
+вторым релизом сняты устаревшие `uri`/`name` (v1.88.0).
 
 Claude Code при объявленном outputSchema показывает модели structuredContent и
 прячет текстовые блоки: превью v1.67.0 не дошло до модели ни в одном из 723
@@ -39,10 +40,9 @@ def test_payload_has_no_preview_and_no_optional_noise():
     assert "fallback_from" not in payload
 
 
-def test_release1_still_sends_deprecated_uri_and_name():
+def test_release2_drops_uri_and_name():
     item = handlers._search_payload("q", [_r("p", "a.md", "A")], {})["results"][0]
-    assert item["uri"] == "memory://p/a.md"
-    assert item["name"] == "p/a.md"
+    assert "uri" not in item and "name" not in item
 
 
 def test_secret_is_flagged_by_the_map():
@@ -115,20 +115,24 @@ def _schema():
     return {t.name: t for t in asyncio.run(list_tools())}["search"].outputSchema
 
 
-# Схема 1.86.1 — её держат в кэше tools/list клиенты, не перезапускавшие приложение.
-OLD_SCHEMA_1_86_1 = {
+# Схема v1.87.0 — в кэше у клиентов, перезапустившихся после релиза 1.
+# ⚠️ Это СНИМОК схемы кэша, а не текущая схема — при следующей смене outputSchema
+# search эту константу под текущую схему не подгонять: тест обратной совместимости
+# станет бесшумным (будет сверять схему саму с собой). Новый снимок снимать только
+# после того, как клиенты перезапущены и в кэше у них уже новая схема.
+SCHEMA_1_87_0 = {
     "type": "object",
     "properties": {
-        "query": {"type": "string"},
-        "count": {"type": "integer"},
+        "query": {"type": "string"}, "count": {"type": "integer"},
+        "fallback_from": {"type": "string"}, "notice": {"type": "string"},
         "results": {"type": "array", "items": {
             "type": "object",
-            "properties": {"uri": {"type": "string"}, "name": {"type": "string"},
-                           "title": {"type": "string"}, "score": {"type": "string"},
-                           "project": {"type": "string"}, "file": {"type": "string"},
-                           "secret": {"type": "boolean"}},
-            "required": ["uri", "name"]}},
-        "notice": {"type": "string"},
+            "properties": {"title": {"type": "string"}, "project": {"type": "string"},
+                           "file": {"type": "string"}, "score": {"type": "string"},
+                           "secret": {"type": "boolean"}, "superseded_by": {"type": "string"},
+                           "correction": {"type": "boolean"}, "uri": {"type": "string"},
+                           "name": {"type": "string"}},
+            "required": ["title", "project", "file"]}},
     },
     "required": ["query", "count", "results"],
 }
@@ -147,10 +151,27 @@ def test_current_schema_accepts_payload():
     jsonschema.validate(_full_payload(), _schema())
 
 
-def test_schema_cached_by_old_clients_accepts_release1_payload():
-    """Claude Code 2.1.270 проверяет structuredContent по схеме из кэша tools/list,
-    Desktop держит кэш до полного перезапуска: payload релиза 1 обязан пройти старую схему."""
-    jsonschema.validate(_full_payload(), OLD_SCHEMA_1_86_1)
+def test_schema_cached_after_release1_accepts_release2_payload():
+    """Claude Code проверяет structuredContent по схеме из кэша tools/list, Desktop
+    держит кэш до полного перезапуска: payload релиза 2 обязан пройти схему,
+    закэшированную клиентами, перезапустившимися после релиза 1 (v1.87.0)."""
+    jsonschema.validate(_full_payload(), SCHEMA_1_87_0)
+
+
+def test_schema_no_longer_declares_uri_and_name():
+    props = _schema()["properties"]["results"]["items"]["properties"]
+    assert "uri" not in props and "name" not in props
+
+
+def test_release2_schema_accepts_release1_payload_for_rollback():
+    """Откат безопасен: если сервер откатят на релиз 1 (снова отправляет uri/name),
+    а клиент уже держит в кэше схему релиза 2 — валидация не упадёт, потому что
+    новая схема не запрещает лишние свойства."""
+    payload = _full_payload()
+    for item in payload["results"]:
+        item["uri"] = f"memory://{item['project']}/{item['file']}"
+        item["name"] = f"{item['project']}/{item['file']}"
+    jsonschema.validate(payload, _schema())
 
 
 def test_result_requires_what_read_article_needs():

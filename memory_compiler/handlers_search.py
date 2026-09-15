@@ -167,11 +167,7 @@ def search_json(payload: dict) -> str:
 
 
 def _search_item(r: dict, secret: bool) -> dict:
-    """Результат выдачи — ровно то, что модель видела раньше, без дублей и превью.
-
-    uri/name — устаревшие: клиенты проверяют structuredContent по схеме из кэша
-    tools/list, где они обязательны. Уходят в v1.88.0, после перезапуска Desktop.
-    """
+    """Результат выдачи — ровно то, что модель видела раньше, без дублей и превью."""
     project, file = r["project"], r["file"]
     item = {
         "title": r.get("title", "") or "",
@@ -179,8 +175,6 @@ def _search_item(r: dict, secret: bool) -> dict:
         "file": file,
         "score": _scores(r),
         "secret": bool(secret),
-        "uri": f"memory://{project}/{file}",
-        "name": f"{project}/{file}",
     }
     # Пометки только когда есть что сказать: пустые поля — это символы в контексте.
     sup = r.get("superseded_by")

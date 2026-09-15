@@ -37,8 +37,8 @@ def _all_text(tool):
     """Весь текст инструмента, который видит клиент.
 
     Схемы обходятся РЕКУРСИВНО и обе — input и output. Плоского обхода properties
-    первого уровня недостаточно: у search описание поля uri лежит на глубине
-    outputSchema.properties.results.items.properties.uri, и такой текст остался бы
+    первого уровня недостаточно: у search описание поля secret лежит на глубине
+    outputSchema.properties.results.items.properties.secret, и такой текст остался бы
     непроверенным (localize_tools правит только inputSchema).
     """
     def descriptions(node):

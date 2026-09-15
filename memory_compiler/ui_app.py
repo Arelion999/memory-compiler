@@ -202,11 +202,8 @@ SEARCH_VIEW_HTML = r"""<!DOCTYPE html>
     return n;
   }
 
-  // Где лежит статья. project/file — адрес с v1.87.0; name/uri — устаревшие
-  // поля, уходят в v1.88.0 (сервер старой версии присылает только их).
   function where(r) {
-    if (r.project && r.file) return r.project + "/" + r.file;
-    return r.name || r.uri || "";
+    return r.project && r.file ? r.project + "/" + r.file : "";
   }
 
   var state = { data: null, project: null };
