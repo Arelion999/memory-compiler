@@ -37,7 +37,7 @@ TOOLS_EN: dict[str, dict] = {
             'topic': 'Short title',
             'content': 'Problem, cause, solution',
             'project': 'Project name',
-            'force_new': 'Force creation of a new article',
+            'force_new': "Force creation of a new article (default: false)",
             'verified': ('HOW the fact was verified: a test run, a live call on prod, command '
                          'output, an API response. Set it when the conclusion came from a tool '
                          'rather than indirect reasoning — otherwise the next session takes a '
@@ -280,6 +280,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Поиск по кодовым блокам в статьях.
         'description': 'Search code blocks within articles.',
         'params': {
+            'project': "Project name or 'all' (default: all)",
             'query': 'What to search for in the code',
             'lang': 'Language: python, bash, yaml, 1c, sql',
         },
@@ -305,6 +306,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Поиск похожих ошибок в базе знаний. Принимает трейсбек или текст ошибки.
         'description': 'Search the knowledge base for similar errors. Accepts a traceback or error text.',
         'params': {
+            'project': "Project name or 'all' (default: all)",
             'error_text': 'Traceback or error text',
         },
     },
@@ -338,6 +340,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Поиск по журналу решений.
         'description': 'Search the decision log.',
         'params': {
+            'project': "Project name or 'all' (default: all)",
             'query': 'Search query',
         },
     },
@@ -376,6 +379,7 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Найти дубли/похожие статьи: near-exact детектор РЕАЛЬНЫХ дублей (точный/containment матч по тексту) + похожие темы по embeddings. НЕ мержит автоматически.
         'description': 'Find duplicate/similar articles: a near-exact detector for REAL duplicates (exact/containment text match) + similar topics via embeddings. Does NOT merge automatically.',
         'params': {
+            'project': "Project name or 'all' (default: all)",
             'min_sim': 'Embedding-similarity threshold for "similar topics" (e5). 0.985 is near-duplicates; lower produces many false positives on a short RU corpus. Real duplicates are caught by near-exact, not by this threshold.',
         },
     },
@@ -391,7 +395,8 @@ TOOLS_EN: dict[str, dict] = {
         # RU: Stale fact watcher — найти статьи с устаревающими фактами: SSL-сертификаты с близким expiration, истёкшие, секреты/cert старше 180 дней. Источники: regex 'valid until / до DATE' в тексте, tracking-frontmatter (current.until/expires), теги ssl/cert/password/license + age статьи.
         'description': "Stale fact watcher — find articles with facts that are going stale: SSL certificates nearing expiration, expired ones, secrets/certs older than 180 days. Sources: a regex for date phrases like 'valid until DATE' (English or Russian phrasing) in the text, tracking frontmatter (current.until/expires), ssl/cert/password/license tags + article age.",
         'params': {
-            'warn_days': 'How many days ahead to warn',
+            'project': "Project name or 'all' (default: all)",
+            'warn_days': "How many days ahead to warn (default: 30)",
         },
     },
     'gap_report': {

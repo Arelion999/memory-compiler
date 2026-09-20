@@ -69,6 +69,36 @@ _CLIENT_SESSION_DESC_RU = "Служебное: id чата для свежест
 _CLIENT_SESSION_DESC_EN = "Service field: chat id for context freshness, set by the client hook. Do not fill."
 
 
+# Инструменты, которым проект можно взять из истории сессии, если вызов его не
+# назвал. У них `project` снимается с `required`: пока он там стоит, клиентский
+# валидатор отбивает вызов РАНЬШЕ сервера («expected string, received undefined»,
+# живая проверка 20.09.2026 на проде), и серверная подстановка не достижима.
+# ⚠️ Деструктивных здесь нет и быть не должно: цена ошибки — стёртая статья.
+# ⚠️ Поиска здесь нет: там `project` и так необязателен, 'all' — рабочий режим.
+_PROJECT_FROM_SESSION = frozenset({
+    "finish_task", "save_lesson", "save_decision", "save_runbook", "save_session",
+    "save_secret", "save_tracking", "save_contexts", "save_compact",
+    "save_from_template", "session_note", "edit_article", "close_question",
+})
+
+
+def _relax_project_requirement(tools: list[Tool]) -> list[Tool]:
+    """Снять `project` с `required` там, где сервер умеет подставить его сам.
+
+    Параметр остаётся объявленным и описанным: явный проект — главный способ
+    вызова, подстановка — страховка от потери записи. Шаг идёт ДО _mark_required,
+    чтобы маркер « (обязательно)» не обещал того, чего схема уже не требует.
+    """
+    for tool in tools:
+        if tool.name not in _PROJECT_FROM_SESSION:
+            continue
+        schema = tool.inputSchema or {}
+        required = schema.get("required")
+        if required and "project" in required:
+            schema["required"] = [name for name in required if name != "project"]
+    return tools
+
+
 def _declare_client_session(tools: list[Tool]) -> list[Tool]:
     """Объявить необязательный строковый _client_session у каждого инструмента.
 
@@ -148,7 +178,7 @@ async def list_tools() -> list[Tool]:
                     "content": {"type": "string", "description": "Проблема, причина, решение"},
                     "project": {"type": "string", "description": "Имя проекта"},
                     "tags": {"type": "array", "items": {"type": "string"}},
-                    "force_new": {"type": "boolean", "default": False, "description": "Принудительно создать новую статью"},
+                    "force_new": {"type": "boolean", "description": "Принудительно создать новую статью (по умолчанию false)"},
                     "verified": {"type": "string", "description": "ЧЕМ проверен факт: прогон тестов, живой вызов на проде, вывод команды, ответ API. Ставить, когда вывод получен инструментом, а не выведен косвенно — иначе следующая сессия примет догадку за проверенное"},
                     "supersedes": {"type": "string", "description": "Имена файлов статей, которые эта поправка ОТМЕНЯЕТ (через запятую). Ставить всегда, когда выяснилось, что прежний вывод неверен: без этого обе статьи выдаются равноправно и следующая сессия возьмёт ту, что выше по релевантности, а не ту, что верна"},
                     "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC},
@@ -176,7 +206,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Поисковый запрос"},
-                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["query"]
             },
@@ -235,7 +265,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "dry_run": {"type": "boolean", "default": True, "description": "Превью без изменений"},
+                    "dry_run": {"type": "boolean", "description": "Превью без изменений (по умолчанию true)"},
                     "project": {"type": "string", "enum": PROJECTS + ["all"], "description": "Компилировать только записи этого проекта"},
                     "since": {"type": "string", "description": "ISO дата — обрабатывать логи начиная с этой даты"}
                 }
@@ -247,9 +277,9 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"},
-                    "fix": {"type": "boolean", "default": False, "description": "Автоисправление безопасных проблем (теги, index)"},
-                    "verbose": {"type": "boolean", "default": False, "description": "Развернуть построчно то, что по умолчанию свёрнуто в счётчик (устаревшие статьи, сироты)"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all'"},
+                    "fix": {"type": "boolean", "description": "Автоисправление безопасных проблем (теги, index) (по умолчанию false)"},
+                    "verbose": {"type": "boolean", "description": "Развернуть построчно то, что по умолчанию свёрнуто в счётчик (устаревшие статьи, сироты) (по умолчанию false)"}
                 }
             }
         ),
@@ -349,7 +379,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "question": {"type": "string", "description": "Вопрос на естественном языке"},
-                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["question"]
             }
@@ -386,7 +416,7 @@ async def list_tools() -> list[Tool]:
                     "project": {"type": "string", "description": "Имя проекта"},
                     "filename": {"type": "string", "description": "Имя файла статьи"},
                     "content": {"type": "string", "description": "Новое содержимое (полная замена тела статьи). Можно не передавать, если передан triggers"},
-                    "append": {"type": "boolean", "default": False, "description": "True — дописать в конец, False — заменить тело"},
+                    "append": {"type": "boolean", "description": "True — дописать в конец, False — заменить тело"},
                     "triggers": {"type": "array", "items": {"type": "string"}, "description": _TRIGGERS_DESC},
                     "verify": {"type": "array", "items": {"type": "string"}, "description": _VERIFY_DESC}
                 },
@@ -400,8 +430,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "default": "all", "description": "Проект или 'all'"},
-                    "limit": {"type": "integer", "default": 5, "description": "Сколько статей за раз"}
+                    "project": {"type": "string", "description": "Проект или 'all'"},
+                    "limit": {"type": "integer", "description": "Сколько статей за раз (по умолчанию 5)"}
                 }
             }
         ),
@@ -448,7 +478,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "tag": {"type": "string", "description": "Тег для поиска"},
-                    "project": {"type": "string", "default": "all", "description": "Имя проекта или 'all'"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all'"}
                 },
                 "required": ["tag"]
             }
@@ -509,7 +539,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Имя проекта для удаления"},
-                    "confirm": {"type": "boolean", "default": False, "description": "Подтверждение удаления (обязательно если в проекте есть статьи)"}
+                    "confirm": {"type": "boolean", "description": "Подтверждение удаления (обязательно если в проекте есть статьи) (по умолчанию false)"}
                 },
                 "required": ["name"]
             }
@@ -559,7 +589,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {"type": "string", "description": "Что искать в коде"},
                     "lang": {"type": "string", "description": "Язык: python, bash, yaml, 1c, sql"},
-                    "project": {"type": "string", "default": "all"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"}
                 },
                 "required": ["query"]
             }
@@ -597,7 +627,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "error_text": {"type": "string", "description": "Трейсбек или текст ошибки"},
-                    "project": {"type": "string", "default": "all"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"}
                 },
                 "required": ["error_text"]
             }
@@ -648,7 +678,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Поисковый запрос"},
-                    "project": {"type": "string", "default": "all"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"}
                 },
                 "required": ["query"]
             }
@@ -683,7 +713,14 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "project": {"type": "string", "description": "Имя проекта"},
                     "entity": {"type": "string", "description": "Название сущности: release, deployment, config"},
-                    "facts": {"type": "object", "description": "Факты: {version: '1.3.50', url: ...}"},
+                    # ⚠️ Строка принимается наравне с объектом (v1.90.0). Живой случай
+                    # 19.09.2026: суточная проверка узла ушла прозой, клиент отбил вызов
+                    # целиком («expected object, received string») и запись пропала. Отказ
+                    # клиентский, сервер такого вызова не видит — значит спасать нечем,
+                    # кроме как разрешить тип. Строка ложится одним полем `note`.
+                    "facts": {"type": ["object", "string"],
+                              "description": "Факты: {version: '1.3.50', url: ...}. "
+                                             "Можно строкой — она ляжет полем note"},
                     "narrative": {"type": "string", "description": "Опциональное описание (иначе автогенерация)"}
                 },
                 "required": ["project", "entity", "facts"]
@@ -707,8 +744,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "default": "all"},
-                    "min_sim": {"type": "number", "default": 0.985, "description": "Порог embedding-similarity для «похожих тем» (e5). 0.985 — почти дубли; ниже — на коротком RU-корпусе много ложняков. Реальные дубли ловит near-exact, не порог."}
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"},
+                    "min_sim": {"type": "number", "description": "Порог embedding-similarity для «похожих тем» (e5). 0.985 — почти дубли; ниже — на коротком RU-корпусе много ложняков. Реальные дубли ловит near-exact, не порог."}
                 },
                 "required": []
             }
@@ -731,8 +768,8 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "default": "all"},
-                    "warn_days": {"type": "integer", "default": 30, "description": "За сколько дней предупреждать"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all' (по умолчанию all)"},
+                    "warn_days": {"type": "integer", "description": "За сколько дней предупреждать (по умолчанию 30)"}
                 },
                 "required": []
             }
@@ -743,9 +780,9 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "default": "all", "description": "Фильтр по проекту, 'all' = все"},
-                    "days": {"type": "integer", "default": 30, "description": "Окно анализа в днях"},
-                    "limit": {"type": "integer", "default": 10, "description": "Top-N в каждой секции"}
+                    "project": {"type": "string", "description": "Фильтр по проекту, 'all' = все"},
+                    "days": {"type": "integer", "description": "Окно анализа в днях (по умолчанию 30)"},
+                    "limit": {"type": "integer", "description": "Top-N в каждой секции (по умолчанию 10)"}
                 },
                 "required": []
             }
@@ -758,7 +795,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "text": {"type": "string", "description": "Запрос/описание задачи/упоминаемая сущность (опционально)"},
                     "cwd": {"type": "string", "description": "Текущий рабочий каталог клиента (СИЛЬНЫЙ сигнал; если содержит имя проекта — используется как override)"},
-                    "top_k": {"type": "integer", "default": 3, "description": "Сколько кандидатов вернуть (default 3)"}
+                    "top_k": {"type": "integer", "description": "Сколько кандидатов вернуть (default 3)"}
                 },
                 "required": []
             }
@@ -786,8 +823,8 @@ async def list_tools() -> list[Tool]:
                     "repo_path": {"type": "string", "description": "Путь к git-репозиторию (на сервере/в контейнере)"},
                     "project": {"type": "string", "description": "Проект в KB для сохранения"},
                     "since": {"type": "string", "description": "С какого момента: дата ISO, '3 days ago', commit hash. По умолчанию: с последнего capture"},
-                    "auto_save": {"type": "boolean", "default": False, "description": "true = сохранить как статьи, false = вернуть сводку для ревью"},
-                    "group_by": {"type": "string", "enum": ["prefix", "branch", "file"], "default": "prefix", "description": "Группировка: prefix (conventional commits), branch, file (по директории)"},
+                    "auto_save": {"type": "boolean", "description": "true = сохранить как статьи, false = вернуть сводку для ревью"},
+                    "group_by": {"type": "string", "enum": ["prefix", "branch", "file"], "description": "Группировка: prefix (conventional commits), branch, file (по директории)"},
                     "git_log_raw": {"type": "string", "description": "Сырой вывод git log (вместо repo_path). Формат: git log --format='%H|%s|%an|%aI' --numstat"}
                 },
                 "required": ["project"]
@@ -802,8 +839,8 @@ async def list_tools() -> list[Tool]:
                     "vault_path": {"type": "string", "description": "Путь к Obsidian vault"},
                     "project": {"type": "string", "description": "Целевой проект в KB (по умолчанию для всех заметок)"},
                     "folder_mapping": {"type": "object", "description": "Маппинг папок vault → проекты KB. Например: {\"Работа\": \"work\", \"Инфраструктура\": \"infra\"}"},
-                    "dry_run": {"type": "boolean", "default": True, "description": "true = превью, false = импорт"},
-                    "skip_inbox": {"type": "boolean", "default": True, "description": "Пропустить папку Inbox"}
+                    "dry_run": {"type": "boolean", "description": "true = превью, false = импорт"},
+                    "skip_inbox": {"type": "boolean", "description": "Пропустить папку Inbox (по умолчанию true)"}
                 },
                 "required": ["vault_path", "project"]
             }
@@ -815,8 +852,8 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "repo_path": {"type": "string", "description": "Путь к git-репозиторию"},
-                    "project": {"type": "string", "default": "all", "description": "Проект для сравнения (или 'all')"},
-                    "days": {"type": "number", "default": 30, "description": "За сколько последних дней анализировать коммиты. Действует ТОЛЬКО с repo_path: при git_log_raw окно задано содержимым лога, и параметр молча игнорируется"},
+                    "project": {"type": "string", "description": "Проект для сравнения (или 'all')"},
+                    "days": {"type": "number", "description": "За сколько последних дней анализировать коммиты. Действует ТОЛЬКО с repo_path: при git_log_raw окно задано содержимым лога, и параметр молча игнорируется (по умолчанию 30)"},
                     "git_log_raw": {"type": "string", "description": "Сырой git log (альтернатива repo_path)"}
                 }
             }
@@ -832,7 +869,7 @@ async def list_tools() -> list[Tool]:
                     "raw_text": {"type": "string", "description": "Готовый текст (вместо url). Для PDF, документов и т.д."},
                     "source": {"type": "string", "description": "Описание источника (для raw_text): имя файла, URL и т.д."},
                     "topic": {"type": "string", "description": "Тема статьи (по умолчанию: заголовок страницы)"},
-                    "auto_save": {"type": "boolean", "default": False, "description": "true = сохранить сразу, false = превью"}
+                    "auto_save": {"type": "boolean", "description": "true = сохранить сразу, false = превью"}
                 },
                 "required": ["project"]
             }
@@ -842,7 +879,8 @@ async def list_tools() -> list[Tool]:
         t.annotations = _annotations_for(t.name)
     # Маркер ПОСЛЕ локализации: иначе он лёг бы на русский текст и был бы затёрт
     # английским переводом описания. Служебный параметр — последним шагом.
-    return _declare_client_session(_mark_required(localize_tools(tools)))
+    return _declare_client_session(
+        _mark_required(_relax_project_requirement(localize_tools(tools))))
 
 
 # --- Resources (P1): статьи базы как memory://<проект>/<файл> ----------------
@@ -1439,6 +1477,33 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Используется только ключом свежести (_append_freshness).
     client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
 
+    # ⚠️ ПРОПУЩЕННЫЙ `project` БЕРЁМ ИЗ ИСТОРИИ СЕССИИ (v1.90.0). Замер
+    # 20.09.2026 по транскриптам: 78 отказов -32602 за 30 дней, и крупнейшая их
+    # часть — именно он (finish_task 21, save_lesson 7, session_note 2). Корень
+    # тот же, что у всего класса: клиент не показывает модели `required` у
+    # строковых параметров, она читает поле как опциональное и опускает. Маркер
+    # « (обязательно)» из v1.54.0 частоту снизил, но не убрал — падения идут и
+    # в сентябре 2026, а каждое означает ПОТЕРЯННУЮ запись.
+    # Критерий подстановки берётся из схемы (project в `required`), а не списком
+    # руками: у search и search_by_tag он необязателен, там 'all' — осмысленный
+    # режим «по всей базе», и подстановка молча сузила бы выдачу до проекта.
+    substituted_project = ""
+    if isinstance(arguments, dict) and not arguments.get("project") \
+            and name in _PROJECT_FROM_SESSION:
+        # ⚠️ Угадываем ТОЛЬКО когда ключ — id чата от клиента (c:…). У моста
+        # Claude Desktop одна MCP-сессия на ВСЕ чаты Code (v1.76.0): по общему
+        # ключу «последний проект» оказался бы проектом соседнего чата, и запись
+        # молча уехала бы к нему. Лучше отказ.
+        key = _session_key(client_session)
+        substituted_project = freshness.last_project(key) if key.startswith("c:") else ""
+        if substituted_project:
+            arguments["project"] = substituted_project
+        else:
+            return [TextContent(type="text", text=(
+                f"❌ Не указан `project`, и подставить его не из чего: эта сессия ещё не "
+                f"открывала ни одного проекта. Назови проект явно — `{name}(project=\"…\", …)` "
+                f"— или сперва загрузи контекст (`start_task`, `search`)."))]
+
     # Normalize project name in arguments — single source of truth.
     # Eliminates MyProj vs myproj splits regardless of how the caller spelled it.
     # 'all' is a special filter sentinel — preserve as-is.
@@ -1476,6 +1541,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
     # и до подсчёта размера — футер тоже часть ответа.
     result = _append_freshness(name, arguments, result, client_session)
+
+    # ⚠️ Подставленный проект НАЗЫВАЕТСЯ ВСЛУХ: молча записать «куда-то» хуже,
+    # чем отказать — сессия не узнает, что попала не туда, а исправлять придётся
+    # руками. Отдельным блоком, как футер свежести: сотни ассертов сравнивают
+    # тексты ответов дословно.
+    if substituted_project:
+        result = list(result) + [TextContent(type="text", text=(
+            f"\n📁 `project` не был указан — записано в «{substituted_project}», "
+            f"последний проект этой сессии."))]
 
     # У search одна форма выдачи (v1.87.0). Собираем её ДО подсчёта размера:
     # size в аудите обязан мерить то, что получит модель, а не спрятанный текст.
@@ -1553,6 +1627,19 @@ _FRESHNESS_WRITE_TOOLS = {
 # обращении дублировала бы их выдачу.
 _CONTEXT_TOOLS = {"start_task", "load_session", "get_active_context",
                   "open_questions", "get_context", "get_summary"}
+
+
+def _session_key(client_session: str | None) -> str:
+    """Ключ снимка этой сессии: id чата от клиента, иначе объект MCP-сессии.
+
+    Вне запроса (REST, тесты без моста) сессии нет — возвращаем пустой ключ, и
+    подстановка проекта тихо отключается: гадать в таком режиме не на чем.
+    """
+    try:
+        session = app.request_context.session
+    except Exception:
+        return ""
+    return freshness.key_for(session, client_session)
 
 
 def _append_freshness(name: str, arguments: dict, result: list,

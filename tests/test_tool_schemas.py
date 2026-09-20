@@ -114,3 +114,44 @@ def test_save_decision_does_not_require_alternatives():
     tool_map = {t.name: t for t in asyncio.run(list_tools())}
     required = tool_map["save_decision"].inputSchema.get("required") or []
     assert "alternatives" not in required
+
+
+# ── `default` в схеме отбивает вызов у клиента (v1.90.0) ────────────────────
+# Замер 20.09.2026 по транскриптам: 78 отказов `-32602` по инструментам базы за
+# 30 дней, и 18 из них — на параметрах, которые модель И НЕ ДОЛЖНА заполнять:
+#
+#     save_lesson(content, project, tags, topic) → «expected nonoptional,
+#                                                   received undefined: force_new»
+#     route_project(text, cwd)                   → то же про top_k
+#     search_by_tag(tag)                         → то же про project
+#
+# Все эти параметры необязательные и несут `default` в схеме. Клиент строит из
+# неё zod и требует их явно — вызов не доходит до сервера, запись теряется.
+# Значение по умолчанию сервер и так подставляет сигнатурой, поэтому `default`
+# в схеме не нужен; чтобы модель о нём знала, оно называется в description.
+
+def _params_with_default(tool_list):
+    for tool in tool_list:
+        for name, spec in ((tool.inputSchema or {}).get("properties") or {}).items():
+            if isinstance(spec, dict) and "default" in spec:
+                yield "%s.%s" % (tool.name, name)
+
+
+def test_schemas_carry_no_default():
+    offenders = sorted(_params_with_default(asyncio.run(list_tools())))
+    assert offenders == [], (
+        "`default` в схеме заставляет клиента требовать параметр явно: %s" % offenders)
+
+
+def test_optional_params_still_name_their_default_value():
+    """Позитивный контроль: убрав `default`, нельзя смолчать о его значении —
+    иначе модель перестанет знать, что `project` по умолчанию «all»."""
+    tools_by_name = {t.name: t for t in asyncio.run(list_tools())}
+    for tool_name, param, expected in (("search", "project", "all"),
+                                       ("search_by_tag", "project", "all"),
+                                       ("route_project", "top_k", "3"),
+                                       ("save_lesson", "force_new", "false")):
+        spec = ((tools_by_name[tool_name].inputSchema or {}).get("properties") or {})[param]
+        text = (spec.get("description") or "").lower()
+        assert expected in text, (
+            "%s.%s не называет значение по умолчанию: %r" % (tool_name, param, text))

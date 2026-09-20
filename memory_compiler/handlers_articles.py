@@ -1163,9 +1163,18 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 # ─── Tracking (bi-temporal current state) ────────────────────────────────
 
 
-async def save_tracking(project: str, entity: str, facts: dict, narrative: str = "") -> list[TextContent]:
-    """Save/update tracking article (current state snapshot with history)."""
+async def save_tracking(project: str, entity: str, facts, narrative: str = "") -> list[TextContent]:
+    """Save/update tracking article (current state snapshot with history).
+
+    ⚠️ `facts` принимается и строкой: прозаический отчёт о состоянии узла — самый
+    частый вид этой записи, а схема ждала объект, и клиент отбивал такой вызов
+    целиком, ещё до сервера («expected object, received string», живой случай
+    19.09.2026 — запись зависла в очереди хуков и не легла вовсе). Строка
+    сохраняется одним полем `note`: лучше одно поле, чем потерянная запись.
+    """
     from memory_compiler.storage import save_tracking_article
+    if isinstance(facts, str):
+        facts = {"note": facts.strip()}
     result = save_tracking_article(project, entity, facts, narrative)
 
     if result["action"] == "unchanged":
