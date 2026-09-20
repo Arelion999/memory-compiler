@@ -138,3 +138,39 @@ async def test_start_task_silent_without_deadlines(base, monkeypatch):
 
 async def _empty():
     return []
+
+
+# ── истёкшее в стартовом контексте (v1.89.0) ────────────────────────────────
+# Замер 20.09.2026 по транскриптам: «Инфостарт… 554 стартмани сгорают
+# 09.09.2026 — истёк» приезжал в стартовый контекст 11 дней подряд, попав в 50
+# выдач из 164 за неделю. Предупреждать после даты не о чем — тратить уже
+# нечего, а блок вытеснял полезное. В отчёте stale_facts истёкшее остаётся:
+# там его спрашивают явно и смотрят как историю за 90 дней.
+
+@pytest.mark.asyncio
+async def test_start_task_hides_expired_deadline(base, monkeypatch):
+    expired = (date.today() - timedelta(days=10)).strftime("%d.%m.%Y")
+    base("subscription.md", "Абонемент оплачен до %s, остаток сгорает." % expired)
+    monkeypatch.setattr(handlers, "_whoosh_async", lambda *a, **k: _empty())
+    res = await handlers.start_task("что с абонементом", "demo")
+    assert "истёк" not in res[0].text, res[0].text[:400]
+    assert "Сроки на исходе" not in res[0].text, "блок с одним истёкшим пустой"
+
+
+@pytest.mark.asyncio
+async def test_start_task_still_shows_live_deadline_next_to_expired(base, monkeypatch):
+    """Позитивный контроль: прячем истёкшее, а не блок сроков целиком."""
+    expired = (date.today() - timedelta(days=10)).strftime("%d.%m.%Y")
+    base("subscription.md", "Абонемент оплачен до %s, остаток сгорает." % expired)
+    base("ssl.md", "Сертификат домена действителен до %s." % _soon(5))
+    monkeypatch.setattr(handlers, "_whoosh_async", lambda *a, **k: _empty())
+    text = (await handlers.start_task("сертификат и абонемент", "demo"))[0].text
+    assert "Сроки на исходе" in text and "осталось" in text
+    assert "истёк" not in text, text[:400]
+
+
+def test_expired_stays_in_the_report(base):
+    """Отчёт не трогаем: истёкшее спрашивают явно и смотрят как историю."""
+    expired = (date.today() - timedelta(days=10)).strftime("%d.%m.%Y")
+    base("subscription.md", "Абонемент оплачен до %s, остаток сгорает." % expired)
+    assert len(_scan()["expired"]) == 1

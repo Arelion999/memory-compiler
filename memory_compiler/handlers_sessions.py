@@ -265,7 +265,16 @@ SESSION_Q_CHARS = 300
 # весь стартовый контекст не дотягивал и до 1500 символов, то есть место было.
 # Размер ответа при этом гулял от 457 до 6808: общего потолка не существовало,
 # он складывался стихийно из суммы независимых срезов.
-START_BUDGET = 6000        # потолок на обрезаемые блоки, символов
+# ⚠️ ПОТОЛОК СНИЖЕН 6000 → 4500 (v1.89.0). Замер 20.09.2026 по транскриптам,
+# 164 вызова за 7 дней (871 тыс. символов): медиана 5362, у потолка — половина
+# вызовов. Состав: «Найдено» 34,4%, открытые вопросы 23,2%, сессия с шапкой
+# 20,5%, связанные действия 11,5%, факты 6,8%, runbooks 2,3%, сроки 1,2%.
+# ⚠️ ВЫКИНУТЬ БЛОК РАДИ ЭКОНОМИИ БЕССМЫСЛЕННО: раздача water-fill'ом отдаёт
+# освободившееся место голодным соседям, а голодны они у половины вызовов —
+# размер ответа держит ТОЛЬКО это число. Кого резать, решают веса блоков:
+# вопросы и сессия (3.0), находки (2.5), сроки (2.0) уцелевают, а runbooks
+# (0.5), compact (0.8), зависимые проекты (1.0) и решения (1.2) ужимаются.
+START_BUDGET = 4500        # потолок на обрезаемые блоки, символов
 
 
 class _Block:
@@ -381,7 +390,14 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 if "rerank_score" in r:
                     scores += f", rerank: {r['rerank_score']:.2f}"
                 found_items.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}")
-            blocks.append(_Block("found", f"## Найдено ({len(relevant)} релевантных, hybrid+rerank)",
+            # ⚠️ Заголовок называет то, что РЕАЛЬНО отбирало: реранкер выключен
+            # с v1.27.0, `rerank_score` при этом не проставляется вовсе, и
+            # фильтр MIN_RERANK ниже пропускает всё по дефолту 1.0. Обещание
+            # «hybrid+rerank» на выключенном реранкере — враньё модели о том,
+            # чем отобраны находки.
+            from memory_compiler.handlers_search import RERANK_ENABLED
+            how = "hybrid+rerank" if RERANK_ENABLED else "hybrid"
+            blocks.append(_Block("found", f"## Найдено ({len(relevant)} релевантных, {how})",
                                  found_items, weight=2.5, sep="\n\n"))
         else:
             parts.append("*Похожих кейсов не найдено в базе.*\n")
@@ -428,10 +444,18 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         deadlines = await asyncio.to_thread(stale_summary, target_project, 30, 3)
     except Exception:
         deadlines = []                       # сроки не должны ронять старт задачи
+    # ⚠️ ИСТЁКШЕЕ В СТАРТОВЫЙ КОНТЕКСТ НЕ ПОПАДАЕТ (v1.89.0): после даты
+    # предупреждать не о чем, а повторяться такой пункт может неделями. Живой
+    # случай — «554 стартмани сгорают 09.09.2026 — истёк»: 11 дней подряд, 50
+    # выдач из 164 за неделю, и всё это время факт был уже неправдой. В отчёте
+    # `stale_facts` истёкшее остаётся: его спрашивают явно и смотрят как
+    # историю за 90 дней.
     dl_items = []
     for d in deadlines:
-        when = "истёк" if d["days_left"] < 0 else f"осталось {d['days_left']} дн"
-        dl_items.append(f"- **{d['title'][:90]}** — {d['date']}, {when}")
+        if d["days_left"] < 0:
+            continue
+        dl_items.append(f"- **{d['title'][:90]}** — {d['date']}, "
+                        f"осталось {d['days_left']} дн")
     blocks.append(_Block("deadlines", f"## Сроки на исходе ({target_project})",
                          dl_items, weight=2.0))
 

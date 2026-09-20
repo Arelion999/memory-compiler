@@ -19,7 +19,7 @@ import re
 
 import pytest
 
-from memory_compiler import handlers
+from memory_compiler import handlers, handlers_sessions
 
 
 # ── раздача бюджета ─────────────────────────────────────────────────────────
@@ -86,3 +86,68 @@ def test_hidden_items_are_counted_not_swallowed():
 
 def test_empty_block_renders_nothing():
     assert handlers._render_block(handlers._Block("q", "## Вопросы", [], weight=1), 500) == ""
+
+
+# ── потолок выдачи и честность заголовка (v1.89.0) ──────────────────────────
+# Замер 20.09.2026 по транскриптам, 164 вызова start_task за 7 дней (871 тыс.
+# символов): медиана 5362, у потолка 6000 — половина вызовов. Состав: «Найдено»
+# 34,4%, открытые вопросы 23,2%, сессия с шапкой 20,5%, связанные действия
+# 11,5%, факты 6,8%, runbooks 2,3%, сроки 1,2%.
+#
+# ⚠️ УБРАТЬ БЛОК — НЕ ЗНАЧИТ СЭКОНОМИТЬ. Бюджет раздаётся water-fill'ом:
+# освободившееся место достаётся голодным соседям, а голодны они у половины
+# вызовов. Поэтому экономия достигается ТОЛЬКО снижением самого потолка, и
+# тест сторожит именно размер ответа, а не значение константы.
+
+@pytest.fixture
+def start_base(tmp_path, monkeypatch):
+    """Проект, где стартовый контекст заведомо перерастает любой потолок."""
+    import memory_compiler.config as cfg
+    from memory_compiler import storage, handlers_sessions
+    monkeypatch.setattr(cfg, "KNOWLEDGE_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "PROJECTS", ["demo"])
+    monkeypatch.setattr(storage, "KNOWLEDGE_DIR", tmp_path)
+    monkeypatch.setattr(handlers_sessions, "KNOWLEDGE_DIR", tmp_path)
+    (tmp_path / "demo").mkdir()
+
+    # ⚠️ Длина берётся ДЛИНОЙ СТРОК, а не их числом: превью находки режется по
+    # четвёртой строке, и «сорок коротких строк» давали блок в 150 символов —
+    # тест зеленел на любом потолке, ничего не проверяя.
+    async def _fat(*_a, **_kw):
+        return [{"project": "demo", "file": "a%d.md" % i, "title": "Статья %d" % i,
+                 "preview": "\n".join("контекст про сертификат %d — %s" % (i, "деталь " * 300)
+                                      for _ in range(4)),
+                 "score": 90.0 - i} for i in range(5)]
+    monkeypatch.setattr(handlers, "_whoosh_async", _fat)
+    return tmp_path
+
+
+def test_crowded_start_gives_out_no_more_than_the_new_ceiling():
+    """Голодный старт отдаёт не больше нового потолка.
+
+    Размеры блоков — вдвое от замеренных средних (p90 выдачи 6151, то есть
+    такие вызовы реальны). Проверяется РАЗДАЧА, а не длина готового текста:
+    длина зависит ещё и от гранулярности резки — пункт режется по границе
+    строки, и на длинных строках ответ выходит заметно короче выданного
+    бюджета. Тест на длину текста поэтому зеленел бы и на потолке 6000.
+    """
+    want = [3648, 2474, 1346, 1052, 558, 262]        # найдено, вопросы, активность, факты, runbooks, сроки
+    weight = [2.5, 3.0, 1.5, 1.5, 0.5, 2.0]
+    got = handlers._weighted_budgets(want, weight, handlers_sessions.START_BUDGET)
+    assert sum(got) <= 4500, "стартовый контекст отдаёт %d символов" % sum(got)
+    # ⚠️ Позитивный контроль: экономия не должна съедать главное — иначе
+    # «уложились в потолок» достигалось бы обнулением вопросов и находок.
+    assert got[0] > 900 and got[1] > 900, ("находки и вопросы обязаны остаться "
+                                           "читаемыми: %r" % (got,))
+
+
+@pytest.mark.asyncio
+async def test_found_block_does_not_promise_rerank_when_disabled(start_base):
+    """Реранкер выключен с v1.27.0, rerank_score не проставляется — обещать его в
+    заголовке значит врать модели о том, чем отобраны находки."""
+    from memory_compiler import handlers_search
+    assert not handlers_search.RERANK_ENABLED, "тест о выключенном реранкере"
+    res = await handlers.start_task("сертификат домена продлить", "demo")
+    header = next(l for l in res[0].text.splitlines() if l.startswith("## Найдено"))
+    assert "rerank" not in header.lower(), header
+    assert "hybrid" in header.lower(), header
