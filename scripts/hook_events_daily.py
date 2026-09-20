@@ -23,28 +23,49 @@ COLS = (("card", "gate.card"), ("block", "gate.block"), ("verif", "probe.verifie
         ("v.add", "verify.added"), ("nudge", "nudge.shown"), ("fail", "mc.fail"))
 
 
+def _sources(path: str):
+    """Журнал и его архивы, от старого к свежему.
+
+    ⚠️ Без архивов отчёт молча теряет историю: журнал ротируется по 2 МБ
+    (`mc_guard._rotate_hook_log`), и всё, что старше последней ротации, лежит в
+    `mc_hooks.log.1` / `.log.2`. Замер «по дням» именно этим и живёт.
+    """
+    found = []
+    for n in range(9, 0, -1):
+        archive = "%s.%d" % (path, n)
+        if os.path.exists(archive):
+            found.append(archive)
+    if os.path.exists(path):
+        found.append(path)
+    return found
+
+
 def read(path: str):
     days = collections.defaultdict(collections.Counter)
     sessions = collections.defaultdict(set)
     detail = collections.defaultdict(list)
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            day, act = ev.get("ts", "")[:10], ev.get("action", "")
-            if not day:
-                continue
-            if act in WATCH:
-                days[day][act] += 1
-                detail[(day, act)].append("%s %s" % (ev.get("tool", ""),
-                                                     (ev.get("detail") or "")[:90]))
-            if ev.get("session"):
-                sessions[day].add(ev["session"])
+    files = _sources(path)
+    if not files:
+        print("журнал не найден: %s" % path)
+    for src in files:
+        with open(src, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                day, act = ev.get("ts", "")[:10], ev.get("action", "")
+                if not day:
+                    continue
+                if act in WATCH:
+                    days[day][act] += 1
+                    detail[(day, act)].append("%s %s" % (ev.get("tool", ""),
+                                                         (ev.get("detail") or "")[:90]))
+                if ev.get("session"):
+                    sessions[day].add(ev["session"])
     return days, sessions, detail
 
 
