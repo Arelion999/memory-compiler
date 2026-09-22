@@ -1022,11 +1022,22 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     )
 
     async def handle_sse(request: Request):
+        # stateless=True — сессия сразу считается инициализированной (v1.90.1). Клиент
+        # legacy-SSE на TS SDK (Claude Code "type":"sse", mcp-remote sse-only) при обрыве
+        # потока переподключается САМ: новый GET /sse даёт новую сессию и новый endpoint,
+        # транспорт молча подменяет session_id, а initialize заново не шлёт. Строгая
+        # сессия отвечала на всё -32602 «Invalid request parameters» до конца жизни
+        # клиента, и он при этом числился connected (багрепорт 22.09.2026, воспроизведён
+        # тем же клиентским SDK). Настоящий initialize флаг не отменяет — clientInfo по-
+        # прежнему запоминается; без него client_params = None, это код уже переносит.
+        # Флаг штатный, у SDK ради того же: initialize на одном узле, запросы на любом.
+        # Держит tests/test_sse_reconnect.py.
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
             await mcp_server.run(
-                streams[0], streams[1], mcp_server.create_initialization_options()
+                streams[0], streams[1], mcp_server.create_initialization_options(),
+                stateless=True,
             )
         # Starlette 1.0+ вызывает `await response(...)` на возврате endpoint'а.
         # Если вернуть None (как раньше) — TypeError: 'NoneType' object is not

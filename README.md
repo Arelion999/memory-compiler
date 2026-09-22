@@ -28,12 +28,16 @@ docker-compose up -d --build
 {
   "mcpServers": {
     "memory-compiler": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse"
+      "type": "http",
+      "url": "http://localhost:8765/mcp/"
     }
   }
 }
 ```
+
+If the server has `MC_API_KEY` set, add `"headers": {"X-Api-Key": "<key>"}` (`"Authorization": "Bearer <key>"` works too).
+
+The legacy `/sse` endpoint still serves older configs, but Streamable HTTP is the recommended transport. An SSE client that loses its stream reconnects on its own and does not repeat `initialize`: before v1.90.1 every call after that failed with `-32602 Invalid request parameters`, while the client kept showing the server as connected.
 
 ### Connecting to Claude Code Desktop
 
@@ -301,7 +305,7 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 ### REST API
 
-22 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and `/sse` (the MCP transport).
+22 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and the MCP transports: `/mcp` (Streamable HTTP, recommended) and `/sse` (legacy).
 
 ### Automation
 
@@ -316,7 +320,7 @@ Three layers of protection, each enabled by an env variable:
 
 | Layer | Variable | What it does |
 |-------|----------|--------------|
-| Authorisation | `MC_API_KEY` | Login page + 30-day cookie, Bearer token, `?key=` in the URL |
+| Authorisation | `MC_API_KEY` | Login page + 30-day cookie, Bearer token; for MCP also the `X-Api-Key` header (`?key=` only on the legacy `/sse`) |
 | Encryption | `MC_ENCRYPT_KEY` | AES-256 for secret articles (save_secret) |
 | Audit | automatic | A log of every MCP call, "Audit" tab in the Web UI |
 

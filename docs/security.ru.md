@@ -14,11 +14,11 @@
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  Claude Desktop  │     │   Телефон/ПК     │     │  Docker      │
-│  (MCP tools)     │     │   (Web UI)       │     │  healthcheck │
+│  Claude Code /   │     │   Телефон/ПК     │     │  Docker      │
+│  Desktop (MCP)   │     │   (Web UI)       │     │  healthcheck │
 └────────┬────────┘     └────────┬─────────┘     └──────┬──────┘
          │                       │                       │
-    ?key=xxx              cookie mc_token          без ключа
+    X-Api-Key             cookie mc_token          без ключа
          │                       │                       │
          ▼                       ▼                       ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -27,8 +27,10 @@
 │  /api/health          → пропустить (публичный)             │
 │  /login               → пропустить (логин-страница)        │
 │  /.well-known/*       → 404 (OAuth discovery)              │
-│  /sse, /messages/*    → проверить ?key= в URL              │
-│  всё остальное        → проверить Bearer / cookie / ?key=  │
+│  /mcp                 → Bearer или заголовок X-Api-Key     │
+│  /sse (legacy)        → Bearer или ?key= в URL             │
+│  /messages/*          → session_id из потока /sse          │
+│  всё остальное        → Bearer или cookie                  │
 │                                                            │
 │  Нет ключа → 401 (API) или redirect /login (браузер)       │
 └────────────────────────────────────────────────────────────┘
@@ -40,9 +42,9 @@
 
 | Клиент | Как передаёт ключ |
 |--------|-------------------|
-| Claude Desktop (MCP) | `?key=` в URL SSE подключения (один раз в конфиге) |
+| Claude Code / Claude Desktop (MCP) | заголовок `X-Api-Key` (или `Authorization: Bearer`) к `/mcp`, один раз в конфиге |
 | Браузер (ПК/телефон) | Логин-страница → cookie `mc_token` на 30 дней |
-| REST API (curl) | `Authorization: Bearer xxx` или `?key=xxx` |
+| REST API (curl) | `Authorization: Bearer xxx` (`?key=` для REST не принимается) |
 | Docker healthcheck | Без ключа — `/api/health` публичный |
 
 Если `MC_API_KEY` не задан — сервер работает без авторизации (обратная совместимость).
@@ -56,16 +58,19 @@
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "http://<NAS_IP>:8765/sse?key=<ваш-ключ>",
+        "http://<NAS_IP>:8765/mcp",
         "--allow-http",
-        "--transport", "sse-only"
+        "--header", "X-Api-Key:<ваш-ключ>",
+        "--transport", "http-only"
       ]
     }
   }
 }
 ```
 
-Если в ключе есть спецсимволы (`$`, `&`, `#`), используйте URL-encoding (`$` → `%24`).
+В значении заголовка не должно быть пробела: на Windows Desktop запускает `mcp-remote` через `cmd.exe`, и пробел разрывает команду. Поэтому ключ идёт в `X-Api-Key`, а не в `Authorization: Bearer <ключ>`.
+
+Claude Code подключается напрямую, без `mcp-remote`: `"type": "http"`, `"url": "http://<NAS_IP>:8765/mcp/"`, `"headers": {"X-Api-Key": "<ваш-ключ>"}`.
 
 ### Настройка Docker
 
@@ -160,8 +165,9 @@ search()       → "[зашифровано — используй read_article]
 | Что | Защита | Примечание |
 |-----|--------|------------|
 | Web UI | Логин + cookie 30 дней | Redirect на /login без cookie |
-| REST API | Bearer / cookie / ?key= | 401 без ключа |
-| MCP SSE | ?key= в URL | Настраивается один раз в конфиге |
+| REST API | Bearer / cookie | 401 без ключа |
+| MCP (`/mcp`) | Bearer / заголовок `X-Api-Key` | Настраивается один раз в конфиге |
+| MCP legacy (`/sse`) | Bearer / `?key=` в URL | Оставлен для старых конфигов |
 | /api/health | Публичный | Для Docker healthcheck |
 | Секретные статьи | AES-256 на диске | Только через save_secret |
 | Обычные статьи | Plain text | Не шифруются |
@@ -175,13 +181,17 @@ search()       → "[зашифровано — используй read_article]
 
 Starlette `BaseHTTPMiddleware` несовместим с SSE — вызывает `TypeError: 'NoneType' object is not callable` при disconnect. AuthMiddleware реализован как чистый ASGI middleware.
 
-### Почему ?key= в URL а не в заголовке
+### Почему ключ идёт заголовком X-Api-Key
 
-`mcp-remote` (прокси для MCP через SSE) не поддерживает кастомные заголовки (`--header` флаг отсутствует). Единственный способ передать ключ — через URL query parameter.
+`/mcp` берёт ключ из `Authorization: Bearer` или из `X-Api-Key`, и `mcp-remote` передаёт любой из них флагом `--header`. На Windows Claude Desktop запускает `mcp-remote` через `cmd.exe`, и пробел в `Bearer <ключ>` разрывает команду: процесс падает сразу после старта. В значении `X-Api-Key` пробела нет, и он проходит целиком.
 
-### Почему --transport sse-only
+`?key=` для `/mcp` не принимается: ключ в URL утекает в access-логи, заголовок `Referer` и историю браузера. Устаревший `/sse` его по-прежнему берёт, чтобы старые конфиги не сломались.
 
-Без этого флага `mcp-remote` сначала пробует HTTP POST на `/sse` → получает 405 → fallback на SSE. С `--transport sse-only` подключается сразу.
+### Почему --transport http-only
+
+По умолчанию (`http-first`) `mcp-remote` при ответе 404 или 405 откатывается на устаревший SSE-транспорт. С `http-only` он подключается прямо к Streamable HTTP, и сбой виден как сбой, а не маскируется откатом.
+
+У legacy-SSE есть и собственный изъян. Клиент, потеряв поток, переподключается сам, получает новую сессию и не повторяет `initialize`. До v1.90.1 сервер отвечал на каждый вызов в такой сессии `-32602 Invalid request parameters`, а клиент продолжал показывать сервер подключённым. С v1.90.1 SSE-сессия считается инициализированной сразу (флаг SDK `stateless`), и такие вызовы обслуживаются.
 
 ### Почему /.well-known/ возвращает 404
 

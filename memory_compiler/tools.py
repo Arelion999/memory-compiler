@@ -20,7 +20,9 @@ from memory_compiler import freshness
 from memory_compiler import i18n
 from memory_compiler.i18n import localize_tools, localize_prompts
 
-app = Server("memory-compiler")
+# version обязателен: без него SDK кладёт в serverInfo СВОЮ версию (pkg_version("mcp")),
+# и клиент видит «memory-compiler 1.29.1» — так сервер назвал багрепорт 22.09.2026.
+app = Server("memory-compiler", version=config.VERSION)
 
 
 # --- Маркер обязательности (v1.54.0) ----------------------------------------

@@ -19,11 +19,11 @@ an advisory is published from it.
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌───────────────┐
-│  Claude Desktop  │     │    Phone / PC    │     │    Docker     │
-│  (MCP tools)     │     │    (Web UI)      │     │  healthcheck  │
+│  Claude Code /   │     │    Phone / PC    │     │    Docker     │
+│  Desktop (MCP)   │     │    (Web UI)      │     │  healthcheck  │
 └────────┬─────────┘     └────────┬─────────┘     └──────┬────────┘
          │                        │                      │
-     ?key=xxx             cookie mc_token             no key
+     X-Api-Key            cookie mc_token             no key
          │                        │                      │
          ▼                        ▼                      ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -32,8 +32,10 @@ an advisory is published from it.
 │  /api/health          → allow through (public)             │
 │  /login               → allow through (login page)         │
 │  /.well-known/*       → 404 (OAuth discovery)              │
-│  /sse, /messages/*    → check ?key= in the URL             │
-│  everything else      → check Bearer / cookie / ?key=      │
+│  /mcp                 → Bearer or X-Api-Key header         │
+│  /sse (legacy)        → Bearer or ?key= in the URL         │
+│  /messages/*          → session_id from the /sse stream    │
+│  everything else      → Bearer or cookie                   │
 │                                                            │
 │  No key → 401 (API) or redirect to /login (browser)        │
 └────────────────────────────────────────────────────────────┘
@@ -45,9 +47,9 @@ A single key, supplied through the `MC_API_KEY` environment variable.
 
 | Client | How it passes the key |
 |--------|-----------------------|
-| Claude Desktop (MCP) | `?key=` in the SSE connection URL (set once in the config) |
+| Claude Code / Claude Desktop (MCP) | `X-Api-Key` header (or `Authorization: Bearer`) to `/mcp`, set once in the config |
 | Browser (PC/phone) | Login page → `mc_token` cookie for 30 days |
-| REST API (curl) | `Authorization: Bearer xxx` or `?key=xxx` |
+| REST API (curl) | `Authorization: Bearer xxx` (`?key=` is not accepted for REST) |
 | Docker healthcheck | No key — `/api/health` is public |
 
 If `MC_API_KEY` is unset, the server runs without authorisation (backwards compatibility).
@@ -61,16 +63,19 @@ If `MC_API_KEY` is unset, the server runs without authorisation (backwards compa
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "http://<NAS_IP>:8765/sse?key=<your-key>",
+        "http://<NAS_IP>:8765/mcp",
         "--allow-http",
-        "--transport", "sse-only"
+        "--header", "X-Api-Key:<your-key>",
+        "--transport", "http-only"
       ]
     }
   }
 }
 ```
 
-If the key contains special characters (`$`, `&`, `#`), URL-encode them (`$` → `%24`).
+The header value must not contain a space: on Windows, Desktop launches `mcp-remote` through `cmd.exe`, and a space splits the command. That is why the key goes in `X-Api-Key` rather than `Authorization: Bearer <key>`.
+
+Claude Code connects directly, without `mcp-remote`: `"type": "http"`, `"url": "http://<NAS_IP>:8765/mcp/"`, `"headers": {"X-Api-Key": "<your-key>"}`.
 
 ### Configuring Docker
 
@@ -168,8 +173,9 @@ Sensitive fields are masked in the log automatically:
 | What | Protection | Note |
 |------|------------|------|
 | Web UI | Login + 30-day cookie | Redirects to /login without a cookie |
-| REST API | Bearer / cookie / ?key= | 401 without a key |
-| MCP SSE | ?key= in the URL | Configured once in the config file |
+| REST API | Bearer / cookie | 401 without a key |
+| MCP (`/mcp`) | Bearer / `X-Api-Key` header | Configured once in the config file |
+| MCP legacy (`/sse`) | Bearer / `?key=` in the URL | Kept for old configs |
 | /api/health | Public | For the Docker healthcheck |
 | Secret articles | AES-256 on disk | Only via save_secret |
 | Ordinary articles | Plain text | Not encrypted |
@@ -183,13 +189,17 @@ Sensitive fields are masked in the log automatically:
 
 Starlette's `BaseHTTPMiddleware` is incompatible with SSE — it raises `TypeError: 'NoneType' object is not callable` on disconnect. AuthMiddleware is implemented as pure ASGI middleware instead.
 
-### Why ?key= in the URL rather than a header
+### Why the key goes in the X-Api-Key header
 
-`mcp-remote` (the proxy for MCP over SSE) does not support custom headers (there is no `--header` flag). The only way to pass the key is a URL query parameter.
+`/mcp` takes the key from `Authorization: Bearer` or from `X-Api-Key`, and `mcp-remote` passes either with `--header`. On Windows, Claude Desktop launches `mcp-remote` through `cmd.exe`, and the space in `Bearer <key>` splits the command: the process dies right after start. `X-Api-Key` has no space in its value and gets through intact.
 
-### Why --transport sse-only
+`/mcp` does not accept `?key=`: a key in the URL leaks into access logs, the `Referer` header and browser history. The legacy `/sse` still takes it so that old configs keep working.
 
-Without this flag `mcp-remote` first tries an HTTP POST to `/sse` → gets a 405 → falls back to SSE. With `--transport sse-only` it connects directly.
+### Why --transport http-only
+
+By default (`http-first`) `mcp-remote` falls back to the legacy SSE transport on a 404 or 405. With `http-only` it connects straight to Streamable HTTP, and a failure shows up as a failure instead of being masked by the fallback.
+
+Legacy SSE has a flaw of its own. A client that loses its stream reconnects by itself, gets a new session and does not repeat `initialize`. Before v1.90.1 the server answered every call on such a session with `-32602 Invalid request parameters`, while the client kept showing the server as connected. Since v1.90.1 an SSE session counts as initialised from the start (the SDK's `stateless` flag), and these calls are served.
 
 ### Why /.well-known/ returns 404
 

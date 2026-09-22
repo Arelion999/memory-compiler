@@ -53,10 +53,12 @@ Add the server to `claude_desktop_config.json`:
       "args": [
         "-y",
         "mcp-remote",
-        "http://<host>:8765/sse?key=<MC_API_KEY>",
+        "http://<host>:8765/mcp",
         "--allow-http",
+        "--header",
+        "X-Api-Key:<MC_API_KEY>",
         "--transport",
-        "sse-only"
+        "http-only"
       ]
     }
   }
@@ -64,9 +66,10 @@ Add the server to `claude_desktop_config.json`:
 ```
 
 **Important:**
-- URL-encode special characters in the key (`$` → `%24`)
-- `--transport sse-only` is mandatory (without it the fallback causes timeouts)
-- `--allow-http` is only needed for an unencrypted connection (local network)
+- The key travels in the `X-Api-Key` header, whose value has no space. On Windows, Desktop launches `mcp-remote` through `cmd.exe`, and the space in `Authorization: Bearer <key>` splits the command apart.
+- `--transport http-only` means Streamable HTTP with no fallback to SSE. By default `mcp-remote` falls back to the legacy SSE transport on a 404 or 405.
+- `--allow-http` is only needed for an unencrypted connection (local network).
+- Old configs with `/sse?key=…` and `--transport sse-only` keep working, but they are worth moving to `/mcp`. An SSE client that loses its stream reconnects on its own and does not repeat `initialize`: before v1.90.1 every call after that failed with `-32602 Invalid request parameters`.
 
 ---
 
@@ -192,7 +195,7 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 
 **An MCP tool is unavailable?**
 - Check the server: `curl http://<host>:8765/api/health`
-- Check `MC_API_KEY` in the URL (URL-encode special characters)
+- Check the key in `--header X-Api-Key:<key>`
 - Desktop logs: `%APPDATA%\Claude\logs\`
 
 **The Stop hook is blocking?**

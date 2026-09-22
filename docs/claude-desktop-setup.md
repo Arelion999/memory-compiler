@@ -53,10 +53,12 @@ curl http://localhost:8765/api/health
       "args": [
         "-y",
         "mcp-remote",
-        "http://<host>:8765/sse?key=<MC_API_KEY>",
+        "http://<host>:8765/mcp",
         "--allow-http",
+        "--header",
+        "X-Api-Key:<MC_API_KEY>",
         "--transport",
-        "sse-only"
+        "http-only"
       ]
     }
   }
@@ -64,9 +66,10 @@ curl http://localhost:8765/api/health
 ```
 
 **Важно:**
-- Спецсимволы в ключе URL-кодируйте (`$` → `%24`)
-- `--transport sse-only` обязателен (без него fallback вызывает таймауты)
-- `--allow-http` нужен только для незашифрованного соединения (локалка)
+- Ключ передаётся заголовком `X-Api-Key`, в значении нет пробела. На Windows Desktop запускает `mcp-remote` через `cmd.exe`, и пробел в `Authorization: Bearer <ключ>` разрывает команду.
+- `--transport http-only` — Streamable HTTP без отката на SSE. По умолчанию `mcp-remote` при ответе 404 или 405 откатывается на устаревший SSE-транспорт.
+- `--allow-http` нужен только для незашифрованного соединения (локалка).
+- Старые конфиги с `/sse?key=…` и `--transport sse-only` продолжают работать, но переводить их стоит на `/mcp`. SSE-клиент, потеряв поток, переподключается сам и не повторяет `initialize`: до v1.90.1 после этого каждый вызов падал с `-32602 Invalid request parameters`.
 
 ---
 
@@ -190,7 +193,7 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 
 **MCP tool недоступен?**
 - Проверьте сервер: `curl http://<host>:8765/api/health`
-- Проверьте `MC_API_KEY` в URL (URL-кодирование спецсимволов)
+- Проверьте ключ в `--header X-Api-Key:<ключ>`
 - Логи Desktop: `%APPDATA%\Claude\logs\`
 
 **Stop hook блокирует?**
