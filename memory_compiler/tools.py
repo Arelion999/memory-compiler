@@ -1551,7 +1551,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if substituted_project:
         result = list(result) + [TextContent(type="text", text=(
             f"\n📁 `project` не был указан — записано в «{substituted_project}», "
-            f"последний проект этой сессии."))]
+            f"проект этой сессии."))]
 
     # У search одна форма выдачи (v1.87.0). Собираем её ДО подсчёта размера:
     # size в аудите обязан мерить то, что получит модель, а не спрятанный текст.
@@ -1624,6 +1624,11 @@ _FRESHNESS_WRITE_TOOLS = {
     "session_note",
 }
 
+# Вызовы, после которых проект становится рабочим для подстановки пропущенного
+# project: сессия в него пишет или открыла по нему задачу. Чтение сюда не входит
+# намеренно — справка из чужого проекта не должна уводить туда записи.
+_WORK_PROJECT_TOOLS = _FRESHNESS_WRITE_TOOLS | {"start_task"}
+
 
 # Инструменты, которые САМИ отдают контекст проекта: подсказка при первом
 # обращении дублировала бы их выдачу.
@@ -1679,6 +1684,8 @@ def _append_freshness(name: str, arguments: dict, result: list,
                 topic = str(arguments.get("topic") or arguments.get("filename")
                             or arguments.get("note") or "")
             freshness.note_write(project, name, topic, key)
+        if name in _WORK_PROJECT_TOOLS:
+            freshness.claim(key, project or "")
         note = freshness.consume(key, project or "")
         if first:
             note = handlers.first_touch_context(project) + note

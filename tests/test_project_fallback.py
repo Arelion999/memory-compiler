@@ -98,6 +98,56 @@ def test_reading_tools_are_left_alone(bridge):
     assert "project" not in bridge, bridge
 
 
+# ── чтение чужого проекта не перехватывает проект сессии (24.09.2026) ────────
+# Снимок свежести обновлял «последний проект» на КАЖДОМ вызове с project, в том
+# числе на чистом чтении. Сессия работает с A, для справки читает статью из B —
+# и запись без project уходит в B. Ответ называет подставленный проект, но запись
+# к этому моменту уже легла не туда. Проект, в который сессия писала или по
+# которому звала start_task, чтением не перебивается.
+
+def test_reading_another_project_keeps_the_one_the_chat_writes_to(bridge):
+    _call("save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    _call("read_article", {"project": "general", "filename": "справка.md"})
+    _call("finish_task", {"topic": "итог", "content": "текст"})
+    assert bridge.get("project") == "infra", (
+        "чтение чужой статьи увело запись из рабочего проекта: %r" % bridge)
+
+
+def test_start_task_marks_the_working_project(bridge):
+    _call("start_task", {"topic": "роутер", "project": "infra"})
+    _call("search", {"query": "справка", "project": "general"})
+    _call("session_note", {"note": "выяснилось"})
+    assert bridge.get("project") == "infra", (
+        "поиск по чужому проекту увёл заметку из проекта задачи: %r" % bridge)
+
+
+def test_start_task_over_the_whole_base_does_not_become_the_project(bridge):
+    """start_task(project='all') — поиск по всей базе, а не выбор проекта: запись
+    без project не должна уехать в несуществующий проект «all»."""
+    _call("save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    _call("start_task", {"topic": "роутер", "project": "all"})
+    _call("finish_task", {"topic": "итог", "content": "текст"})
+    assert bridge.get("project") == "infra", bridge
+
+
+def test_writing_into_another_project_moves_the_working_project(bridge):
+    """Позитивный контроль: рабочий проект не залипает на первом. Явная запись в
+    другой проект — это работа с ним, и следующая запись без project идёт туда."""
+    _call("save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    _call("save_lesson", {"topic": "t2", "content": "c2", "project": "general"})
+    _call("finish_task", {"topic": "итог", "content": "текст"})
+    assert bridge.get("project") == "general", bridge
+
+
+def test_chat_that_only_reads_keeps_the_last_read(bridge):
+    """Пока сессия ничего не писала и не звала start_task, сильнее последнего
+    чтения сигнала нет: поведение v1.90.0 для таких сессий не меняется."""
+    _call("search", {"query": "роутер", "project": "infra"})
+    _call("search", {"query": "справка", "project": "general"})
+    _call("finish_task", {"topic": "итог", "content": "текст"})
+    assert bridge.get("project") == "general", bridge
+
+
 # ── save_tracking принимает прозаический отчёт (v1.90.0) ────────────────────
 # Живой случай 19.09.2026: суточная проверка узла ушла строкой в `facts`, где
 # схема ждёт объект. Клиент отбил вызов целиком («expected object, received

@@ -42,8 +42,11 @@ from weakref import WeakKeyDictionary
 _writes: deque = deque(maxlen=300)
 # Что каждая сессия уже видела: (session_key, project) -> ts.
 _seen: dict[tuple[str, str], float] = {}
-# Последний проект, с которым работала сессия, — для вызовов без project.
+# Последний проект, которого касалась сессия, — чтением или записью.
 _last_project: dict[str, str] = {}
+# Рабочий проект сессии: куда она писала или где звала start_task. Чтение его не
+# перебивает (см. last_project).
+_work_project: dict[str, str] = {}
 # Отсчёт молчания: (session_key, project) -> ts начала работы либо своей записи.
 _started: dict[tuple[str, str], float] = {}
 # Стабильные ключи сессий: id() переиспользуется после сборки мусора.
@@ -189,17 +192,27 @@ def _save_seen() -> None:
         pass                              # сторож не имеет права ронять вызов
 
 
-def last_project(key: str) -> str:
-    """Проект, с которым эта сессия работала последним, — для вызовов без project.
+def claim(key: str, project: str) -> None:
+    """Сессия работает с проектом: пишет в него или открыла по нему задачу."""
+    if not key or not project or project == "all":
+        return
+    _work_project[key] = project
 
-    Снимок тот же, что отвечает на вопрос «чья это запись»: сессия трогает
-    проект на каждом чтении и записи. Пустая строка — сессия ещё ни одного
-    проекта не открывала, подставлять нечего.
+
+def last_project(key: str) -> str:
+    """Проект сессии для вызова без project: рабочий, иначе последний тронутый.
+
+    ⚠️ ЧТЕНИЕ НЕ ПЕРЕБИВАЕТ РАБОЧИЙ ПРОЕКТ (24.09.2026). Раньше ответом был
+    последний тронутый проект, а сессия трогает проект и на чистом чтении:
+    работала с A, для справки прочла статью из B — и запись без project ушла в
+    B. Пока сессия ничего не писала и не звала start_task, сильнее последнего
+    чтения сигнала нет, и тогда ответ прежний. Пустая строка — сессия ещё ни
+    одного проекта не открывала, подставлять нечего.
     """
     if not key:
         return ""
     _ensure_loaded()
-    return _last_project.get(key, "")
+    return _work_project.get(key) or _last_project.get(key, "")
 
 
 def consume(key: str, project: str) -> str:
@@ -281,6 +294,7 @@ def reset() -> None:
     _writes.clear()
     _seen.clear()
     _last_project.clear()
+    _work_project.clear()
     _started.clear()
     _loaded[0] = False                    # как рестарт: файл снимков на диске остаётся
     _last_save[0] = 0.0
