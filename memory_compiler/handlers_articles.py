@@ -40,7 +40,7 @@ from memory_compiler.storage import (
     extract_git_refs, extract_secret_identifiers, find_existing_article, git_commit,
     is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
     mark_superseded, merge_into_article, project_dir, regenerate_index,
-    safe_article_path, safe_project_dir, today_log_path, update_active_context,
+    safe_article_path, safe_project_dir, safe_project_path, today_log_path, update_active_context,
     update_cross_references,
 )
 from memory_compiler.handlers_reports import _MD_LINK_RE, _WIKI_LINK_RE, _strip_code
@@ -94,7 +94,8 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
                       verified: str = "", triggers: list = None,
                       verify: list = None) -> list[TextContent]:
     try:
-        safe_project_dir(project)
+        # только проверка имени: каталог заводит сама запись статьи ниже
+        safe_project_path(project)
     except ValueError as e:
         return [TextContent(type="text", text=f"❌ Небезопасный параметр: {e}")]
     tags = tags or []

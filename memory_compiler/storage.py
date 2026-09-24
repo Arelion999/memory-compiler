@@ -31,7 +31,8 @@ def today_log_path() -> Path:
 # Имена, занятые СЕМАНТИКОЙ инструментов: 'all' у read-инструментов означает «по всем
 # проектам». Каталог с таким именем делает свои статьи неадресуемыми — их нельзя ни
 # отфильтровать поиском, ни залинтовать: вызов уходит в общий режим. Такой проект
-# завёлся в базе сам (project_dir делает mkdir для любого имени) и накопил 7 статей,
+# завёлся в базе сам (project_dir делает mkdir для любого имени, а раньше — даже
+# на чтении) и накопил 7 статей,
 # пока не был переименован в misc 2026-07-21.
 RESERVED_PROJECTS = frozenset({"all"})
 
@@ -47,25 +48,35 @@ def normalize_project(project: str) -> str:
     return project.strip().lower()
 
 
-def safe_project_dir(project: str) -> Path:
-    """Return KNOWLEDGE_DIR/<project> only if project name is safe.
+def safe_project_path(project: str) -> Path:
+    """Return KNOWLEDGE_DIR/<project> only if project name is safe. Каталог НЕ создаёт.
 
     Rejects empty, '.', '..', anything with path separators or traversal — these
     would resolve OUT of any project directory (back to KNOWLEDGE_DIR root or
     higher). Same defense-in-depth as safe_article_path, for handlers that need
-    just the project directory (save_lesson, save_session, etc).
+    just the project directory.
+
+    Для чтения. Пишущему коду нужен safe_project_dir — тот ещё и создаёт каталог.
     """
     if not project or not project.strip():
         raise ValueError(f"empty project: {project!r}")
     if project in (".", "..") or "/" in project or "\\" in project or ".." in project:
         raise ValueError(f"unsafe project: {project!r}")
-    proj = project_dir(project)
+    proj = project_path(project)
     kd = KNOWLEDGE_DIR.resolve()
     proj_r = proj.resolve()
     # Project must be a strict subdir of KNOWLEDGE_DIR (not KNOWLEDGE_DIR itself).
     if proj_r == kd or kd not in proj_r.parents:
         raise ValueError(f"project escapes KNOWLEDGE_DIR: {project!r}")
     return proj
+
+
+def safe_project_dir(project: str) -> Path:
+    """safe_project_path + создание каталога — ТОЛЬКО для записи (save_lesson,
+    save_session и т.п.). Проверка имени идёт до mkdir: небезопасное имя не
+    оставляет за собой даже пустого каталога."""
+    safe_project_path(project)
+    return project_dir(project)
 
 
 def safe_article_path(project: str, filename: str) -> Path:
@@ -81,7 +92,9 @@ def safe_article_path(project: str, filename: str) -> Path:
     # Filenames must be flat — no subdirs, no traversal, no absolute paths.
     if "/" in filename or "\\" in filename or ".." in filename:
         raise ValueError(f"unsafe filename: {filename!r}")
-    proj = safe_project_dir(project)  # delegates project validation
+    # Каталог не создаём: путь к статье нужен и чтению (read_article, backlinks),
+    # а пишущие по нему правят УЖЕ существующую статью.
+    proj = safe_project_path(project)  # delegates project validation
     kd = KNOWLEDGE_DIR.resolve()
     candidate = (proj / filename).resolve()
     if kd not in candidate.parents:
@@ -89,25 +102,106 @@ def safe_article_path(project: str, filename: str) -> Path:
     return proj / filename
 
 
-def project_dir(project: str) -> Path:
-    """Get project directory, normalizing the name first.
+def project_path(project: str) -> Path:
+    """Путь каталога проекта по нормализованному имени. Каталог НЕ создаёт.
+
+    ⚠️ ЧИТАЮЩИЙ КОД БЕРЁТ ПУТЬ ЗДЕСЬ, А НЕ У project_dir. Тот делает mkdir под
+    любое имя, и раньше его звали и из чтения: start_task(project="memorycompiler"),
+    угаданный агентом по каталогу D:\\MCP\\MemoryCompiler, 14.09.2026 завёл на
+    сервере пустой двойник проекта memory-compiler, а тот потом сбивал route_project.
 
     If a directory with the original (non-normalized) case exists alongside a normalized one,
     prefer the normalized version. Migration of legacy mixed-case dirs is handled by
     a one-time merge_case_duplicates() call at startup.
     """
-    import memory_compiler.config as _cfg
     norm = normalize_project(project)
     if norm in RESERVED_PROJECTS:
         raise ValueError(
             f"'{norm}' — служебное имя (подстановка «по всем проектам»), а не проект. "
             f"Укажи настоящий проект: list_projects покажет существующие, "
             f"route_project подберёт подходящий по тексту.")
-    p = KNOWLEDGE_DIR / norm
+    return KNOWLEDGE_DIR / norm
+
+
+def project_dir(project: str) -> Path:
+    """Каталог проекта, созданный при необходимости, — ТОЛЬКО для записи.
+
+    Проект в базе появляется ровно так: первой записью в него. Поэтому звать
+    это из чтения нельзя — каждый угаданный или опечатанный project оставлял бы
+    после себя пустой каталог, который list_projects и route_project считают
+    настоящим проектом. Чтению — project_path.
+    """
+    import memory_compiler.config as _cfg
+    p = project_path(project)
     p.mkdir(parents=True, exist_ok=True)
-    if norm not in _cfg.PROJECTS:
+    if p.name not in _cfg.PROJECTS:
         _cfg.PROJECTS = _discover_projects()
     return p
+
+
+def project_article_count(project: str) -> int:
+    """Число статей проекта — по правилу list_projects: служебные _*.md не в счёт."""
+    try:
+        path = safe_project_path(project)
+    except ValueError:
+        return 0
+    if not path.is_dir():
+        return 0
+    return sum(1 for f in path.glob("*.md") if not f.name.startswith("_"))
+
+
+def project_has_articles(project: str) -> bool:
+    """Есть ли у проекта хоть одна статья. Дешевле project_article_count: обход
+    каталога останавливается на первой статье, а зовут это на каждом вызове."""
+    try:
+        path = safe_project_path(project)
+    except ValueError:
+        return False
+    return any(not f.name.startswith("_") for f in path.glob("*.md"))
+
+
+def project_key(name: str) -> str:
+    """Ключ сравнения имён проектов: регистр, дефисы, подчёркивания и пробелы не в счёт.
+
+    memory-compiler, memorycompiler и Memory_Compiler — один ключ: так имя
+    проекта угадывают по каталогу клона (D:\\MCP\\MemoryCompiler). Точки не
+    выкидываем — '.claude' не то же самое, что 'claude'.
+    """
+    return re.sub(r"[-_\s]+", "", (name or "").lower())
+
+
+def project_twins(project: str) -> list[tuple[str, int]]:
+    """Существующие проекты с тем же ключом, что у project, кроме него самого.
+
+    [(имя, статей), ...] — больше статей первым, при равенстве по алфавиту.
+    Пустой список — двойников нет. Каталоги берутся с диска, а не из PROJECTS:
+    там же лежат и начальные имена из конфига, у которых каталога может не быть.
+    """
+    norm = normalize_project(project)
+    key = project_key(norm)
+    if not key or not KNOWLEDGE_DIR.is_dir():
+        return []
+    twins = [(name, project_article_count(name)) for name in _discover_projects()
+             if name != norm and project_key(name) == key
+             and (KNOWLEDGE_DIR / name).is_dir()]
+    twins.sort(key=lambda pc: (-pc[1], pc[0]))
+    return twins
+
+
+def project_near_names(project: str, limit: int = 3) -> list[str]:
+    """Существующие проекты с ПОХОЖИМ именем — вероятная опечатка (memory-compile).
+
+    Слабее project_twins: похожими бывают и честно разные проекты (client-a и
+    client-b), поэтому годится только в подсказку, но не в отказ. Двойники по
+    ключу сюда не входят — их называет project_twins.
+    """
+    import difflib
+    norm = normalize_project(project)
+    key = project_key(norm)
+    names = [name for name in _discover_projects()
+             if name != norm and project_key(name) != key
+             and (KNOWLEDGE_DIR / name).is_dir()]
+    return difflib.get_close_matches(norm, names, n=limit, cutoff=0.8)
 
 
 def merge_case_duplicates() -> list[dict]:
@@ -201,7 +295,7 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
     from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np
 
-    proj_path = project_dir(project)
+    proj_path = project_path(project)
     if not proj_path.exists():
         return None
 
@@ -982,7 +1076,7 @@ def detect_contradictions(new_content: str, project: str, exclude_path: Optional
     new_entities = _entities_in_text(new_content)
 
     # Проверить против существующих статей проекта
-    proj_path = project_dir(project)
+    proj_path = project_path(project)
     for md in proj_path.glob("*.md"):
         if md.name.startswith("_"):
             continue
@@ -1460,8 +1554,8 @@ TEMPLATES = {
 
 
 def get_project_deps_file(project: str) -> Path:
-    """Get path to project dependencies file."""
-    return project_dir(project) / "_deps.json"
+    """Get path to project dependencies file. Каталог не создаёт — это делает запись."""
+    return project_path(project) / "_deps.json"
 
 
 def read_project_deps(project: str) -> list[str]:
@@ -1478,6 +1572,7 @@ def read_project_deps(project: str) -> list[str]:
 
 def write_project_deps(project: str, depends_on: list[str]):
     """Write project dependencies."""
+    project_dir(project)                         # запись заводит проект
     deps_file = get_project_deps_file(project)
     atomic_write_text(deps_file, json.dumps({"depends_on": depends_on}, ensure_ascii=False, indent=2))
 
@@ -1571,7 +1666,7 @@ def mark_dependents(project: str, filename: str, timestamp: str) -> int:
 
     Returns the number of dependent articles touched.
     """
-    target_proj_dir = project_dir(project)
+    target_proj_dir = project_path(project)
     if not target_proj_dir.exists():
         return 0
 
@@ -1635,7 +1730,13 @@ def log_event(project: str, action: str, details: str = "") -> None:
     Rotates to _log.archive.md when size exceeds LOG_ROTATE_BYTES to keep the active
     log readable.
     """
-    proj_dir = project_dir(project)
+    # Журнал ведётся только у существующего проекта: событие пишут ПОСЛЕ записи
+    # статьи, и каталог к этому моменту есть. Нет каталога — значит, звал не
+    # пишущий путь (lint по несуществующему имени), и заводить проект ради строки
+    # журнала нельзя.
+    proj_dir = project_path(project)
+    if not proj_dir.is_dir():
+        return
     log_path = proj_dir / "_log.md"
     archive_path = proj_dir / "_log.archive.md"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1858,7 +1959,7 @@ def format_capture_group(group_name: str, commits: list[dict]) -> str:
 
 def read_last_capture(project: str, repo_path: str) -> Optional[str]:
     """Read last captured commit hash for a repo in this project."""
-    cap_path = project_dir(project) / "_last_capture.json"
+    cap_path = project_path(project) / "_last_capture.json"
     if not cap_path.exists():
         return None
     try:
@@ -2129,7 +2230,7 @@ def near_exact_dupes(project: str, min_len: int = 120) -> list:
     projects = [project] if project != "all" else list(_cfg.PROJECTS)
     arts = []
     for proj in projects:
-        pd = project_dir(proj)
+        pd = project_path(proj)
         if not pd.exists():
             continue
         for md in pd.glob("*.md"):
@@ -2445,7 +2546,7 @@ def _fmt_scalar(v) -> str:
 
 def load_tracking(project: str, entity: str) -> Optional[dict]:
     """Load tracking article for a project/entity. Returns full parsed frontmatter or None."""
-    proj_dir = project_dir(project)
+    proj_dir = project_path(project)
     fname = f"tracking_{entity}.md"
     fpath = proj_dir / fname
     if not fpath.exists():
@@ -2830,7 +2931,7 @@ def extract_facts_from_text(text: str, topic: str = "") -> dict:
 
 def list_tracking_articles(project: str) -> list[dict]:
     """List all tracking articles in project. Returns [{entity, current, path}, ...]."""
-    proj = project_dir(project)
+    proj = project_path(project)
     if not proj.exists():
         return []
     result = []
@@ -3115,7 +3216,7 @@ def superseded_link(text: str) -> tuple[str, str] | None:
 def project_corrections(project: str) -> list[tuple[str, str]]:
     """Поправки проекта: (файл, заголовок) статей, которые кого-то отменили."""
     try:
-        pdir = safe_project_dir(project)
+        pdir = safe_project_path(project)
     except ValueError:
         return []
     seen: dict[str, str] = {}

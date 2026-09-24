@@ -6,7 +6,8 @@
 ровно разрешение путей.
 
 ⚠️ МОДУЛЬ НЕ ДЕРЖИТ СВОЕГО KNOWLEDGE_DIR, и это не забывчивость. Пути к файлам
-домена берутся у `storage.safe_project_dir` / `storage.project_dir`, которые
+домена берутся у `storage.safe_project_path` / `storage.project_path` (чтение) и
+`storage.safe_project_dir` / `storage.project_dir` (запись: те создают каталог), которые
 читают KNOWLEDGE_DIR из СВОИХ globals в момент вызова. Шесть тестов домена
 патчат именно `storage.KNOWLEDGE_DIR` (test_session_journal, test_session_note,
 test_question_lifecycle, test_reflections_read, test_first_touch_context,
@@ -45,9 +46,12 @@ MAX_NOTES = 12             # заметок по ходу на одну сесс
 RUNNING_MARK = "· в работе"  # пометка незакрытого блока журнала
 
 
-def _session_path(project: str) -> Path:
-    from memory_compiler.storage import safe_project_dir
-    return safe_project_dir(project) / "_session.md"
+def _session_path(project: str, create: bool = False) -> Path:
+    """Путь журнала сессий. Каталог проекта создаёт только запись (create=True):
+    чтение журнала несуществующего проекта не должно заводить сам проект."""
+    from memory_compiler.storage import safe_project_dir, safe_project_path
+    base = safe_project_dir(project) if create else safe_project_path(project)
+    return base / "_session.md"
 
 
 def _split_session_blocks(text: str) -> list[str]:
@@ -121,7 +125,7 @@ def append_note(project: str, note: str) -> Path:
     note = (note or "").strip()
     if not note:
         return _session_path(project)
-    path = _session_path(project)
+    path = _session_path(project, create=True)
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     blocks = _split_session_blocks(old)
     notes = _running_notes(blocks)
@@ -141,7 +145,7 @@ def append_note(project: str, note: str) -> Path:
 def append_session(project: str, summary: str, decisions: str = "",
                    open_questions: str = "") -> Path:
     """Дописать сессию в журнал проекта, не затирая прошлые."""
-    path = _session_path(project)
+    path = _session_path(project, create=True)
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     blocks = _split_session_blocks(old)
     # Заметки текущей сессии вливаем в её итог, а не оставляем отдельным блоком:
@@ -207,9 +211,11 @@ def latest_session(project: str) -> str:
 # ─── Открытые вопросы ────────────────────────────────────────────────────────
 
 
-def _questions_path(project: str) -> Path:
-    from memory_compiler.storage import safe_project_dir
-    return safe_project_dir(project) / "_questions.md"
+def _questions_path(project: str, create: bool = False) -> Path:
+    """Путь списка вопросов; каталог проекта создаёт только запись (create=True)."""
+    from memory_compiler.storage import safe_project_dir, safe_project_path
+    base = safe_project_dir(project) if create else safe_project_path(project)
+    return base / "_questions.md"
 
 
 def _q_key(text: str) -> str:
@@ -236,7 +242,7 @@ def parse_questions(project: str) -> list[dict]:
 
 
 def _write_questions(project: str, items: list[dict]) -> Path:
-    path = _questions_path(project)
+    path = _questions_path(project, create=True)
     lines = ["# Открытые вопросы: %s" % project, ""]
     for q in items:
         head = "## %s · %s" % (q["status"], q["opened"])
@@ -467,10 +473,10 @@ _REFL_JUNK = re.compile(r"^[\w-]+:\s*[^.]{0,30}\(\d+\)$")
 
 
 def _reflection_lines(project: str) -> list[str]:
-    from memory_compiler.storage import project_dir
+    from memory_compiler.storage import project_path
 
     try:
-        path = project_dir(project) / "_reflections.md"
+        path = project_path(project) / "_reflections.md"
         text = path.read_text(encoding="utf-8")
     except Exception:
         return []

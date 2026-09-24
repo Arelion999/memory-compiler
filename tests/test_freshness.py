@@ -385,11 +385,13 @@ def test_bad_client_session_falls_back_to_mcp_session():
         assert freshness.key_for(s, bad) == fallback, repr(bad)
 
 
-def test_call_tool_strips_client_session_before_dispatch_and_audit(monkeypatch):
+def test_call_tool_strips_client_session_before_dispatch_and_audit(monkeypatch, knowledge_dir):
     """Аргумент служебный: хендлер с ним упал бы на лишнем kwarg, аудиту он не
     нужен. При этом id чата обязан дойти до freshness."""
     import asyncio
     from mcp.types import TextContent
+    # несуществующий проект получил бы подсказку вместо вызова
+    (knowledge_dir / "infra").mkdir()
     tools = _shared_bridge(monkeypatch)
     dispatched, audited = {}, {}
 

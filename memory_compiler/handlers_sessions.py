@@ -40,7 +40,7 @@ from memory_compiler.storage import (
     append_session, append_note, latest_session, RUNNING_MARK, running_notes_today,
     add_question, close_questions, open_questions_list, project_corrections,
     relevant_reflections, read_project_deps, git_commit,
-    extract_reflections, append_reflections, safe_project_dir,
+    extract_reflections, append_reflections, safe_project_path,
 )
 
 
@@ -202,7 +202,7 @@ async def close_question(project: str, match: str, remainder: str = "") -> list[
 
 
 async def load_session(project: str) -> list[TextContent]:
-    session_path = safe_project_dir(project) / "_session.md"
+    session_path = safe_project_path(project) / "_session.md"
     parts = []
     if session_path.exists():
         parts.append(session_path.read_text(encoding="utf-8"))
@@ -237,7 +237,7 @@ async def load_session(project: str) -> list[TextContent]:
 
 
 async def get_active_context(project: str) -> list[TextContent]:
-    ctx_path = safe_project_dir(project) / "_active_context.md"
+    ctx_path = safe_project_path(project) / "_active_context.md"
     if not ctx_path.exists():
         return [TextContent(type="text", text=f"Нет активного контекста для {project}.")]
     text = ctx_path.read_text(encoding="utf-8")

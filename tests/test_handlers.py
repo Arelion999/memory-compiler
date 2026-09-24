@@ -187,6 +187,52 @@ def test_route_project_cwd_override(knowledge_dir):
     assert "cwd-match" in text
 
 
+def test_project_from_cwd_ignores_separators(knowledge_dir):
+    """Каталог клона MemoryCompiler — это проект memory-compiler: дефисы, подчёркивания
+    и регистр при сравнении с cwd не в счёт. Точка — в счёт: '.claude' в пути
+    worktree не должна становиться проектом 'claude'."""
+    import memory_compiler.config as _cfg
+    (knowledge_dir / "memory-compiler").mkdir()
+    (knowledge_dir / "claude").mkdir()
+    _cfg.PROJECTS = _cfg._discover_projects()
+    assert _project_from_cwd(r"D:\MCP\MemoryCompiler") == "memory-compiler"
+    assert _project_from_cwd("/srv/memory_compiler/src") == "memory-compiler"
+    assert _project_from_cwd(
+        r"D:\MCP\MemoryCompiler\.claude\worktrees\sweet-mccarthy-d25bc1") == "memory-compiler"
+
+
+def test_route_project_cwd_prefers_non_empty_twin(knowledge_dir):
+    """Регресс 2026-09-24: start_task(project="memorycompiler"), угаданный по имени
+    каталога, завёл пустой проект-двойник (project_dir делает mkdir), и route_project
+    по cwd D:\\MCP\\MemoryCompiler буквально совпадал именно с ним — 0 статей против
+    37 у memory-compiler. Из совпавших берём проект со статьями, двойника называем."""
+    import memory_compiler.config as _cfg
+    (knowledge_dir / "memory-compiler").mkdir()
+    (knowledge_dir / "memory-compiler" / "deploy.md").write_text(
+        "# Деплой\n\nтело\n", encoding="utf-8")
+    (knowledge_dir / "memorycompiler").mkdir()
+    # служебный файл — не статья: такой каталог list_projects тоже считает пустым
+    (knowledge_dir / "memorycompiler" / "_session.md").write_text("x", encoding="utf-8")
+    _cfg.PROJECTS = _cfg._discover_projects()
+
+    assert _project_from_cwd(r"D:\MCP\MemoryCompiler") == "memory-compiler"
+    out = asyncio.run(route_project(cwd=r"D:\MCP\MemoryCompiler"))[0].text
+    assert 'project="memory-compiler"' in out, out
+    assert "`memorycompiler` (0 статей)" in out, "пустой двойник должен быть назван"
+
+
+def test_project_from_cwd_empty_project_still_matches(knowledge_dir):
+    """Единственное совпадение возвращается и пустым: свежий проект после add_project
+    ещё без статей, но cwd на него указывает честно. Роутинг каталогов не заводит."""
+    import memory_compiler.config as _cfg
+    (knowledge_dir / "fresh-app").mkdir()
+    _cfg.PROJECTS = _cfg._discover_projects()
+    before = sorted(p.name for p in knowledge_dir.iterdir())
+    assert _project_from_cwd("/home/user/dev/FreshApp") == "fresh-app"
+    asyncio.run(route_project(cwd="/home/user/dev/NoSuchApp"))
+    assert sorted(p.name for p in knowledge_dir.iterdir()) == before
+
+
 def test_route_project_deterministic_tie_break(knowledge_dir, monkeypatch):
     """Равные score: тай-брейк по алфавиту (не по порядку listdir — он зависит от ФС
     и давал разный роутинг в разных сессиях → кросс-проектные дубли), а сам случай

@@ -31,9 +31,12 @@ class FakeSession:
 
 
 @pytest.fixture
-def bridge(monkeypatch):
+def bridge(monkeypatch, knowledge_dir):
     """Одна MCP-сессия на все чаты — как у моста Claude Desktop."""
     from memory_compiler import handlers
+    # Проект, с которым работает сессия, обязан существовать: чтение
+    # несуществующего получает подсказку и в историю сессии не попадает.
+    (knowledge_dir / "infra").mkdir()
 
     class Ctx:
         session = FakeSession()

@@ -22,7 +22,7 @@ from mcp.types import TextContent
 
 from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS, _discover_projects
 from memory_compiler.storage import (
-    project_dir, safe_project_dir, safe_article_path, regenerate_index,
+    project_path, safe_project_path, safe_article_path, regenerate_index,
     article_title_tags, parse_meta_value, _parse_frontmatter, log_event,
     strip_code_blocks,
 )
@@ -534,7 +534,7 @@ async def gap_report(project: str = "all", days: int = 30, limit: int = 10) -> l
         if project != "all" and proj != project:
             continue
         try:
-            count = len(list(project_dir(proj).glob("*.md")))
+            count = len(list(project_path(proj).glob("*.md")))
         except Exception:
             count = 0
         project_stats.append((proj, count))
@@ -742,7 +742,7 @@ async def knowledge_gap(repo_path: str = None, project: str = "all",
     return [TextContent(type="text", text="\n".join(out))]
 
 async def get_summary(project: str) -> list[TextContent]:
-    proj_path = safe_project_dir(project)
+    proj_path = safe_project_path(project)
     articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     # Исключаем служебные файлы
     articles = [a for a in articles if not a.name.startswith("_")]
@@ -859,7 +859,7 @@ def _scan_stale(project: str = "all", warn_days: int = 30) -> dict:
     stale_secrets = []  # старше 180 дней + тег ssl/cert/password/license
 
     for proj in projects:
-        proj_path = project_dir(proj)
+        proj_path = project_path(proj)
         for md in proj_path.glob("*.md"):
             if md.name.startswith("_"):
                 continue

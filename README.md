@@ -410,7 +410,7 @@ The server itself warns a session about other sessions' writes to the project an
 
 ## Configuration
 
-Projects are created dynamically through `add_project()`, or automatically on `save_lesson()`. Each project is its own directory under `knowledge/`, holding markdown articles.
+Projects are created dynamically through `add_project()`, or automatically by the first write (`save_lesson()`, `finish_task()`, `session_note()` and so on). Each project is its own directory under `knowledge/`, holding markdown articles. Reading never creates a project: a read-only tool called with an unknown project answers with a hint and names the project with the same name ignoring case, hyphens and underscores (`memorycompiler` → `memory-compiler`). A write to such a twin is refused — retry with the real name, or create a separate project explicitly with `add_project()`.
 
 Initial projects can optionally be declared through an environment variable:
 

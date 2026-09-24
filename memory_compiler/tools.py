@@ -14,6 +14,7 @@ from memory_compiler import config
 from memory_compiler.config import PROJECTS, stats
 from memory_compiler.search import rebuild_index, rebuild_embeddings, start_background_reindex
 from memory_compiler.storage import regenerate_index, audit_log, _parse_frontmatter
+from memory_compiler import storage
 from memory_compiler import handlers
 from memory_compiler import obs
 from memory_compiler import freshness
@@ -81,6 +82,18 @@ _PROJECT_FROM_SESSION = frozenset({
     "finish_task", "save_lesson", "save_decision", "save_runbook", "save_session",
     "save_secret", "save_tracking", "save_contexts", "save_compact",
     "save_from_template", "session_note", "edit_article", "close_question",
+})
+
+
+# Инструменты, которым позволено ЗАВЕСТИ проект: проект в базе появляется первой
+# записью знания в него. Всем остальным, кто принимает `project`, нужен уже
+# существующий — несуществующий получает подсказку вместо вызова (_project_gate).
+# ⚠️ Список держит РАЗРЕШЁННОЕ, а не запрещённое: новый инструмент, забытый здесь,
+# на новом проекте ответит понятной подсказкой, а не заведёт каталог-пустышку.
+_PROJECT_CREATORS = frozenset({
+    "finish_task", "save_lesson", "save_decision", "save_runbook", "save_session",
+    "save_secret", "save_tracking", "save_compact", "save_from_template",
+    "session_note", "init_schema", "ingest", "import_obsidian", "git_capture",
 })
 
 
@@ -1523,8 +1536,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if healed:
         _log.info("leaked markup healed", extra={"tool": name, "healed": ",".join(healed)})
 
+    # ⚠️ ПРОЕКТА, КОТОРОГО НЕТ, ХЕНДЛЕР НЕ ВИДИТ. 14.09.2026 агент угадал
+    # project="memorycompiler" по каталогу клона, start_task молча завёл пустой
+    # двойник проекта memory-compiler, а тот потом сбивал route_project. Каталог
+    # чтение больше не создаёт (storage.project_path), но пустой ответ «ничего не
+    # найдено» по опечатке всё равно врёт: сессия решит, что знаний нет. Поэтому
+    # чтение получает подсказку, а запись в двойника по ключу — отказ.
+    # Сторож свежести при отказе не зовётся: он запомнил бы несуществующий проект
+    # «последним проектом сессии», и следующая запись без project ушла бы туда.
+    project = _named_project(arguments)
+    existed = _project_state(project)
+    refusal = _project_gate(name, project) if existed is False else ""
+    if refusal:
+        _log.info("project not found", extra={"tool": name, "project": project})
+        if name == "search":
+            handlers.search_payload_var.set(None)   # выдачу собирать не из чего
+
     try:
-        result = await _dispatch_tool(name, arguments)
+        result = ([TextContent(type="text", text=refusal)] if refusal
+                  else await _dispatch_tool(name, arguments))
     except ValueError as e:
         # safe_project_dir / safe_article_path raised — handler got an unsafe
         # project/filename parameter. Return graceful error instead of crashing.
@@ -1539,10 +1569,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception:
             pass
         raise
-    # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
-    # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
-    # и до подсчёта размера — футер тоже часть ответа.
-    result = _append_freshness(name, arguments, result, client_session)
+    if not refusal:
+        # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
+        # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
+        # и до подсчёта размера — футер тоже часть ответа.
+        result = _append_freshness(name, arguments, result, client_session)
+        # Новый проект и пустой двойник называются вслух — отдельным блоком, как
+        # футер свежести: обычные ответы остаются байт-в-байт прежними.
+        note = _project_note(project, existed)
+        if note:
+            result = list(result) + [TextContent(type="text", text=note)]
 
     # ⚠️ Подставленный проект НАЗЫВАЕТСЯ ВСЛУХ: молча записать «куда-то» хуже,
     # чем отказать — сессия не узнает, что попала не туда, а исправлять придётся
@@ -1647,6 +1683,99 @@ def _session_key(client_session: str | None) -> str:
     except Exception:
         return ""
     return freshness.key_for(session, client_session)
+
+
+def _named_project(arguments: dict) -> str:
+    """Проект, который вызов назвал явно; '' — не назвал или просил «по всем» ('all')."""
+    project = arguments.get("project") if isinstance(arguments, dict) else None
+    if not isinstance(project, str) or not project or project == "all":
+        return ""
+    return project
+
+
+def _project_state(project: str) -> bool | None:
+    """Есть ли каталог проекта. None — проверять нечего: проект не назван или имя
+    небезопасно (такое отвергнет сам хендлер своей ошибкой, как и раньше)."""
+    if not project:
+        return None
+    try:
+        return storage.safe_project_path(project).is_dir()
+    except ValueError:
+        return None
+
+
+def _twin_hint(twins: list[tuple[str, int]]) -> str:
+    """«memory-compiler» (статей: 37) — то же имя без учёта регистра…; прочие двойники — хвостом."""
+    best, count = twins[0]
+    text = (f"«{best}» (статей: {count}) — то же имя без учёта регистра, дефисов "
+            f"и подчёркиваний")
+    if len(twins) > 1:
+        text += "; тот же ключ и у " + ", ".join(f"«{n}» (статей: {c})" for n, c in twins[1:])
+    return text
+
+
+def _project_gate(name: str, project: str) -> str:
+    """Ответ ВМЕСТО вызова, когда названного проекта в базе нет; '' — вызов пускать.
+
+    Чтению — подсказка: вызов не выполнен, каталог не заведён, и кого, скорее
+    всего, имели в виду. Записи — отказ, только если есть двойник по ключу
+    (memorycompiler при живом memory-compiler): так знания расползаются на два
+    проекта. Без двойника запись заводит новый проект, как и раньше.
+
+    ⚠️ ДВОЙНИКА НЕ ПОДСТАВЛЯЕМ, даже на записи. Подстановка v1.90.0 заполняет
+    ПРОПУЩЕННЫЙ project, а здесь его назвали явно, и переписать явный выбор
+    молча — хуже отказа: отказ стоит одного повтора, а запись не туда
+    исправляют руками. Нужен именно отдельный проект — add_project, затем запись.
+    """
+    twins = storage.project_twins(project)
+    best = twins[0][0] if twins else ""
+    if name in _PROJECT_CREATORS:
+        if not twins:
+            return ""
+        return (f"❌ Ничего не записано: проекта «{project}» в базе нет. Скорее всего, "
+                f"имелся в виду {_twin_hint(twins)}. Повтори вызов с "
+                f"`project=\"{best}\"`. Если нужен именно отдельный новый проект "
+                f"«{project}», заведи его явно — `add_project(name=\"{project}\")` — "
+                f"и повтори запись.")
+    lines = [f"❌ Проекта «{project}» в базе нет: вызов не выполнен, каталог под него "
+             f"не заведён."]
+    if twins:
+        lines.append(f"Возможно, имелся в виду {_twin_hint(twins)}. Повтори вызов с "
+                     f"`project=\"{best}\"`.")
+    else:
+        near = storage.project_near_names(project)
+        if near:
+            lines.append("Похожие имена: " + ", ".join(f"«{n}»" for n in near) + ".")
+        lines.append("Все проекты — `list_projects`, подбор по рабочему каталогу — "
+                     "`route_project(cwd=…)`. Новый проект появляется с первой записью "
+                     "(`save_lesson`, `finish_task`) или через `add_project`.")
+    return "\n".join(lines)
+
+
+def _project_note(project: str, existed: bool | None) -> str:
+    """Сноска о проекте после вызова: только что заведён или похож на пустой двойник.
+
+    Новый проект называется потому, что его заводит и опечатка (memory-compile):
+    без сноски сессия не узнает, что записала мимо. Пустой двойник — проект без
+    единой статьи при непустом тёзке по ключу: такие заводились сами, пока чтение
+    делало mkdir, и доживают в базе до ручной уборки.
+    """
+    if existed is None or not _project_state(project):
+        return ""
+    if existed is False:
+        note = f"\n📁 Заведён новый проект «{project}» — раньше его в базе не было."
+        near = storage.project_near_names(project)
+        if near:
+            note += (" Похожие существующие: " + ", ".join(f"«{n}»" for n in near)
+                     + " — если имелся в виду один из них, перенеси запись туда.")
+        return note
+    if storage.project_has_articles(project):
+        return ""
+    twins = [(n, c) for n, c in storage.project_twins(project) if c > 0]
+    if not twins:
+        return ""
+    return (f"\n⚠️ В «{project}» нет ни одной статьи — похоже на двойник, заведённый "
+            f"угаданным именем. Нужный проект, скорее всего, {_twin_hint(twins)}.")
 
 
 def _append_freshness(name: str, arguments: dict, result: list,

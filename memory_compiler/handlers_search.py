@@ -22,7 +22,7 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, track_access, is_secret_article,
 )
 from memory_compiler.storage import (
-    article_title_tags, make_preview, safe_project_dir, superseded_by,
+    article_title_tags, make_preview, safe_project_path, superseded_by,
     extract_snippets, extract_errors,
 )
 
@@ -55,7 +55,7 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
             out.append(f"---\n### [{r['project']}] {r['title']} ({scores})\n{preview}\n")
         return [TextContent(type="text", text="\n".join(out))]
     else:
-        proj_path = safe_project_dir(project)
+        proj_path = safe_project_path(project)
         articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not articles:
             return [TextContent(type="text", text=f"База знаний по '{project}' пуста.")]

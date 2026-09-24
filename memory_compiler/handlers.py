@@ -21,7 +21,7 @@ import memory_compiler.search as _search
 from memory_compiler.storage import (
     regenerate_index, git_commit,
     read_project_deps, write_project_deps,
-    log_event, safe_project_dir,
+    log_event, safe_project_dir, project_article_count, project_key,
 )
 
 
@@ -220,27 +220,50 @@ def _weighted_budgets(want: list[int], weight: list[float], total: int,
 
 
 
-def _project_from_cwd(cwd: str) -> Optional[str]:
-    """Сопоставить cwd с существующим проектом по имени директории.
+def _cwd_candidates(cwd: str) -> list[tuple[str, int]]:
+    """Проекты, совпавшие с cwd, в порядке предпочтения: [(имя, статей), ...].
 
-    Алгоритм: ищем по компонентам пути (от глубокого к мелкому) первое
-    совпадение с проектом из list_projects. Например:
-      cwd = /home/user/dev/myapp/backend → проверяем 'backend', потом 'myapp', потом 'dev'
-    Возвращает первое найденное имя проекта (lowercase) или None.
+    Компоненты пути перебираются от глубокого к мелкому; берётся самый глубокий
+    уровень, где совпало хоть что-то:
+      cwd = /home/user/dev/myapp/backend → 'backend', потом 'myapp', потом 'dev'
+    Каталог сравнивается с проектом по storage.project_key — без регистра, дефисов
+    и подчёркиваний: клон D:\\MCP\\MemoryCompiler и проект memory-compiler одно и то же.
+    На одном уровне совпасть могут несколько проектов (memory-compiler и
+    memorycompiler). Первым идёт тот, где больше статей, пустой — последним: до
+    v1.90.3 чтение заводило каталог под любое угаданное имя, такие двойники
+    доживают в базах, и выбор их по cwd уводил start_task/get_active_context в
+    пустоту. Статьи считает storage.project_article_count — без mkdir, роутинг
+    каталогов не заводит. При равенстве — буквальное совпадение имени, затем
+    алфавит (выбор воспроизводим).
     """
     import memory_compiler.config as _cfg
     if not cwd:
-        return None
+        return []
     # Нормализуем разделители (Windows / Unix)
-    parts = re.split(r"[/\\]", cwd.strip())
-    parts = [p for p in parts if p]  # strip empty
-    projects_set = set(p.lower() for p in _cfg.PROJECTS)
-    # Iterate from deepest dir towards root — last (most specific) match wins
+    parts = [p for p in re.split(r"[/\\]", cwd.strip()) if p]
+    by_key: dict[str, list[str]] = {}
+    for proj in sorted(set(p.lower() for p in _cfg.PROJECTS)):
+        key = project_key(proj)
+        if key:
+            by_key.setdefault(key, []).append(proj)
     for component in reversed(parts):
-        normalized = component.lower().strip()
-        if normalized in projects_set:
-            return normalized
-    return None
+        literal = component.lower().strip()
+        matched = by_key.get(project_key(component))
+        if not matched:
+            continue
+        counted = [(p, project_article_count(p)) for p in matched]
+        counted.sort(key=lambda pc: (-pc[1], pc[0] != literal, pc[0]))
+        return counted
+    return []
+
+
+def _project_from_cwd(cwd: str) -> Optional[str]:
+    """Сопоставить cwd с существующим проектом по имени директории.
+
+    Возвращает лучший проект из _cwd_candidates (lowercase) или None.
+    """
+    candidates = _cwd_candidates(cwd)
+    return candidates[0][0] if candidates else None
 
 
 async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[TextContent]:
@@ -252,7 +275,8 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
       top_k — сколько кандидатов вернуть
 
     Алгоритм:
-      0. Если cwd содержит имя существующего проекта → возвращаем его с score 100 (override)
+      0. Если cwd содержит имя существующего проекта (без учёта регистра, '-' и '_')
+         → возвращаем его с score 100 (override); из нескольких — со статьями
       1. Substring match — имя проекта целиком в тексте (вес: 50)
       2. Token overlap — слова из имени проекта в тексте (вес: 30)
       3. Content match — поиск text в статьях проекта (вес: 20)
@@ -263,11 +287,17 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
 
     # 0. CWD override — сильнейший сигнал. Если рабочий каталог совпадает с проектом, берём его.
     if cwd:
-        cwd_proj = _project_from_cwd(cwd)
-        if cwd_proj:
+        candidates = _cwd_candidates(cwd)
+        if candidates:
+            cwd_proj = candidates[0][0]
+            # Остальные совпавшие называем вслух: пустой двойник в списке проектов
+            # иначе так и висит незамеченным, а агент продолжает его угадывать.
+            others = ", ".join(f"`{p}` ({n} статей)" for p, n in candidates[1:])
+            also = f"Каталогу соответствуют и: {others}.\n\n" if others else ""
             return [TextContent(type="text", text=(
                 f"# Route project\n\n"
                 f"*cwd:* `{cwd}` → проект `{cwd_proj}` (score: 100, источник: cwd-match)\n\n"
+                f"{also}"
                 f"→ Используй `project=\"{cwd_proj}\"`."
             ))]
 
