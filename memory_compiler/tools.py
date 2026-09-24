@@ -476,24 +476,30 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="read_article",
-            description="Получить полный текст статьи.",
+            description=("Получить текст статьи. Служебные разделы «См. также», «Git-ссылки» и "
+                         "frontmatter скрыты, в конце сноска о скрытом; full=true — статья целиком."),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project": {"type": "string", "description": "Имя проекта или 'daily'"},
-                    "filename": {"type": "string", "description": "Имя файла статьи"}
+                    "filename": {"type": "string", "description": "Имя файла статьи"},
+                    "full": {"type": "boolean",
+                             "description": ("true — статья целиком, со служебными разделами и "
+                                             "frontmatter. По умолчанию false")},
                 },
                 "required": ["project", "filename"]
             }
         ),
         Tool(
             name="search_by_tag",
-            description="Найти все статьи с указанным тегом.",
+            description="Найти статьи с указанным тегом: свежие сверху, по одной строке.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "tag": {"type": "string", "description": "Тег для поиска"},
-                    "project": {"type": "string", "description": "Имя проекта или 'all'"}
+                    "project": {"type": "string", "description": "Имя проекта или 'all'"},
+                    "limit": {"type": "integer",
+                              "description": "Сколько статей показать. По умолчанию 30, максимум 200"},
                 },
                 "required": ["tag"]
             }
@@ -1598,6 +1604,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)
     stats["total_chars_returned"] = stats.get("total_chars_returned", 0) + total
+    # Число найденного — аналитике (analytics.quality): у search без префикса
+    # «score: » короткий, но непустой ответ по одной длине выглядит промахом.
+    if name == "search" and structured is not None:
+        audit_args = {**audit_args, "_count": structured.get("count")}
     audit_log(name, audit_args, total)
     # Маршрут вызова (v1.76.1): имя клиента из initialize и признак номера вызова
     # в _meta. По ним видно, доезжает ли claudecode/toolUseId через мост Claude
@@ -1670,6 +1680,14 @@ _WORK_PROJECT_TOOLS = _FRESHNESS_WRITE_TOOLS | {"start_task"}
 # обращении дублировала бы их выдачу.
 _CONTEXT_TOOLS = {"start_task", "load_session", "get_active_context",
                   "open_questions", "get_context", "get_summary"}
+
+# Справочные вызовы: читающие инструменты, кроме тех, что сами отдают контекст.
+# Список выводится, а не ведётся руками, — новый читающий инструмент не выпадет.
+# Справка из чужого проекта подсказку первого обращения не получает (v1.91.0).
+# ⚠️ _READONLY_LOCAL — про MCP-аннотацию клиенту (readOnlyHint), а не про факт
+# записи: consolidate туда попал по этой аннотации, хотя реально пишет и стоит
+# в _FRESHNESS_WRITE_TOOLS. Без вычитания последнего он считался бы «справкой».
+_LOOKUP_TOOLS = _READONLY_LOCAL - _CONTEXT_TOOLS - _FRESHNESS_WRITE_TOOLS
 
 
 def _session_key(client_session: str | None) -> str:
@@ -1798,8 +1816,11 @@ def _append_freshness(name: str, arguments: dict, result: list,
     key = freshness.key_for(session, client_session)
     project = arguments.get("project") if isinstance(arguments, dict) else None
     # ⚠️ Спрашиваем ДО consume: тот делает touch и признак первого касания стирает.
+    # Рабочий проект — тем же порядком: после consume им стал бы этот же проект.
+    elsewhere = (name in _LOOKUP_TOOLS and bool(project) and project != "all"
+                 and freshness.last_project(key) not in ("", project))
     first = (freshness.is_first_touch(key, project or "")
-             and name not in _CONTEXT_TOOLS)
+             and name not in _CONTEXT_TOOLS and not elsewhere)
     try:
         # ⚠️ Своя запись — ДО consume: она сдвигает отсчёт молчания, а подсказку о нём
         # собирает consume. В обратном порядке ответ на session_note приходил с

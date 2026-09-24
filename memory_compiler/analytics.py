@@ -107,7 +107,16 @@ def quality(hours: float = 168.0) -> dict:
     pos = {id(r): i for i, r in enumerate(rows)}
     misses, acted, chained = [], 0, 0
     for s in searches:
-        if int(s.get("size") or 0) < MISS_SIZE:
+        # v1.91.0 убрал «score: »/«secret:false» из выдачи search — короткий, но
+        # непустой ответ (один результат) стал попадать под MISS_SIZE по одной
+        # длине. Если tools.call_tool записал число найденного (_count), промах —
+        # это count == 0; старые записи без _count остаются на прежнем критерии.
+        count = (s.get("args") or {}).get("_count")
+        if count is not None:
+            is_miss = int(count) == 0
+        else:
+            is_miss = int(s.get("size") or 0) < MISS_SIZE
+        if is_miss:
             misses.append(s)
         for nxt in rows[pos[id(s)] + 1:]:
             if nxt["_ts"] - s["_ts"] > FOLLOW_SEC:

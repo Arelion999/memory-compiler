@@ -148,8 +148,8 @@ def test_search_by_tag_frontmatter_title_and_preview(knowledge_dir, monkeypatch)
     text_out = "".join(c.text for c in res if c.type == "text")
     assert "Заголовок FM" in text_out
     assert "contexts:" not in text_out and '"heading"' not in text_out
-    link_titles = [c.title for c in res if c.type == "resource_link"]
-    assert link_titles == ["Заголовок FM"]
+    assert all(c.type == "text" for c in res), "у search_by_tag больше нет resource_link"
+    assert "- [testproj] Заголовок FM — fm.md (" in text_out
 
 
 def test_chunk_article_late_chunking_strips_frontmatter(monkeypatch):

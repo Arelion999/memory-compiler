@@ -12,7 +12,10 @@
 (сессия, проект).
 """
 
+import asyncio
+
 import pytest
+from mcp.types import TextContent
 
 from memory_compiler import freshness, handlers, storage
 
@@ -90,6 +93,15 @@ def test_context_loading_tools_are_excluded():
     assert "save_lesson" not in tools._CONTEXT_TOOLS
 
 
+def test_consolidate_is_not_treated_as_a_lookup():
+    """consolidate ПИШЕТ (он в _FRESHNESS_WRITE_TOOLS), а _LOOKUP_TOOLS считался
+    как _READONLY_LOCAL - _CONTEXT_TOOLS и не вычитал пишущие — справочный вызов
+    из чужого проекта по ошибке не давал подсказки первого обращения."""
+    from memory_compiler import tools
+    assert "consolidate" not in tools._LOOKUP_TOOLS
+    assert "read_article" in tools._LOOKUP_TOOLS
+
+
 @pytest.mark.asyncio
 async def test_notice_reaches_the_model_for_tools_with_output_schema(proj, monkeypatch):
     """У `search` объявлен outputSchema — клиент берёт structuredContent, а
@@ -115,3 +127,59 @@ def test_notice_is_absent_when_there_is_nothing_to_say():
     from memory_compiler import tools
     payload = {"query": "тест", "count": 0, "results": []}
     assert "notice" not in tools._merge_notice_into_payload(payload, "")
+
+
+# ── справка из чужого проекта (v1.91.0) ─────────────────────────────────────
+# Из 66 подсказок «Первое обращение» за неделю 43 пришлись на read_article, чаще
+# всего по проекту, который сессия читала для справки: ~500 символов чужих
+# открытых вопросов в ответ на чтение одной статьи.
+
+class _FakeSession:
+    """Заглушка MCP-сессии: важна только идентичность."""
+
+
+@pytest.fixture
+def bridge(monkeypatch):
+    from memory_compiler import tools
+
+    class Ctx:
+        session = _FakeSession()
+
+    class FakeApp:
+        request_context = Ctx()
+
+    async def fake_dispatch(name, arguments):
+        return [TextContent(type="text", text="ok")]
+
+    monkeypatch.setattr(tools, "app", FakeApp())
+    monkeypatch.setattr(tools, "audit_log", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(handlers, "first_touch_context",
+                        lambda project: f"\n\n📌 подсказка {project}")
+    return tools
+
+
+def _call(tools, name, args, chat="chat-a"):
+    out = asyncio.run(tools.call_tool(name, {**args, freshness.CLIENT_SESSION_ARG: chat}))
+    return "".join(c.text for c in out if isinstance(c, TextContent))
+
+
+def test_lookup_in_a_foreign_project_gets_no_hint(bridge):
+    _call(bridge, "save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    out = _call(bridge, "read_article", {"project": "general", "filename": "справка.md"})
+    assert "📌" not in out, "справка из чужого проекта получила подсказку первого обращения"
+
+
+def test_first_read_in_a_fresh_chat_still_gets_the_hint(bridge):
+    """Позитивный контроль: слепая сессия, начавшая с чтения, подсказку получает."""
+    out = _call(bridge, "read_article", {"project": "general", "filename": "справка.md"},
+                chat="chat-new")
+    assert "📌 подсказка general" in out
+
+
+def test_first_write_into_another_project_still_gets_the_hint(bridge):
+    """Правило только для справки: запись в новый проект — повод показать его
+    открытые вопросы, даже если сессия работала с другим."""
+    _call(bridge, "save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    out = _call(bridge, "save_lesson", {"topic": "t2", "content": "c2", "project": "general"})
+    assert "📌 подсказка general" in out

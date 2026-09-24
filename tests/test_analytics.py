@@ -50,6 +50,23 @@ def test_miss_detected_by_response_size(audit):
     assert q["miss_queries"][0]["query"] == "softwent пароль"
 
 
+def test_miss_by_count_when_present_else_by_size(audit):
+    """v1.91.0 убрал префикс «score: » и «secret:false» из выдачи search — короткий,
+    но НЕПУСТОЙ ответ (один найденный результат ~100 символов) стал ложным промахом
+    по одному size. При записанном _count промах — это count == 0, а не длина JSON;
+    старые записи без _count (до релиза) остаются на прежнем критерии по size."""
+    audit([
+        _row(-700, "search", size=120, query="короткий но найден", _count=1),
+        _row(-600, "search", size=90, query="ничего не найдено", _count=0),
+        _row(-500, "search", size=50, query="старая запись без count"),
+    ])
+    q = analytics.quality(24)
+    assert q["searches"] == 3
+    assert q["misses"] == 2 and q["miss_rate"] == pytest.approx(2 / 3, abs=1e-3)
+    miss_queries = {m["query"] for m in q["miss_queries"]}
+    assert miss_queries == {"ничего не найдено", "старая запись без count"}
+
+
 def test_read_after_search_counts_as_useful(audit):
     audit([
         _row(-600, "search", query="что-то"),

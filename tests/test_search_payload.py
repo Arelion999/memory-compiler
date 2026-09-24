@@ -27,8 +27,8 @@ def test_payload_keeps_order_count_and_fields_of_ranking():
         ("p", "a.md"), ("p", "b.md"), ("q", "c.md")]
     first = payload["results"][0]
     assert first["title"] == "A"
-    assert first["score"] == "score: 99.0"
-    assert first["secret"] is False
+    assert first["score"] == "99.0", "имя поля не повторяется в значении"
+    assert "secret" not in first, "флаг отдаётся только секрету: false стоял у 88% результатов"
 
 
 def test_payload_has_no_preview_and_no_optional_noise():

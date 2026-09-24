@@ -14,16 +14,18 @@ search, а отложенный вдобавок сохраняет тестам
 import asyncio
 import json
 import os
+import re
 from contextvars import ContextVar
+from datetime import datetime
 
-from mcp.types import TextContent, ResourceLink
+from mcp.types import TextContent
 
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, track_access, is_secret_article,
 )
 from memory_compiler.storage import (
     article_title_tags, make_preview, safe_project_path, superseded_by,
-    extract_snippets, extract_errors,
+    extract_snippets, extract_errors, _parse_frontmatter, parse_meta_value,
 )
 
 
@@ -123,32 +125,6 @@ async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dic
         return results[:top_k]
 
 
-def _resource_links(items) -> list[ResourceLink]:
-    """Построить ResourceLink на memory://<проект>/<файл> для результатов поиска.
-    items: iterable dict'ов с ключами project/file (+ optional title/desc). Секреты
-    (secret_) пропускаются — как ресурс недоступны; дубли по project/file схлопываются.
-    Клиент (Claude Desktop) рендерит их как кликабельные ссылки в выводе инструмента."""
-    links: list[ResourceLink] = []
-    seen: set[str] = set()
-    for r in items:
-        project, filename = r.get("project"), r.get("file")
-        if not project or not filename or filename.startswith("secret_"):
-            continue
-        key = f"{project}/{filename}"
-        if key in seen:
-            continue
-        seen.add(key)
-        links.append(ResourceLink(
-            type="resource_link",
-            uri=f"memory://{project}/{filename}",
-            name=key,
-            title=r.get("title", "") or "",
-            description=r.get("desc", "") or "",
-            mimeType="text/markdown",
-        ))
-    return links
-
-
 # Структурированная выдача search собирается ЗДЕСЬ, а не из resource-ссылок в
 # tools.py. Ссылок на секреты нет НАМЕРЕННО (как ресурс секрет недоступен — это
 # верная политика, см. read_resource), но сборка структуры из ссылок молча теряла
@@ -167,16 +143,27 @@ def search_json(payload: dict) -> str:
 
 
 def _search_item(r: dict, secret: bool) -> dict:
-    """Результат выдачи — ровно то, что модель видела раньше, без дублей и превью."""
+    """Результат выдачи — ровно то, что модель видела раньше, без дублей и превью.
+
+    ⚠️ Схема выдачи НЕ меняется (v1.91.0): `score` остаётся строкой, `secret` —
+    необязательным полем. Клиенты держат схему в кэше до перезапуска, и число вместо
+    строки уронило бы каждый поиск (живой случай 16.09.2026, «must have required
+    property 'uri'»). Префикс «score: » и `secret: false` сняты: они повторялись в
+    каждом результате и занимали 9–10% выдачи (замер @link28rus 24.09.2026).
+    """
     project, file = r["project"], r["file"]
+    score = str(r["score"])
+    if "rerank_score" in r:
+        score += f", rerank: {r['rerank_score']:.2f}"
     item = {
         "title": r.get("title", "") or "",
         "project": project,
         "file": file,
-        "score": _scores(r),
-        "secret": bool(secret),
+        "score": score,
     }
     # Пометки только когда есть что сказать: пустые поля — это символы в контексте.
+    if secret:
+        item["secret"] = True
     sup = r.get("superseded_by")
     if sup:
         item["superseded_by"] = sup[0]
@@ -353,13 +340,62 @@ async def ask(question: str, project: str = "all") -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(out))]
 
 
-async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
-    from memory_compiler.search import _strip_frontmatter
+# ── search_by_tag (v1.91.0) ─────────────────────────────────────────────────
+# Раньше: обход всей базы прямо на loop, превью на каждое попадание (строилось и
+# выбрасывалось), все статьи без ограничения в порядке обхода каталога и
+# resource_link на каждую строку. Тег bugfix — 985 статей, 150 тыс. символов;
+# клиент резал ответ, и модель видела случайное начало списка (замер 24.09.2026).
+TAG_LIMIT_DEFAULT = 30
+TAG_LIMIT_MAX = 200
 
-    tag_lower = tag.lower().strip()
-    results = []
-    check_projects = PROJECTS if project == "all" else [project]
-    for proj in check_projects:
+_DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+_DATE_DMY_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})")
+
+
+def _normalize_date(raw: str) -> str | None:
+    """ГГГГ-ММ-ДД или None. «24.09.2025» лексикографически обгоняет ISO-даты
+    (сравнение строкой видит только цифры, не календарь) — поэтому ДД.ММ.ГГГГ
+    переводится в ISO, а всё, что не подходит ни под один формат, не считается
+    датой вовсе (следующий источник, в итоге mtime файла)."""
+    raw = raw.strip()
+    if _DATE_ISO_RE.match(raw):
+        return raw[:10]
+    m = _DATE_DMY_RE.match(raw)
+    if m:
+        d, mth, y = m.groups()
+        return f"{y}-{mth}-{d}"
+    return None
+
+
+def _article_date(text: str, path) -> str:
+    """ГГГГ-ММ-ДД: «Обновлено», иначе «Дата» из шапки тела, иначе дата файла.
+
+    Шапка кончается на первом заголовке любого уровня: «Дата:» внутри записи
+    (daily-агрегаты) датой статьи не считается. Значение принимается только в
+    распознанном формате (ISO или ДД.ММ.ГГГГ) — иначе оно не дата, а следующий
+    источник (mtime)."""
+    found: dict[str, str] = {}
+    seen: set[str] = set()
+    for line in _parse_frontmatter(text)[1].splitlines()[1:]:
+        if line.startswith("#"):
+            break
+        low = line.lower()
+        for label in ("**обновлено:**", "**дата:**"):
+            if low.startswith(label) and label not in seen:
+                seen.add(label)
+                normalized = _normalize_date(parse_meta_value(line))
+                if normalized:
+                    found[label] = normalized
+    date = found.get("**обновлено:**") or found.get("**дата:**")
+    return date or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
+
+
+def _scan_tag(tag: str, projects: list[str]) -> list[dict]:
+    """Все статьи с тегом. Синхронно: обход всей базы — звать через to_thread
+    (имя внесено в HEAVY tests/test_no_blocking_calls.py)."""
+    tag = tag.lower().strip()
+    hits = []
+    for proj in projects:
         proj_path = KNOWLEDGE_DIR / proj
         if not proj_path.exists():
             continue
@@ -367,23 +403,45 @@ async def search_by_tag(tag: str, project: str = "all") -> list[TextContent]:
             if md.name.startswith("_"):
                 continue
             text = md.read_text(encoding="utf-8")
-            lines = _strip_frontmatter(text).splitlines()
-            title = lines[0].lstrip("# ").strip() if lines else md.stem
-            for line in lines[:10]:
-                if line.lower().startswith("**теги:**"):
-                    tags_str = line.split(":", 1)[1].strip()
-                    article_tags = [t.strip().lower().strip("*").strip() for t in tags_str.split(",")]
-                    if tag_lower in article_tags:
-                        preview = make_preview(text)
-                        results.append({"title": title, "project": proj, "file": md.name, "preview": preview})
-                    break
-    if not results:
+            title, tags_line = article_title_tags(text, md.stem)
+            tags = {t.strip().strip("*").strip().lower() for t in tags_line.split(",")}
+            if tag in tags:
+                hits.append({"title": title, "project": proj, "file": md.name,
+                             "date": _article_date(text, md)})
+    return hits
+
+
+async def search_by_tag(tag: str, project: str = "all",
+                        limit: int = TAG_LIMIT_DEFAULT) -> list[TextContent]:
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = TAG_LIMIT_DEFAULT
+    limit = max(1, min(limit, TAG_LIMIT_MAX))
+    check_projects = PROJECTS if project == "all" else [project]
+    hits = await asyncio.to_thread(_scan_tag, tag, check_projects)
+    if not hits:
         return [TextContent(type="text", text=f"Статей с тегом '{tag}' не найдено.")]
-    track_access([f"{r['project']}/{r['file']}" for r in results])
-    out = [f"# Тег: {tag} ({len(results)} статей)\n"]
-    for r in results:
-        out.append(f"---\n### [{r['project']}] {r['title']}\n{r['file']}\n")
-    return [TextContent(type="text", text="\n".join(out)), *_resource_links(results)]
+    # Два стабильных прохода: дата по убыванию, при равенстве — проект и файл.
+    hits.sort(key=lambda h: (h["project"], h["file"]))
+    hits.sort(key=lambda h: h["date"], reverse=True)
+    shown = hits[:limit]
+    track_access([f"{h['project']}/{h['file']}" for h in shown])
+    head = f"# Тег: {tag} — {len(shown)} из {len(hits)}, свежие сверху"
+    # Счёт по проектам — полный, и по тем, что не попали в показ: по нему видно,
+    # куда сузить `project`.
+    per_project: dict[str, int] = {}
+    for h in hits:
+        per_project[h["project"]] = per_project.get(h["project"], 0) + 1
+    if len(per_project) > 1:
+        ranked = sorted(per_project.items(), key=lambda pc: (-pc[1], pc[0]))
+        head += " (по проектам: " + ", ".join(f"{p} {c}" for p, c in ranked) + ")"
+    out = [head]
+    out += [f"- [{h['project']}] {h['title']} — {h['file']} ({h['date']})" for h in shown]
+    hidden = len(hits) - len(shown)
+    if hidden:
+        out.append(f"*…ещё {hidden} — сузь `project`, подними `limit` или ищи через `search`*")
+    return [TextContent(type="text", text="\n".join(out))]
 
 
 async def attach_corrections(results: list[dict]) -> list[dict]:
@@ -439,13 +497,6 @@ async def _mark_superseded_corrections(results: list[dict]) -> list[dict]:
     return results
 
 
-def _scores(r: dict) -> str:
-    s = f"score: {r['score']}"
-    if "rerank_score" in r:
-        s += f", rerank: {r['rerank_score']:.2f}"
-    return s
-
-
 # ─── Snippet search ────────────────────────────────────────────────────────
 
 
@@ -484,13 +535,9 @@ async def search_snippets(query: str, lang: str = None, project: str = "all") ->
         return [TextContent(type="text", text=f"Сниппетов с '{query}' не найдено.")]
 
     out = [f"# Сниппеты: '{query}' ({len(found)} найдено)\n"]
-    link_items = []
     for s in found[:10]:
         out.append(f"---\n**[{s['article']}]** ({s['lang']}) — {s['context']}\n```{s['lang']}\n{s['code']}\n```\n")
-        if "/" in s["article"]:
-            p, f = s["article"].split("/", 1)
-            link_items.append({"project": p, "file": f, "title": s.get("context", "")})
-    return [TextContent(type="text", text="\n".join(out)), *_resource_links(link_items)]
+    return [TextContent(type="text", text="\n".join(out))]
 
 
 # ─── Error search ──────────────────────────────────────────────────────────
@@ -545,7 +592,7 @@ async def search_error(error_text: str, project: str = "all") -> list[TextConten
     for r in ranked[:5]:
         preview = "\n".join(r["preview"].splitlines()[:8])
         out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
-    return [TextContent(type="text", text="\n".join(out)), *_resource_links(ranked[:5])]
+    return [TextContent(type="text", text="\n".join(out))]
 
 
 async def search_decisions(query: str, project: str = "all") -> list[TextContent]:
@@ -571,4 +618,4 @@ async def search_decisions(query: str, project: str = "all") -> list[TextContent
     for r in decisions:
         preview = "\n".join(r["preview"].splitlines()[:8])
         out.append(f"---\n### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}\n")
-    return [TextContent(type="text", text="\n".join(out)), *_resource_links(decisions)]
+    return [TextContent(type="text", text="\n".join(out))]

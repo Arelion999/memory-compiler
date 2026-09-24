@@ -134,7 +134,7 @@ def test_crowded_start_gives_out_no_more_than_the_new_ceiling():
     want = [3648, 2474, 1346, 1052, 558, 262]        # найдено, вопросы, активность, факты, runbooks, сроки
     weight = [2.5, 3.0, 1.5, 1.5, 0.5, 2.0]
     got = handlers._weighted_budgets(want, weight, handlers_sessions.START_BUDGET)
-    assert sum(got) <= 4500, "стартовый контекст отдаёт %d символов" % sum(got)
+    assert sum(got) <= 4000, "стартовый контекст отдаёт %d символов" % sum(got)
     # ⚠️ Позитивный контроль: экономия не должна съедать главное — иначе
     # «уложились в потолок» достигалось бы обнулением вопросов и находок.
     assert got[0] > 900 and got[1] > 900, ("находки и вопросы обязаны остаться "

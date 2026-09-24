@@ -588,7 +588,7 @@ from memory_compiler.handlers_search import (  # noqa: E402,F401
     search_by_tag, search_snippets, search_error, search_decisions,
     attach_corrections, _mark_superseded_corrections, search_json,
     _search_payload, _search_item,
-    _resource_links, _rerank_async, _scores,
+    _rerank_async,
     search_payload_var,
     SEARCH_CANDIDATE_POOL, SEARCH_RERANK_BUDGET_S, RERANK_ENABLED,
     ASK_TOP_K, ASK_HEAD_LINES,

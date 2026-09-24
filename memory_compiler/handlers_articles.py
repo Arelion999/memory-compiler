@@ -36,7 +36,7 @@ from memory_compiler.config import (
 )
 from memory_compiler.search import embed_document, index_document
 from memory_compiler.storage import (
-    TEMPLATES, article_title_tags, auto_tags, decrypt_content, encrypt_content,
+    TEMPLATES, _parse_frontmatter, article_title_tags, auto_tags, decrypt_content, encrypt_content,
     extract_git_refs, extract_secret_identifiers, find_existing_article, git_commit,
     is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
     mark_superseded, merge_into_article, project_dir, regenerate_index,
@@ -543,7 +543,20 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
         if is_secret and "**Секрет:** да" not in header:
             header = header + "\n**Секрет:** да"
         body = encrypt_content(content) if is_secret else content
-        fpath.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
+        new_text = f"{header}\n\n{body}\n"
+        # ⚠️ СЛУЖЕБНЫЕ РАЗДЕЛЫ ПЕРЕНОСЯТСЯ (v1.91.0). read_article отдаёт статью без
+        # «См. также» и «Git-ссылки», и перезапись по прочитанному молча выбросила бы
+        # их из файла. Раздел, который автор прислал сам, не дублируем.
+        # ⚠️ «Прислал сам» — это РЕАЛЬНЫЙ раздел, а не подстрока: `heading not in
+        # content` считал присланным и упоминание в прозе, и строку внутри
+        # ```-примера, и перенос молча отменялся. split_service_sections различает
+        # секции от текста внутри fenced-блоков — тем же способом, что и read_article.
+        _, old_sections = split_service_sections(old_text)
+        _, sent_sections = split_service_sections(content)
+        for heading, block in old_sections.items():
+            if heading not in sent_sections:
+                new_text = new_text.rstrip("\n") + "\n\n" + block.strip("\n") + "\n"
+        fpath.write_text(new_text, encoding="utf-8")
 
     # Рефлексы (v1.78.0): раздел пишется открытым текстом и в секрете — это адреса и
     # тексты ошибок, а не содержимое секрета; тело статьи не расшифровывается.
@@ -785,7 +798,82 @@ async def save_contexts(project: str, filename: str, contexts: list) -> list[Tex
     return [TextContent(type="text", text=msg)]
 
 
-async def read_article(project: str, filename: str) -> list[TextContent]:
+# ── Служебные разделы статьи (v1.91.0) ───────────────────────────────────────
+# «См. также» пишет update_cross_references, «Git-ссылки» — разбор git-ссылок при
+# сохранении. В прочитанных статьях они занимали 12% (замер 24.09.2026), а модели
+# почти не нужны: соседей находит поиск, git-ссылки повторяют текст статьи.
+# ⚠️ Раздел кончается перед `## ` ИЛИ `### `: merge_into_article дописывает записи
+# `### дата` в конец файла, и у 42 из 861 прочитанных статей «См. также» стоит в
+# середине — с одинарной границей записи после него пропали бы из выдачи.
+# ⚠️ Заголовок внутри ```-блока разделом не считается: статьи о самом формате
+# держат его примером.
+SERVICE_SECTIONS = ("## См. также", "## Git-ссылки")
+
+
+def split_service_sections(text: str) -> tuple[str, dict[str, str]]:
+    """(текст без служебных разделов, {заголовок: вырезанный блок}).
+
+    На месте вырезанного раздела остаётся не больше одной пустой строки, остальной
+    текст не трогается. Нет служебных разделов — текст возвращается как есть.
+    """
+    kept: list[str] = []
+    removed: dict[str, list[str]] = {}
+    current = None
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        head = line.strip()
+        if not in_fence and head in SERVICE_SECTIONS:
+            while len(kept) >= 2 and kept[-1] == "" and kept[-2] == "":
+                kept.pop()
+            current = head
+            removed.setdefault(head, []).append(line)
+            continue
+        if current is not None:
+            if not in_fence and (line.startswith("## ") or line.startswith("### ")):
+                current = None
+            else:
+                removed[current].append(line)
+                continue
+        kept.append(line)
+    if not removed:
+        return text, {}
+    return "\n".join(kept), {h: "\n".join(b) for h, b in removed.items()}
+
+
+def _hidden_note(removed: dict[str, str]) -> str:
+    """Сноска о скрытом: называет только реально вырезанное."""
+    parts = []
+    see = removed.get("## См. также")
+    if see is not None:
+        n = sum(1 for line in see.split("\n") if line.lstrip().startswith("- "))
+        parts.append(f"«См. также» (статей: {n})")
+    if "## Git-ссылки" in removed:
+        parts.append("«Git-ссылки»")
+    return f"*Скрыто: {', '.join(parts)} — целиком: full=true*" if parts else ""
+
+
+def compact_article(text: str) -> str:
+    """Статья для модели: без frontmatter и служебных разделов, со сноской о скрытом."""
+    body = _parse_frontmatter(text)[1]
+    kept, removed = split_service_sections(body)
+    note = _hidden_note(removed)
+    return kept.rstrip("\n") + "\n\n" + note if note else kept
+
+
+def _full_requested(full) -> bool:
+    """Истинность флага full от клиента без строгой типизации: True/1 (bool/int)
+    и строки "true"/"1" без учёта регистра. `str(full).lower() == "true"`
+    отвергал числовую 1 и строку "1" — реальные значения нетипизированного клиента."""
+    if isinstance(full, bool):
+        return full
+    if isinstance(full, int):
+        return full == 1
+    return str(full).strip().lower() in ("true", "1")
+
+
+async def read_article(project: str, filename: str, full: bool = False) -> list[TextContent]:
     try:
         fpath = safe_article_path(project, filename)
     except ValueError as e:
@@ -802,6 +890,11 @@ async def read_article(project: str, filename: str) -> list[TextContent]:
         else:
             decrypted_lines.append(line)
     text = "\n".join(decrypted_lines)
+    # ⚠️ ПО УМОЛЧАНИЮ БЕЗ СЛУЖЕБНОГО (v1.91.0): frontmatter и авто-разделы модели не
+    # нужны, а занимали 13% прочитанного. full=true — статья целиком, как раньше.
+    # Строка "true" от клиента, который не привёл тип, тоже считается согласием.
+    if not _full_requested(full):
+        text = compact_article(text)
     key = f"{project}/{filename}"
     track_access([key])
     return [TextContent(type="text", text=text)]
@@ -811,7 +904,8 @@ async def read_article(project: str, filename: str) -> list[TextContent]:
 # git-ссылки. Их содержимое — не «кто сослался», а «что похоже», и на этот вопрос уже
 # отвечает related. Замер базы 2026-07-21: ручных связей 264, авто-ссылок 2608 —
 # без отсечения бэклинки были бы на 90% шумом.
-_AUTO_LINK_BLOCKS = ("## См. также", "## Git-ссылки")
+# Один источник с read_article/SERVICE_SECTIONS — второй список тех же строк не заводить.
+_AUTO_LINK_BLOCKS = SERVICE_SECTIONS
 
 
 def _manual_link_body(text: str) -> str:

@@ -53,11 +53,11 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 |------|-------------|
 | `search(query, project)` | Hybrid BM25F + semantic search with temporal decay |
 | `ask(question, project)` | Q&A — an answer with quotes from articles |
-| `search_by_tag(tag, project)` | Every article carrying a given tag |
+| `search_by_tag(tag, project, limit)` | Articles carrying a given tag, freshest first (30 by default) |
 | `search_snippets(query, lang, project)` | Search across code blocks |
 | `search_error(error_text, project)` | Search across tracebacks and error codes |
 | `search_decisions(query, project)` | Search the decision log |
-| `read_article(project, filename)` | Full article text |
+| `read_article(project, filename, full)` | Article text; the "See also" and "Git links" sections and the frontmatter are hidden unless `full=true` |
 | `get_context(project, query)` | Top relevant articles ahead of a task |
 | `get_summary(project)` | Condensed project summary (~200 tokens) |
 
@@ -161,7 +161,7 @@ Result over 140 queries (`scripts/eval_pipeline.py`): **MRR 0.4242 → 0.4914, r
 
 **Current baseline (harness v1.40.0, n=110): MRR 0.6013, recall@1 0.4818, recall@10 0.8364.** The latest shift is again the harness, not search: opening an article after a CHANGE OF WORK (a `finish_task`, `save_lesson`, `edit_article`… happened between the query and the open) is no longer credited to the preceding query. The signal is event-based rather than time-based, and it splits the data sharply: without a change of work the median gap is 12 s and no pair exceeds 10 minutes, whereas with one the median is 3.7 hours. That is why no time threshold was needed. On a single snapshot: without boundaries n=131 / MRR 0.5514, with boundaries n=110 / MRR 0.6013.
 
-Previous baseline (harness v1.36.0, n=129): MRR 0.5512, recall@1 0.4419, recall@10 0.7597. That change was also harness-side: `search_by_tag` was dropped as a source because it does not rank at all — it walks files, matches the tag and returns hits in directory-traversal order. Its clicks were measuring the wrong pipeline. The set shrank by just 3 queries while MRR rose by 0.03: tag "queries" were shadowing genuine search queries and **claiming their opens**. The source-selection criterion was fixed at the same time — it used to be "the set scores better with it" (selection on the metric), and is now "the source exercises the pipeline under measurement" (verified against the code).
+Previous baseline (harness v1.36.0, n=129): MRR 0.5512, recall@1 0.4419, recall@10 0.7597. That change was also harness-side: `search_by_tag` was dropped as a source because it does not rank by relevance at all — it walks files and matches the tag (back then it returned hits in directory-traversal order; since v1.91.0 it orders them by article date). Its clicks were measuring the wrong pipeline. The set shrank by just 3 queries while MRR rose by 0.03: tag "queries" were shadowing genuine search queries and **claiming their opens**. The source-selection criterion was fixed at the same time — it used to be "the set scores better with it" (selection on the metric), and is now "the source exercises the pipeline under measurement" (verified against the code).
 
 **What remains after v1.31.0** (breakdown from `scripts/diag_retrieval.py`, n=132): target ranked first for 39.4%, present but not first for 37.9%, below tenth place in the pool for 18.9%, candidate top-up failed for 0.8%, not found by any channel for 3.0%. In other words **candidate selection is closed, the cut-off was never at fault, and the entire remainder (56.8%) is ranking**: the target is in the pool, only the order is wrong. The remaining 3.0% is not a search defect but noise in the ground truth: an open attributed to a query made hours earlier.
 

@@ -196,19 +196,24 @@ TOOLS_EN: dict[str, dict] = {
         },
     },
     'read_article': {
-        # RU: Получить полный текст статьи.
-        'description': 'Get the full text of an article.',
+        # RU: Получить текст статьи. Служебные разделы «См. также», «Git-ссылки» и
+        # frontmatter скрыты, в конце сноска о скрытом; full=true — статья целиком.
+        'description': ('Get the article text. The service sections "See also" and "Git links" and the '
+                        'frontmatter are hidden, with a footnote naming what was hidden; full=true returns '
+                        'the whole article.'),
         'params': {
             'project': "Project name, or 'daily'",
             'filename': 'Article file name',
+            'full': 'true — the whole article, with service sections and frontmatter. Default false',
         },
     },
     'search_by_tag': {
-        # RU: Найти все статьи с указанным тегом.
-        'description': 'Find all articles with the given tag.',
+        # RU: Найти статьи с указанным тегом: свежие сверху, по одной строке.
+        'description': 'Find articles with the given tag: freshest first, one line each.',
         'params': {
             'tag': 'Tag to search for',
             'project': "Project name, or 'all'",
+            'limit': 'How many articles to show. Default 30, at most 200',
         },
     },
     'backlinks': {

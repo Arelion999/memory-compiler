@@ -274,7 +274,10 @@ SESSION_Q_CHARS = 300
 # размер ответа держит ТОЛЬКО это число. Кого резать, решают веса блоков:
 # вопросы и сессия (3.0), находки (2.5), сроки (2.0) уцелевают, а runbooks
 # (0.5), compact (0.8), зависимые проекты (1.0) и решения (1.2) ужимаются.
-START_BUDGET = 4500        # потолок на обрезаемые блоки, символов
+# ⚠️ 4500 → 4000 (v1.91.0): чистка повторов, оценок и длинных строк снимает около 11%
+# выдачи, и потолок снижен ровно на столько — те же сведения короче. Без снижения
+# water-fill отдал бы освободившееся место соседям, и размер не изменился бы.
+START_BUDGET = 4000        # потолок на обрезаемые блоки, символов
 
 
 class _Block:
@@ -335,6 +338,31 @@ def _render_block(block: "_Block", budget: int) -> str:
     return block.sep.join(parts)
 
 
+# ── Статья показывается один раз (v1.91.0) ──────────────────────────────────
+# Замер 24.09.2026: в 29% выдач одна статья стояла сразу в «Найдено»,
+# «Связанных действиях» и «Решениях по теме». Блок пропускает уже показанное:
+# по паре (проект, файл), а у строк активности — по заголовку, файла в них нет.
+def _title_key(s: str) -> str:
+    return re.sub(r"\W+", " ", s.lower()).strip()
+
+
+_ACTIVITY_TITLE_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _activity_title(line: str) -> str:
+    m = _ACTIVITY_TITLE_RE.search(line)
+    return _title_key(m.group(1)) if m else ""
+
+
+# Строка отрывка у статьи без переносов — целый абзац: p90 335, максимум 582
+# символа (замер @link28rus 24.09.2026). Отрывок — указатель, а не пересказ.
+PREVIEW_LINE_MAX = 240
+
+
+def _clip_line(line: str) -> str:
+    return line if len(line) <= PREVIEW_LINE_MAX else line[:PREVIEW_LINE_MAX] + "…"
+
+
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance.
 
@@ -359,6 +387,8 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
     blocks: list[_Block] = []
+    shown_files: set[tuple[str, str]] = set()
+    shown_titles: set[str] = set()
 
     # Topic words for relevance checks
     topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
@@ -385,11 +415,17 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
             track_access([f"{r['project']}/{r['file']}" for r in relevant])
             found_items = []
             for r in relevant[:3]:
-                preview = "\n".join(r["preview"].splitlines()[:4])
-                scores = f"hybrid: {r.get('score', 0)}"
-                if "rerank_score" in r:
-                    scores += f", rerank: {r['rerank_score']:.2f}"
-                found_items.append(f"### [{r['project']}] {r['title']} ({scores})\n{preview}")
+                lines = r["preview"].splitlines()
+                # Первая строка превью — заголовок этой же статьи («# …»), а он уже
+                # стоит в «### [проект] Заголовок»: берём вместо него строку тела.
+                if lines and lines[0].lstrip("# ").strip() == r["title"].strip():
+                    lines = lines[1:]
+                preview = "\n".join(_clip_line(line) for line in lines[:4])
+                # Оценки в заголовке нет: между запросами она не откалибрована, а
+                # порядок находок и так идёт по ней.
+                found_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
+                shown_files.add((r["project"], r["file"]))
+                shown_titles.add(_title_key(r["title"]))
             # ⚠️ Заголовок называет то, что РЕАЛЬНО отбирало: реранкер выключен
             # с v1.27.0, `rerank_score` при этом не проставляется вовсе, и
             # фильтр MIN_RERANK ниже пропускает всё по дефолту 1.0. Обещание
@@ -420,10 +456,19 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 if not line.startswith("- ["):
                     continue
                 line_words = set(re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', line.lower()))
-                if topic_words & line_words:
-                    relevant_lines.append(line)
+                if not (topic_words & line_words):
+                    continue
+                title = _activity_title(line)
+                if title and title in shown_titles:
+                    continue
+                relevant_lines.append(line)
+                if len(relevant_lines) == 3:
+                    break
+            for line in relevant_lines:
+                if _activity_title(line):
+                    shown_titles.add(_activity_title(line))
             blocks.append(_Block("activity", f"## Связанные действия в {target_project}",
-                                 relevant_lines[:3], weight=1.5))
+                                 relevant_lines, weight=1.5))
 
     # 3-. Факты прошлых сессий по теме. Файл `_reflections.md` до v1.62.0 писался
     # на каждом finish_task и не читался НИКЕМ — 103 КБ в 39 проектах впустую.
@@ -518,20 +563,36 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         for dep in deps:
             dr = await _whoosh_async(topic, project=dep, limit=2)
             dep_results.extend([r for r in dr if r.get("score", 0) >= MIN_SCORE])
+        dep_results = [r for r in dep_results if (r["project"], r["file"]) not in shown_files]
         if dep_results:
             dep_results.sort(key=lambda r: -r.get("score", 0))
             dep_items = []
             for r in dep_results[:2]:
-                preview = "\n".join(r["preview"].splitlines()[:3])
-                dep_items.append(f"### [{r['project']}] {r['title']} (score: {r['score']})\n{preview}")
+                preview = "\n".join(_clip_line(line) for line in r["preview"].splitlines()[:3])
+                dep_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
+                shown_files.add((r["project"], r["file"]))
+                shown_titles.add(_title_key(r["title"]))
             blocks.append(_Block("deps", f"## Из зависимых проектов ({', '.join(deps)})",
                                  dep_items, weight=1.0, sep="\n\n"))
 
     # 5. Relevant decisions (brief, only high-score)
+    # ⚠️ ПОМЕЧАЕМ ПОКАЗАННЫМИ ТОЛЬКО ПЕРВЫЕ ТРИ (не каждое прошедшее фильтр):
+    # ниже в блоки уходит decisions_found[:3], а раньше shown_files/shown_titles
+    # пополнялись для ВСЕХ прошедших — четвёртое и далее решение, реально не
+    # попавшее в вывод, всё равно гасило совпадающую находку/runbook дальше по
+    # функции.
     decision_results = await _whoosh_async(topic, project=target_project, limit=10)
-    decisions_found = []
+    decisions_candidates = []
+    local_seen_files: set[tuple[str, str]] = set()
+    local_seen_titles: set[str] = set()
     for r in decision_results:
         if r.get("score", 0) < 30:
+            continue
+        key_file = (r["project"], r["file"])
+        key_title = _title_key(r["title"])
+        if key_file in shown_files or key_title in shown_titles:
+            continue
+        if key_file in local_seen_files or key_title in local_seen_titles:
             continue
         fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
         if not fpath.exists():
@@ -546,8 +607,15 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                     if idx + 1 < len(text.splitlines()):
                         decision_line = text.splitlines()[idx + 1].strip()
                     break
-            decisions_found.append(f"- **{r['title']}** — {decision_line[:100]}")
-    blocks.append(_Block("decisions", "## Решения по теме", decisions_found[:3], weight=1.2))
+            decisions_candidates.append((f"- **{r['title']}** — {decision_line[:100]}",
+                                          key_file, key_title))
+            local_seen_files.add(key_file)
+            local_seen_titles.add(key_title)
+    decisions_found = [c[0] for c in decisions_candidates[:3]]
+    for _, key_file, key_title in decisions_candidates[:3]:
+        shown_files.add(key_file)
+        shown_titles.add(key_title)
+    blocks.append(_Block("decisions", "## Решения по теме", decisions_found, weight=1.2))
 
     # 6. Relevant runbooks (brief, only matching)
     proj_path = KNOWLEDGE_DIR / target_project
