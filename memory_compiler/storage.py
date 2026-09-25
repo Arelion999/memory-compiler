@@ -2544,11 +2544,22 @@ def _fmt_scalar(v) -> str:
     return str(v)
 
 
+# Имя файла трекера — сырое entity: в именах живых трекеров пробелы, заглавные, скобки
+# и кириллица, и слаг осиротил бы их вместе с историей версий. Заменяются ТОЛЬКО
+# разделители пути: «/» делал из имени подкаталог, и запись падала ENOENT (живой случай
+# 23.09.2026, entity «owner/repo PR #94»); «\» — то же самое на Windows.
+_TRACKING_PATH_SEPARATORS = re.compile(r"[/\\]")
+
+
+def _tracking_filename(entity: str) -> str:
+    """Имя файла трекера по entity — одно на запись и на чтение. В статье entity
+    остаётся таким, как его назвали."""
+    return f"tracking_{_TRACKING_PATH_SEPARATORS.sub('-', entity)}.md"
+
+
 def load_tracking(project: str, entity: str) -> Optional[dict]:
     """Load tracking article for a project/entity. Returns full parsed frontmatter or None."""
-    proj_dir = project_path(project)
-    fname = f"tracking_{entity}.md"
-    fpath = proj_dir / fname
+    fpath = safe_project_path(project) / _tracking_filename(entity)
     if not fpath.exists():
         return None
     text = fpath.read_text(encoding="utf-8")
@@ -2669,9 +2680,7 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     Existing 'current' moves to 'history[]' with to=now. New 'current.since' = now.
     Returns: {"path": str, "action": "created"|"updated", "old_current": dict, "new_current": dict}
     """
-    proj_dir = project_dir(project)
-    fname = f"tracking_{entity}.md"
-    fpath = proj_dir / fname
+    fpath = safe_project_dir(project) / _tracking_filename(entity)
     now_iso = datetime.now().date().isoformat()
 
     if fpath.exists():
