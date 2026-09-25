@@ -479,12 +479,23 @@ def is_duplicate_entry(text: str, new_content: str, ts: str) -> bool:
             and bool(new_content.strip()) and new_content.strip() in text)
 
 
+def _header_end(lines: list[str]) -> int:
+    """Граница шапки статьи: первый заголовок «## » или «### ».
+
+    Метки шапки встречаются и ниже, и там они чужие: в «## Git-ссылки» строка
+    «**Теги:**» — git-теги (её пишет upsert_git_refs), в записях — шапка, с которой
+    начинался сам content. Слияние по всему файлу вливало теги статьи в git-теги
+    (130 статей на проде, 25.09.2026), а upsert_git_refs потом хранил их как git-теги.
+    Frontmatter границу не сдвигает: строки YAML с «## » не начинаются."""
+    return next((i for i, l in enumerate(lines) if l.startswith(("## ", "### "))), len(lines))
+
+
 def _merge_tags_only(text: str, new_tags: list[str]) -> str:
-    """Слить new_tags в строку '**Теги:**', не трогая остальной текст."""
+    """Слить new_tags в строку '**Теги:**' шапки, не трогая остальной текст."""
     if not new_tags:
         return text
     lines = text.splitlines()
-    for i, line in enumerate(lines):
+    for i, line in enumerate(lines[:_header_end(lines)]):
         if line.startswith("**Теги:**"):
             old_str = line.split(":", 1)[1].strip().strip("*").strip()
             old = {t.strip().strip("*").strip() for t in old_str.split(",")
@@ -527,12 +538,13 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
     # стояло в шапке ниже, она вставляла второе, а первое обновляла своя ветка —
     # в файле оставались две строки «**Обновлено:**» (6 статей на проде). Плюс
     # lines.index(line) искал по СОДЕРЖИМОМУ и врал на повторяющихся строках.
-    # Граница шапки нужна, чтобы не считать «Обновлено» из тела daily-агрегатов.
-    header_end = next((i for i, l in enumerate(lines)
-                       if l.startswith("## Записи") or l.startswith("### ")), len(lines))
+    # Правится ТОЛЬКО шапка (см. _header_end): цикл по всему файлу переписывал
+    # git-теги раздела «## Git-ссылки» и вставлял «Обновлено» в записи. Прежняя
+    # граница «## Записи» или «### » у статьи без записей уходила в конец файла.
+    header_end = _header_end(lines)
     has_updated = any(l.startswith("**Обновлено:**") for l in lines[:header_end])
     updated_lines = []
-    for line in lines:
+    for line in lines[:header_end]:
         if line.startswith("**Теги:**"):
             old_tags_str = parse_meta_value(line)
             old_tags = {t.strip().strip("*").strip() for t in old_tags_str.split(",") if t.strip().strip("*").strip() and t.strip() != "—"}
@@ -546,6 +558,7 @@ def merge_into_article(article_path: Path, new_content: str, new_tags: list[str]
                 updated_lines.append(f"**Обновлено:** {ts}")
         else:
             updated_lines.append(line)
+    updated_lines += lines[header_end:]
 
     # Add new entry section
     updated_text = "\n".join(updated_lines)
