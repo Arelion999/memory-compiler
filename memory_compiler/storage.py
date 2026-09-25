@@ -290,34 +290,55 @@ def make_slug(topic: str) -> str:
     return slug
 
 
-def find_existing_article(topic: str, content: str, project: str) -> Optional[Path]:
-    """Find existing article by semantic similarity or slug match."""
-    from memory_compiler.search import snapshot_embeddings, encode_query
-    import numpy as np
-
+def _merge_candidates(project: str) -> list[Path]:
+    """Статьи проекта, куда допустим авто-мёрж."""
     proj_path = project_path(project)
     if not proj_path.exists():
-        return None
-
-    slug = make_slug(topic)
+        return []
     # Секреты НИКОГДА не цель авто-мёржа: merge_into_article дописал бы plaintext
     # в зашифрованную статью и проиндексировал бы его (тот же класс утечки, что
     # чинили в edit_article). Обновление секрета — только save_secret/edit_article.
-    articles = [a for a in proj_path.glob("*.md") if not a.name.startswith("secret_")]
-    if not articles:
-        return None
+    return [a for a in proj_path.glob("*.md") if not a.name.startswith("secret_")]
 
-    # 1. Slug match (strip date prefix; нормализуем подчёркивания).
+
+def find_article_by_slug(topic: str, project: str,
+                         articles: Optional[list] = None) -> Optional[Path]:
+    """Статья проекта с тем же слагом, что у topic, — первая ступень
+    find_existing_article. Только чтение каталога, без эмбеддингов и замков, поэтому
+    её можно звать с event loop: save_lesson перепроверяет ею находку, дождавшись
+    поиска в потоке (handlers_articles._find_merge_target)."""
+    if articles is None:
+        articles = _merge_candidates(project)
+    # Strip date prefix; нормализуем подчёркивания.
     # make_slug со временем менялся (добавился collapse _+→_), поэтому старые файлы
     # имеют «__»-слаги, а новый topic даёт «_»-слаг → точный матч промахивался и
-    # плодил дубли (secret_… исключены выше). Сравниваем нормализованно.
+    # плодил дубли (secret_… исключены в _merge_candidates). Сравниваем нормализованно.
     def _nslug(s: str) -> str:
         return re.sub(r"_+", "_", s).strip("_")
-    nslug = _nslug(slug)
+    nslug = _nslug(make_slug(topic))
     for a in articles:
         clean_stem = re.sub(r"^\d{8}_", "", a.stem)  # remove YYYYMMDD_ prefix
         if _nslug(clean_stem) == nslug:
             return a
+    return None
+
+
+def find_existing_article(topic: str, content: str, project: str) -> Optional[Path]:
+    """Find existing article by semantic similarity or slug match.
+
+    ⚠️ Ждёт _index_lock (snapshot_embeddings) и модель (encode_query): из async-кода
+    только через to_thread — фоновый reindex держит замок весь дисковый скан."""
+    from memory_compiler.search import snapshot_embeddings, encode_query
+    import numpy as np
+
+    articles = _merge_candidates(project)
+    if not articles:
+        return None
+
+    # 1. Slug match.
+    found = find_article_by_slug(topic, project, articles)
+    if found is not None:
+        return found
 
     # 2. Semantic similarity match.
     # Автомёрж РАЗРУШАЮЩИЙ — дописывает в чужую статью, поэтому порог консервативный:
@@ -1417,16 +1438,30 @@ def update_cross_references(topic: str, project: str, saved_path: str,
     пропуск meta-статей (D). Раньше функция при e5-эмбеддингах (косинус сжат
     вверх, порог 0.55 калибровался под старую MiniLM) дописывала сотни
     нерелевантных кросс-ссылок через всю базу, в т.ч. в чужие проекты.
+
+    Синхронная сборка двух половин. save_lesson зовёт их раздельно: отбор ждёт
+    _index_lock и модель — в потоке, запись — на loop (см. add_cross_references).
     """
+    add_cross_references(topic, saved_path, cross_reference_targets(
+        topic, project, saved_path, max_refs=max_refs, min_sim=min_sim, max_sim=max_sim))
+
+
+def cross_reference_targets(topic: str, project: str, saved_path: str,
+                            max_refs: int = 5, min_sim: float = 0.80,
+                            max_sim: float = 0.97) -> list[str]:
+    """Кого связать «См. также» с сохранённой статьёй: ключи «проект/файл».
+
+    Только чтение, но ждёт _index_lock (snapshot_embeddings) и модель
+    (encode_query): из async-кода — через to_thread."""
     from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np
 
     embeddings = snapshot_embeddings()
     if not embeddings:
-        return
+        return []
     # D: не кросс-реферим ОТ meta-статьи.
     if _is_meta_article(saved_path.split("/")[-1]):
-        return
+        return []
 
     q_vec = encode_query(topic)
 
@@ -1449,8 +1484,19 @@ def update_cross_references(topic: str, project: str, saved_path: str,
         cands.append((sim, key))
 
     cands.sort(reverse=True)
+    return [key for _sim, key in cands[:max_refs]]  # B: потолок top-N
+
+
+def add_cross_references(topic: str, saved_path: str, targets: list[str]) -> None:
+    """Дописать ссылку «См. также» на saved_path в статьи targets.
+
+    ⚠️ ЗАПИСЬ — НА LOOP, не в потоке. Чтение-правка-запись чужой статьи из потока
+    затёрло бы правку, которую хендлер на loop делает с ней в то же время (lost
+    update): на loop каждая такая правка идёт одним куском без await, а поток
+    вклинивается между чтением и записью. Цель могли удалить, пока шёл отбор, —
+    её пропускаем."""
     now = datetime.now().strftime("%Y-%m-%d")
-    for _sim, key in cands[:max_refs]:              # B: потолок top-N
+    for key in targets:
         fpath = KNOWLEDGE_DIR / key
         if not fpath.exists():
             continue

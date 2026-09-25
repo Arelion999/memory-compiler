@@ -133,6 +133,9 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
     # Индекс ссылок по ВСЕЙ базе, один раз на вызов (~0.5 с): нужен для сиротства
     # (входящая ссылка приходит и из чужого проекта) и для битых вики-ссылок.
     known_stems, referenced_wiki, referenced_md = await asyncio.to_thread(_base_link_index)
+    # Снимок эмбеддингов для Check 5 — один на вызов и в потоке: snapshot_embeddings
+    # ждёт _index_lock, а фоновый reindex держит его минутами (инцидент 25.09.2026).
+    embeddings = await asyncio.to_thread(_search.snapshot_embeddings)
 
     for proj in check_projects:
         proj_path = KNOWLEDGE_DIR / proj
@@ -254,7 +257,7 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
         # Плюс СЕКРЕТЫ: в индекс у них идёт плейсхолдер (титул + теги + слова-намерения),
         # а не тело — значит все секреты проекта похожи ПО ПОСТРОЕНИЮ. На проде это дало
         # шесть «дублей» подряд со схожестью 0.90–0.96, и все ложные: сравнивались маски.
-        proj_embeddings = {k: v for k, v in _search.snapshot_embeddings().items()
+        proj_embeddings = {k: v for k, v in embeddings.items()
                           if k.startswith(f"{proj}/") and "#chunk" not in k
                           and not k.split("/", 1)[-1].startswith(("_", "tracking_", "secret_"))
                           and k.split("/", 1)[-1] not in secret_pointers}
@@ -636,6 +639,49 @@ async def consolidate(project: str = "all", min_sim: float = 0.985) -> list[Text
             parts.append(_NL + f"*...и ещё {len(pairs) - 25} пар.*")
     return [TextContent(type="text", text=_NL.join(parts))]
 
+
+def _topic_coverage(topics: dict, project: str):
+    """Сходство тем коммитов со статьями базы: [{topic, count, max_sim, best_match}].
+    None — модели нет, [] — не с чем сравнить.
+
+    Синхронно и только из потока: get_embed_model ждёт _model_load_lock, пока
+    прогрев на старте грузит модель (минуты на NAS), snapshot_embeddings — _index_lock
+    на время reindex, а encode — счёт на CPU."""
+    from memory_compiler.search import get_embed_model, snapshot_embeddings
+    import numpy as np
+
+    model = get_embed_model()
+    if not model:
+        return None
+    embeddings = snapshot_embeddings()
+    kb_keys = [k for k in embeddings if "#chunk" not in k]
+    if project and project != "all":
+        kb_keys = [k for k in kb_keys if k.startswith(f"{project}/")]
+    if not kb_keys:
+        return []
+
+    topic_list = list(topics.keys())
+    topic_vectors = model.encode(topic_list, show_progress_bar=False)
+    gaps = []
+    for i, topic_text in enumerate(topic_list):
+        tv = topic_vectors[i]
+        tv = tv / (np.linalg.norm(tv) + 1e-8)
+        max_sim = 0.0
+        best_match = None
+        for k in kb_keys:
+            sim = float(np.dot(tv, embeddings[k]))
+            if sim > max_sim:
+                max_sim = sim
+                best_match = k
+        gaps.append({
+            "topic": topic_text,
+            "count": topics[topic_text],
+            "max_sim": max_sim,
+            "best_match": best_match,
+        })
+    return gaps
+
+
 async def knowledge_gap(repo_path: str = None, project: str = "all",
                         days: int = 30, git_log_raw: str = None) -> list[TextContent]:
     """Find topics active in git commits but missing in the knowledge base.
@@ -645,7 +691,6 @@ async def knowledge_gap(repo_path: str = None, project: str = "all",
     Returns ranked list of gaps — topics with low KB coverage.
     """
     from memory_compiler.storage import parse_git_log, parse_git_log_raw, group_commits
-    from memory_compiler.search import _embeddings, get_embed_model
 
     # Get commits
     if git_log_raw:
@@ -680,41 +725,11 @@ async def knowledge_gap(repo_path: str = None, project: str = "all",
         return [TextContent(type="text", text="Не удалось извлечь темы из коммитов.")]
 
     # Compute coverage via semantic similarity with existing articles
-    model = get_embed_model()
-    if not model:
+    gaps = await asyncio.to_thread(_topic_coverage, topics, project)
+    if gaps is None:
         return [TextContent(type="text", text="Embeddings недоступны.")]
-
-    # Filter embeddings by project
-    kb_keys = [k for k in _embeddings.keys() if "#chunk" not in k]
-    if project and project != "all":
-        kb_keys = [k for k in kb_keys if k.startswith(f"{project}/")]
-    if not kb_keys:
+    if not gaps:
         return [TextContent(type="text", text=f"В проекте '{project}' нет статей для сравнения.")]
-
-    # Encode topics
-    topic_list = list(topics.keys())
-    topic_vectors = model.encode(topic_list, show_progress_bar=False)
-
-    # Find max similarity for each topic
-    import numpy as np
-    gaps = []
-    for i, topic_text in enumerate(topic_list):
-        tv = topic_vectors[i]
-        tv = tv / (np.linalg.norm(tv) + 1e-8)
-        max_sim = 0.0
-        best_match = None
-        for k in kb_keys:
-            kv = _embeddings[k]
-            sim = float(np.dot(tv, kv))
-            if sim > max_sim:
-                max_sim = sim
-                best_match = k
-        gaps.append({
-            "topic": topic_text,
-            "count": topics[topic_text],
-            "max_sim": max_sim,
-            "best_match": best_match,
-        })
 
     # Sort by count desc + low similarity = real gaps
     gaps.sort(key=lambda g: (-g["count"], g["max_sim"]))

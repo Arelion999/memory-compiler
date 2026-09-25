@@ -174,7 +174,10 @@ async def web_related(request: Request):
         limit = 8
     limit = max(1, min(limit, 25))
     items = []
-    for path, score in related_articles(f"{project}/{filename}", limit=limit):
+    # В потоке: related_articles берёт _index_lock, а фоновый reindex держит его
+    # весь дисковый скан — на loop это вставало весь сервер (инцидент 25.09.2026).
+    related = await asyncio.to_thread(related_articles, f"{project}/{filename}", limit=limit)
+    for path, score in related:
         proj, _, fname = path.partition("/")
         try:
             fpath = safe_article_path(proj, fname)
@@ -1139,7 +1142,9 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         load_article_meta()
         # Открываем существующий индекс с диска (быстро) + фоновое обновление; полный
         # синхронный rebuild — только на холодном первом старте (см. startup_prepare_index).
-        count = _search_mod.startup_prepare_index()
+        # В потоке: функция берёт _index_lock, а ждать его на loop сторож запрещает
+        # всем (test_no_lock_waits_in_event_loop); запросы до конца lifespan и так не идут.
+        count = await asyncio.to_thread(_search_mod.startup_prepare_index)
         print(f"Whoosh index ready: {count} documents")
         # Рефлексы (v1.78.0): индекс триггеров строится обходом всей базы. Первый запрос
         # хука не должен его ждать — у хука таймаут 1.5 с, и памятка молча не пришла бы.

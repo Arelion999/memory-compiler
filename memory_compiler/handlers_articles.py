@@ -36,12 +36,12 @@ from memory_compiler.config import (
 )
 from memory_compiler.search import embed_document, index_document
 from memory_compiler.storage import (
-    TEMPLATES, _parse_frontmatter, article_title_tags, auto_tags, decrypt_content, encrypt_content,
-    extract_git_refs, extract_secret_identifiers, find_existing_article, git_commit,
-    is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
+    TEMPLATES, _parse_frontmatter, add_cross_references, article_title_tags, auto_tags,
+    cross_reference_targets, decrypt_content, encrypt_content,
+    extract_git_refs, extract_secret_identifiers, find_article_by_slug, find_existing_article,
+    git_commit, is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
     mark_superseded, merge_into_article, project_dir, regenerate_index,
     safe_article_path, safe_project_dir, safe_project_path, today_log_path, update_active_context,
-    update_cross_references,
 )
 from memory_compiler.handlers_reports import _MD_LINK_RE, _WIKI_LINK_RE, _strip_code
 
@@ -89,6 +89,26 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
         await asyncio.to_thread(embed_document, text, filename, project)
 
 
+async def _find_merge_target(topic: str, content: str, project: str):
+    """Статья для авто-мёржа: поиск — в потоке, решение — на loop.
+
+    find_existing_article ждёт _index_lock (snapshot_embeddings), а фоновый reindex
+    держит его весь дисковый скан — минуты на NAS. Синхронно на loop это вставало
+    весь сервер (инцидент 25.09.2026: /api/health молчал три минуты).
+
+    ⚠️ Пока поиск ждал, база сдвинулась: найденную статью могли удалить, а повтор
+    той же записи (клиент не дождался ответа) — завести её под тем же слагом. Раньше
+    поиск и запись шли одним куском на loop и такого окна не было. Поэтому находка
+    перепроверяется здесь, уже на loop, и отсюда до записи статьи await нет.
+    Порядок тот же, что в find_existing_article: слаг первым — статья с тем же
+    слагом могла появиться за время ожидания и важнее семантической находки."""
+    found = await asyncio.to_thread(find_existing_article, topic, content, project)
+    by_slug = find_article_by_slug(topic, project)
+    if by_slug is not None:
+        return by_slug
+    return found if found is not None and found.exists() else None
+
+
 async def save_lesson(topic: str, content: str, project: str, tags: list = None,
                       force_new: bool = False, supersedes: str = "",
                       verified: str = "", triggers: list = None,
@@ -115,7 +135,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         f.write(entry)
 
     # 2. Find existing article or create new
-    existing = None if force_new else find_existing_article(topic, content, project)
+    existing = None if force_new else await _find_merge_target(topic, content, project)
 
     if existing:
         # Update existing article
@@ -199,9 +219,11 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     # решает tracking ниже (шаг 10): не предупреждает, а обновляет, и знает, что
     # новее. Подробности и цена — в docstring storage.detect_contradictions.
 
-    # 7. Cross-references
+    # 7. Cross-references: отбор ждёт _index_lock и модель — в потоке; запись в
+    # чужие статьи — на loop (почему — в storage.add_cross_references).
     saved_key = f"{project}/{article_path.name}"
-    update_cross_references(topic, project, saved_key)
+    targets = await asyncio.to_thread(cross_reference_targets, topic, project, saved_key)
+    add_cross_references(topic, saved_key, targets)
 
     # 8. Active Context
     update_active_context(project, topic, content)
@@ -367,7 +389,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             if entry["project"] not in PROJECTS:
                 entry["project"] = "general"
 
-            existing = find_existing_article(entry["topic"], entry["content"], entry["project"])
+            existing = await _find_merge_target(entry["topic"], entry["content"], entry["project"])
 
             if dry_run:
                 if existing and is_duplicate_entry(existing.read_text(encoding="utf-8"),
@@ -799,7 +821,7 @@ async def save_contexts(project: str, filename: str, contexts: list) -> list[Tex
 
 
 # ── Служебные разделы статьи (v1.91.0) ───────────────────────────────────────
-# «См. также» пишет update_cross_references, «Git-ссылки» — разбор git-ссылок при
+# «См. также» пишет add_cross_references, «Git-ссылки» — разбор git-ссылок при
 # сохранении. В прочитанных статьях они занимали 12% (замер 24.09.2026), а модели
 # почти не нужны: соседей находит поиск, git-ссылки повторяют текст статьи.
 # ⚠️ Раздел кончается перед `## ` ИЛИ `### `: merge_into_article дописывает записи
