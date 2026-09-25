@@ -59,3 +59,20 @@ def test_second_save_with_git_ref_keeps_merged_entry(knowledge_dir):
     assert "вторая запись про v1.1.0" in text
     refs = text.split("## Git-ссылки", 1)[1]
     assert "v1.0.0" in refs and "v1.1.0" in refs
+
+
+def test_save_lesson_file_hash_does_not_become_commit(knowledge_dir):
+    """Живой случай 25.09.2026 (v1.92.8): «sha1 7ff1e2f6 тот же» дал ответ «🔗 Git:
+    commit: 7ff1e2f6» и раздел «Коммиты» в статье. Позитивный контроль — настоящий
+    коммит в соседней статье: без него «коммитов нет» прошло бы и на отключённой
+    git-линковке."""
+    out = asyncio.run(save_lesson("Сверка трекера после переименования",
+                                  "На NAS файл один, sha1 7ff1e2f6 тот же.", "testproj"))
+    ctrl = asyncio.run(save_lesson("Выпуск с тегом",
+                                   "Коммит 3c8f5a1, тег v1.92.5, push в 16:59.", "testproj"))
+    assert "commit: 3c8f5a1" in ctrl[0].text
+    assert "**Коммиты:** 3c8f5a1" in (knowledge_dir / "testproj" / "выпуск_с_тегом.md").read_text(encoding="utf-8")
+    assert "commit" not in out[0].text
+    text = next((knowledge_dir / "testproj").glob("сверка_трекера*.md")).read_text(encoding="utf-8")
+    assert "sha1 7ff1e2f6 тот же" in text
+    assert "Коммиты" not in text

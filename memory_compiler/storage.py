@@ -1311,23 +1311,30 @@ _GIT_NON_COMMIT_OBJECTS = frozenset({
     "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",  # empty blob
 })
 
+# Hex-подобные слова С ЦИФРАМИ — правило «без цифр» ниже их не ловит. ed25519 — тип
+# ключа из ssh-keygen и known_hosts: 7 записей «Коммиты» на боевой базе (25.09.2026).
+_HEX_WORDS = frozenset({"ed25519"})
+
 
 def _looks_like_commit_hash(value: str) -> bool:
-    """Отличить хеш коммита от постороннего hex: md5, отпечатка, hex-подобного слова.
+    """Отличить хеш коммита от постороннего hex по ФОРМЕ: md5, ID, hex-подобное слово.
 
     Без доступа к репозиторию тип объекта не проверить (сервер в контейнере, репозиторий
-    смонтирован далеко не всегда, а subprocess на каждое сохранение вешал бы event loop),
-    поэтому отсекаем по форме — этого хватает на все встреченные ложные срабатывания.
+    смонтирован далеко не всегда, а subprocess на каждое сохранение вешал бы event loop).
+    Форма ловит не всё: sha1 содержимого файла неотличим от коммита, его отсекает
+    контекст (_hex_is_not_commit_here).
     """
     n = len(value)
-    # Настоящие калибры: сокращённый (7–12 символов, core.abbrev растёт с размером
-    # репозитория) и полный sha1 = 40. Промежуточных длин git не печатает, поэтому
-    # 32-символьный hex — это md5 или чужой идентификатор. sha256-репозитории (64)
-    # намеренно не ловим: вывод sha256sum в текстах про инфраструктуру встречается
-    # несравнимо чаще, чем git на sha256, и дал бы новый поток ложных коммитов.
-    if not (7 <= n <= 12 or n == 40):
+    # Настоящие калибры: сокращённый (7–11 символов, core.abbrev растёт с размером
+    # репозитория) и полный sha1 = 40. 12 знаков git печатает только от ~4 млн объектов
+    # (2^22, масштаб ядра Linux), зато это длина ревизии alembic и короткого ID docker:
+    # на боевой базе 25.09.2026 ни один из 56 двенадцатизначных hex в «Коммитах» не
+    # коммит (97 записей alembic, 5 docker). 32-символьный hex — md5 или чужой ID.
+    # sha256-репозитории (64) намеренно не ловим: вывод sha256sum в текстах про
+    # инфраструктуру встречается несравнимо чаще, чем git на sha256.
+    if not (7 <= n <= 11 or n == 40):
         return False
-    if value in _GIT_NON_COMMIT_OBJECTS:
+    if value in _GIT_NON_COMMIT_OBJECTS or value in _HEX_WORDS:
         return False
     if value.isdigit():
         return False   # 20260827 — дата или счётчик
@@ -1335,22 +1342,76 @@ def _looks_like_commit_hash(value: str) -> bool:
     # у настоящего sha1 шанс обойтись без цифр — 0.10% на семи символах и 0.04% на
     # восьми ((6/16)^n). На боевой базе (550 хешей в «Коммитах») таких нет ни одного,
     # то есть правило почти нейтрально: держим его против hex-подобных СЛОВ.
-    if n <= 12 and not any(ch.isdigit() for ch in value):
+    if n < 40 and not any(ch.isdigit() for ch in value):
         return False
     return True
 
 
+# Маркер хэша содержимого: hex после него в той же строке — sha1/md5 файла, если между
+# ними нет слова-признака коммита («хеш коммита abc1234» — коммит, а в «коммит A (sha1
+# файла X)» X — хэш файла). Слово-признак вплотную ПЕРЕД маркером тоже держит коммит:
+# «commit hash abc1234».
+_HASH_WORD_RE = re.compile(
+    r"sha-?(?:1|256|512)|sha\d*sum|md5\w*|хеш\w*|хэш\w*|hash\w*|checksum\w*|контрольн\w*|\bsum\b",
+    re.IGNORECASE)
+_HASH_WORD_WINDOW = 60   # символов строки перед hex: «sha1 с нормализацией CRLF … локально X»
+_COMMIT_WORD_RE = re.compile(
+    r"коммит\w*|закоммич\w*|commit\w*|\bgit\b|ветк\w*|branch\w*|\bтег\w*|\btag\w*|release\w*|"
+    r"релиз\w*|merge\w*|мерж\w*|смерж\w*|cherry-pick\w*|rebase\w*|revert\w*|\bpush\w*|пуш\w*|"
+    r"запушен\w*|(?-i:\bHEAD\b)", re.IGNORECASE)
+# ID чужих систем — только слово ВПЛОТНУЮ перед hex. Окно в несколько слов резало
+# настоящие коммиты: «34f7914 модель/сервис/миграция, 04d8e02», «(за сессию F9): 0a4ae88»,
+# а «guid» без якоря ловил «office-network-guide.md» перед хэшем.
+_FOREIGN_ID_WORD_RE = re.compile(
+    r"сесси\w*|session\w*|scratchpad\w*|скратчпад\w*|spawn_task|кластер\w*|cluster\w*|ib|rphost|"
+    r"xml_id|(?:\w+-)?guid|uuid|image-id|container-id", re.IGNORECASE)
+
+
+def _hex_is_not_commit_here(text: str, start: int, end: int) -> bool:
+    """Контекст говорит, что hex text[start:end] — не коммит. Смотрим только его строку."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    before = text[line_start:start]
+    after = text[end:] if line_end == -1 else text[end:line_end]
+    # Вывод sha1sum: «<hex>  путь», в Git Bash «<hex> *путь». Полные 40 hex — ровно
+    # калибр коммита, отличает только форма строки; git log --oneline отделяет
+    # сообщение ОДНИМ пробелом.
+    if re.fullmatch(r"\s*(?:[-*]\s+)?", before) and re.match(r"(?: {2,}|\t| \*)\S", after):
+        return True
+    window = before[-_HASH_WORD_WINDOW:]
+    marks = list(_HASH_WORD_RE.finditer(window))
+    if marks:
+        last = marks[-1]
+        lead = re.search(r"([\w-]+)\s*$", window[:last.start()])
+        if not _COMMIT_WORD_RE.search(window[last.end():]) and not (
+                lead and _COMMIT_WORD_RE.fullmatch(lead.group(1))):
+            return True
+    word = re.search(r"([\w-]+)[\s:=(«\"'*]*$", before)
+    return bool(word and _FOREIGN_ID_WORD_RE.fullmatch(word.group(1)))
+
+
 def extract_git_refs(content: str, topic: str) -> dict[str, list[str]]:
-    """Извлечь упоминания git-объектов из контента."""
+    """Извлечь упоминания git-объектов из контента.
+
+    Коммит — hex правильной формы, хотя бы одно упоминание которого контекст не
+    опровергает. До v1.92.8 контекст не смотрели: «sha1 7ff1e2f6 тот же» давал
+    «🔗 Git: commit: 7ff1e2f6» и раздел «Коммиты» (живой случай 25.09.2026). Замер на
+    боевой базе в тот же день: из 1190 записей «Коммиты» 142 не коммиты (alembic 97,
+    ID сессий 12, GUID 11, хэши файлов 8, ed25519 7, docker 6, blob 1); форма и
+    контекст отсекают 135, настоящих коммитов из 1045 не теряют ни одного. Требовать
+    рядом слово-признак коммита нельзя: так терялось 154 коммита из 1045.
+    """
     text = f"{topic}\n{content}"
     refs: dict[str, set[str]] = {}
     for pattern, ref_type in _GIT_REF_PATTERNS:
-        found = re.findall(pattern, text)
+        if ref_type == "commit":
+            found = {m.group(1) for m in re.finditer(pattern, text)
+                     if _looks_like_commit_hash(m.group(1))
+                     and not _hex_is_not_commit_here(text, m.start(1), m.end(1))}
+        else:
+            found = re.findall(pattern, text)
         if found:
             refs.setdefault(ref_type, set()).update(found)
-    # Отфильтровать ложные срабатывания для коммитов (даты, md5, не-коммит объекты)
-    if "commit" in refs:
-        refs["commit"] = {c for c in refs["commit"] if _looks_like_commit_hash(c)}
     return {k: sorted(v) for k, v in refs.items() if v}
 
 
