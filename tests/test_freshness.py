@@ -358,6 +358,103 @@ def test_restart_does_not_repeat_first_touch_in_the_same_chat(tmp_path, monkeypa
     assert "FIRST infra" in out, "новый чат после рестарта обязан получить первое касание"
 
 
+# ── рабочий проект чата переживает рестарт (решение владельца 25.09.2026) ────────
+# Рабочий проект (куда чат писал или где звал start_task) жил только в памяти. После
+# рестарта — а watcher перезапускает контейнер десятки раз в день — чат, прочитавший
+# чужой проект раньше первой своей записи, получал этот чужой проект в подстановку
+# project: тот самый класс ошибки, который v1.90.2 закрыл для работающего процесса.
+# Хранится в том же файле, что снимки: {"seen": […], "work": […]}.
+
+def test_work_project_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    chat = freshness.key_for(None, CHAT_A)
+    freshness.claim(chat, "infra")
+    freshness.consume(chat, "infra")
+    freshness.reset()                                            # рестарт контейнера
+    freshness.consume(chat, "general")                           # после рестарта — чужое чтение
+    assert freshness.last_project(chat) == "infra", "рабочий проект потерян на рестарте"
+
+
+def test_changed_work_project_is_saved_at_once(tmp_path, monkeypatch):
+    """Смена рабочего проекта ложится на диск сразу. Пара (чат, проект) могла быть уже
+    видена чтением, и отложенная запись вернула бы после рестарта ПРЕЖНИЙ проект."""
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    chat = freshness.key_for(None, CHAT_A)
+    freshness.claim(chat, "infra")
+    freshness.consume(chat, "infra")
+    freshness.consume(chat, "general")                           # чтение: новая пара, файл записан
+    freshness.claim(chat, "general")                             # запись в уже виденный проект
+    freshness.consume(chat, "general")
+    freshness.reset()
+    assert freshness.last_project(chat) == "general"
+
+
+def test_mcp_session_work_project_is_not_saved(tmp_path, monkeypatch):
+    """Ключ MCP-сессии — счётчик процесса: после рестарта тот же номер получит ДРУГАЯ
+    сессия, и чужой рабочий проект увёл бы её запись."""
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    key = freshness.key_for(FakeSession())
+    freshness.claim(key, "infra")
+    freshness.consume(key, "infra")
+    freshness.reset()
+    assert freshness.last_project(key) == ""
+
+
+def test_first_claim_after_restart_keeps_other_chats(tmp_path, monkeypatch):
+    """Первый вызов после рестарта — запись другого чата. Сохранение не вправе затереть
+    файл, не прочитав его: снимки и рабочие проекты остальных чатов пропали бы."""
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    chat_a = freshness.key_for(None, CHAT_A)
+    chat_b = freshness.key_for(None, CHAT_B)
+    freshness.claim(chat_a, "infra")
+    freshness.consume(chat_a, "infra")
+    freshness.reset()
+    freshness.claim(chat_b, "general")                           # первым делом после рестарта
+    freshness.reset()
+    assert freshness.last_project(chat_a) == "infra"
+    assert not freshness.is_first_touch(chat_a, "infra")
+    assert freshness.last_project(chat_b) == "general"
+
+
+def test_work_project_ttl_counts_from_own_activity(tmp_path, monkeypatch):
+    """Срок рабочего проекта считается от записи САМОГО чата. Если бы отметкой было время
+    сохранения, чужие чаты, сохраняющие файл, продлевали бы его вечно."""
+    path = tmp_path / "freshness.json"
+    monkeypatch.setattr(freshness, "STATE_PATH", path, raising=False)
+    chat_a = freshness.key_for(None, CHAT_A)
+    freshness.claim(chat_a, "infra")
+    claimed = json.loads(path.read_text(encoding="utf-8"))["work"][0][2]
+    later = time.time() + 3 * 24 * 3600
+    monkeypatch.setattr(freshness.time, "time", lambda: later)   # трое суток спустя
+    freshness.claim(freshness.key_for(None, CHAT_B), "general")  # сохраняет другой чат
+    work = {k: ts for k, _p, ts in json.loads(path.read_text(encoding="utf-8"))["work"]}
+    assert work[chat_a] == claimed, "отметка чата сдвинулась от чужого сохранения"
+
+
+def test_expired_work_project_is_forgotten(tmp_path, monkeypatch):
+    path = tmp_path / "freshness.json"
+    monkeypatch.setattr(freshness, "STATE_PATH", path, raising=False)
+    now = time.time()
+    path.write_text(json.dumps({"seen": [], "work": [
+        ["c:old-chat", "infra", now - freshness.SEEN_TTL_SEC - 60],
+        ["c:live-chat", "general", now]]}), encoding="utf-8")
+    assert freshness.last_project("c:old-chat") == "", "протухший рабочий проект не забыт"
+    assert freshness.last_project("c:live-chat") == "general", "живой рабочий проект не подхвачен"
+
+
+def test_state_file_of_previous_version_still_loads(tmp_path, monkeypatch):
+    """Файл v1.88.1 — список троек снимков: после обновления он читается как снимки, и
+    чаты не получают «Первое обращение» заново."""
+    path = tmp_path / "freshness.json"
+    monkeypatch.setattr(freshness, "STATE_PATH", path, raising=False)
+    path.write_text(json.dumps([["c:live-chat", "infra", time.time()]]), encoding="utf-8")
+    assert not freshness.is_first_touch("c:live-chat", "infra")
+    freshness.claim("c:live-chat", "infra")                      # запись уже в новом формате
+    freshness.reset()
+    assert not freshness.is_first_touch("c:live-chat", "infra")
+    assert freshness.last_project("c:live-chat") == "infra"
+
+
 def test_write_call_is_not_told_that_it_does_not_write(monkeypatch):
     """15.09.2026: ответ на session_note пришёл с подсказкой «больше 25 минут без
     записи в базу». consume с подсказкой срабатывал раньше, чем note_write сдвигал

@@ -27,6 +27,11 @@
 рестарта начинается заново, и новая сессия унаследовала бы чужой снимок. Буфер
 записей и отсчёт молчания остаются в памяти — после рестарта теряются только
 новости о записях, сделанных ДО него.
+
+⚠️ РАБОЧИЙ ПРОЕКТ ЧАТА ТОЖЕ ПЕРЕЖИВАЕТ РЕСТАРТ (v1.92.6). Иначе после рестарта, до
+первой записи чата, подстановка пропущенного project брала последний ПРОЧИТАННЫЙ
+проект — класс ошибки, закрытый v1.90.2 только для работающего процесса. Тот же файл,
+формат {"seen": […], "work": […]}; список троек v1.88.1 читается как seen.
 """
 
 from __future__ import annotations
@@ -46,8 +51,10 @@ _seen: dict[tuple[str, str], float] = {}
 # Последний проект, которого касалась сессия, — чтением или записью.
 _last_project: dict[str, str] = {}
 # Рабочий проект сессии: куда она писала или где звала start_task. Чтение его не
-# перебивает (см. last_project).
+# перебивает (см. last_project). Для чатов (c:<id>) переживает рестарт — см. claim.
 _work_project: dict[str, str] = {}
+# Когда рабочий проект подтверждён последний раз: TTL в файле считается от него.
+_work_ts: dict[str, float] = {}
 # Отсчёт молчания: (session_key, project) -> ts начала работы либо своей записи.
 _started: dict[tuple[str, str], float] = {}
 # Стабильные ключи сессий: id() переиспользуется после сборки мусора.
@@ -172,18 +179,8 @@ def touch(key: str, project: str) -> None:
         _save_seen()
 
 
-def _ensure_loaded() -> None:
-    """Подтянуть с диска снимки чатов, сделанные до рестарта. Один раз на процесс."""
-    if _loaded[0]:
-        return
-    _loaded[0] = True
-    if STATE_PATH is None:
-        return
-    try:
-        items = json.loads(Path(STATE_PATH).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return                            # нет файла или битый — с чистого листа
-    now = time.time()
+def _live_triples(items: Any, now: float):
+    """Записи [ключ чата, проект, ts] из файла: целые, чатов (c:<id>), не старше TTL."""
     for item in (items if isinstance(items, list) else []):
         try:
             key, project, ts = item
@@ -192,30 +189,79 @@ def _ensure_loaded() -> None:
             continue
         if (isinstance(key, str) and key.startswith("c:") and isinstance(project, str)
                 and project and now - ts <= SEEN_TTL_SEC):
-            _seen.setdefault((key, project), ts)
+            yield key, project, ts
+
+
+def _ensure_loaded() -> None:
+    """Подтянуть с диска снимки и рабочие проекты чатов, сделанные до рестарта. Один
+    раз на процесс.
+
+    Файл — {"seen": [[ключ, проект, ts]…], "work": [[ключ, проект, ts]…]}. Файл v1.88.1 —
+    просто список троек снимков: он читается как seen, рабочих проектов в нём нет.
+    ⚠️ При откате на код до этого формата словарь не прочитается, и каждый чат один раз
+    получит «Первое обращение к проекту» — безопасная сторона ошибки."""
+    if _loaded[0]:
+        return
+    _loaded[0] = True
+    if STATE_PATH is None:
+        return
+    try:
+        state = json.loads(Path(STATE_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return                            # нет файла или битый — с чистого листа
+    if isinstance(state, dict):
+        seen, work = state.get("seen"), state.get("work")
+    else:
+        seen, work = state, []
+    now = time.time()
+    for key, project, ts in _live_triples(seen, now):
+        _seen.setdefault((key, project), ts)
+    for key, project, ts in _live_triples(work, now):
+        _work_project.setdefault(key, project)
+        _work_ts.setdefault(key, ts)
 
 
 def _save_seen() -> None:
-    """Снимки чатов на диск. ⚠️ Синхронно, на loop: dumps итерирует _seen, а его
-    мутируют соседние вызовы инструментов, — в потоке это гонка (LOOP_ONLY в
-    tests/test_no_blocking_calls.py). Файл маленький: не больше MAX_SEEN пар."""
+    """Снимки и рабочие проекты чатов на диск. ⚠️ Синхронно, на loop: dumps итерирует
+    _seen, а его мутируют соседние вызовы инструментов, — в потоке это гонка (LOOP_ONLY в
+    tests/test_no_blocking_calls.py). Файл маленький: не больше MAX_SEEN пар каждого вида."""
     if STATE_PATH is None:
         return
+    # ⚠️ Файл сначала читается: первым после рестарта может прийти claim, и запись без
+    # чтения затёрла бы снимки и рабочие проекты всех остальных чатов.
+    _ensure_loaded()
     from memory_compiler.config import atomic_write_text
-    items = [[k, p, ts] for (k, p), ts in _seen.items() if k.startswith("c:")]
+    now = time.time()
+    state = {"seen": [[k, p, ts] for (k, p), ts in _seen.items() if k.startswith("c:")],
+             "work": [[k, p, _work_ts.get(k, now)] for k, p in _work_project.items()
+                      if k.startswith("c:")]}
     try:
         Path(STATE_PATH).parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(STATE_PATH, json.dumps(items, ensure_ascii=False))
+        atomic_write_text(STATE_PATH, json.dumps(state, ensure_ascii=False))
         _last_save[0] = time.time()
     except OSError:
         pass                              # сторож не имеет права ронять вызов
 
 
 def claim(key: str, project: str) -> None:
-    """Сессия работает с проектом: пишет в него или открыла по нему задачу."""
+    """Сессия работает с проектом: пишет в него или открыла по нему задачу.
+
+    ⚠️ Рабочий проект чата (c:<id>) ПЕРЕЖИВАЕТ РЕСТАРТ (решение владельца 25.09.2026):
+    иначе после рестарта, до первой записи, подстановка project брала последний
+    прочитанный проект. Смена проекта ложится на диск сразу, а не по часовому таймеру:
+    пара (чат, проект) могла быть уже видена чтением, и touch её не сохранил бы — после
+    рестарта вернулся бы ПРЕЖНИЙ проект, и запись ушла бы в него."""
     if not key or not project or project == "all":
         return
+    changed = _work_project.get(key) != project
     _work_project[key] = project
+    _work_ts[key] = time.time()
+    if len(_work_project) > MAX_SEEN:
+        for k, _ts in sorted(_work_ts.items(), key=lambda kv: kv[1])[:MAX_SEEN // 5]:
+            _work_project.pop(k, None)
+            _work_ts.pop(k, None)
+    if changed and key.startswith("c:"):
+        _save_seen()
 
 
 def last_project(key: str) -> str:
@@ -356,6 +402,7 @@ def reset() -> None:
     _seen.clear()
     _last_project.clear()
     _work_project.clear()
+    _work_ts.clear()
     _started.clear()
     _shown.clear()
     _loaded[0] = False                    # как рестарт: файл снимков на диске остаётся

@@ -142,6 +142,18 @@ def test_writing_into_another_project_moves_the_working_project(bridge):
     assert bridge.get("project") == "general", bridge
 
 
+def test_working_project_survives_container_restart(bridge, tmp_path, monkeypatch):
+    """Рестарт контейнера (watcher — десятки раз в день) не сбрасывает рабочий проект:
+    чат писал в infra, после рестарта прочёл general — запись без project идёт в infra."""
+    monkeypatch.setattr(freshness, "STATE_PATH", tmp_path / "freshness.json", raising=False)
+    _call("save_lesson", {"topic": "t", "content": "c", "project": "infra"})
+    freshness.reset()                                            # рестарт контейнера
+    _call("read_article", {"project": "general", "filename": "справка.md"})
+    _call("finish_task", {"topic": "итог", "content": "текст"})
+    assert bridge.get("project") == "infra", (
+        "после рестарта запись ушла в прочитанный проект: %r" % bridge)
+
+
 def test_chat_that_only_reads_keeps_the_last_read(bridge):
     """Пока сессия ничего не писала и не звала start_task, сильнее последнего
     чтения сигнала нет: поведение v1.90.0 для таких сессий не меняется."""
