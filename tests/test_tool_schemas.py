@@ -150,7 +150,8 @@ def test_optional_params_still_name_their_default_value():
     for tool_name, param, expected in (("search", "project", "all"),
                                        ("search_by_tag", "project", "all"),
                                        ("route_project", "top_k", "3"),
-                                       ("save_lesson", "force_new", "false")):
+                                       ("save_lesson", "force_new", "false"),
+                                       ("save_tracking", "replace", "false")):
         spec = ((tools_by_name[tool_name].inputSchema or {}).get("properties") or {})[param]
         text = (spec.get("description") or "").lower()
         assert expected in text, (

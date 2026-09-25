@@ -363,13 +363,14 @@ TOOLS_EN: dict[str, dict] = {
         'description': 'List of available article templates.',
     },
     'save_tracking': {
-        # RU: Создать или обновить tracking-статью (снимок текущего состояния). Старое значение → history[], новое → current. Используй для 'текущая версия', 'текущий деплой' и т.д.
-        'description': "Create or update a tracking article (a snapshot of the current state). The old value goes to history[], the new one becomes current. Use it for things like 'current version', 'current deployment', etc.",
+        # RU: Создать или обновить tracking-статью (снимок текущего состояния). Переданные факты сливаются с текущим снимком, прежний снимок уходит в history[]. Используй для 'текущая версия', 'текущий деплой' и т.д.
+        'description': "Create or update a tracking article (a snapshot of the current state). The passed facts are merged into the current snapshot; the previous snapshot goes to history[]. Use it for things like 'current version', 'current deployment', etc.",
         'params': {
             'project': 'Project name',
             'entity': 'Entity name: release, deployment, config',
-            'facts': "Facts: {version: '1.3.50', url: ...}",
+            'facts': "Facts: {version: '1.3.50', url: ...}. Passed fields are replaced, the rest stay; null removes a field. When version changes, release fields (commit, tag, tests, verified…) without new values move to history. May be a string — it becomes the note field",
             'narrative': 'Optional description (auto-generated otherwise)',
+            'replace': 'true — replace the whole snapshot with the passed facts; other fields move to history (default: false — merge)',
         },
     },
     'get_current': {

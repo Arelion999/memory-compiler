@@ -2818,13 +2818,70 @@ def _semver_key(v):
 _VERSION_MAJOR_JUMP_CAP = 1
 
 
+# Поля релиза (v1.93.0, решение владельца 25.09.2026, вариант A): при смене version без
+# новых значений уходят из current в history вместе со старой версией, а не переезжают к
+# новой — иначе снимок врёт (tag v1.92.2 рядом с version 1.93.0). Замер по 66 живым
+# трекерам: при смене version tag менялся 35 раз из 48, commit — 22 из 31, а container,
+# port и deploy — 1 из 20. Сверка без учёта регистра. Не входят периодические проверки
+# (checked_at), build, описательные поля (change, fix_summary, migration), status, note.
+_VERSION_BOUND_KEYS = frozenset({
+    "commit", "tag", "tests", "verified",
+    "git_commit", "git_tag", "deploy_commit", "tag_type", "tagged_at",
+    "prod_verified", "verified_how", "pushed", "invariant_ok",
+    "released", "released_at", "deployed_at",
+    "prev", "prev_version", "previous_version", "commits_since_prev",
+})
+
+
+def _snapshot_facts(current: dict) -> dict:
+    """Снимок трекера без служебных since/from/to — база слияния и сравнения для
+    unchanged. Одна функция на обе стороны: разойдутся — «не изменилось» начнёт врать."""
+    return {k: v for k, v in current.items() if k not in _TRACKING_INTERVAL_KEYS}
+
+
+def _merge_tracking_facts(old_current: dict, new_facts: dict, replace: bool) -> tuple[dict, list]:
+    """Новый снимок трекера (без since) и поля, снятые сменой версии.
+
+    Слияние по умолчанию (v1.93.0, решение владельца 25.09.2026): прежний снимок без
+    служебных since/from/to, поверх — переданные поля; None удаляет поле. До v1.93.0
+    снимок собирался как dict(new_facts), и частичная запись стирала остальное: откат
+    версии записью {version: 1.92.1} снёс у tracking/deployment container, port, deploy.
+    replace=True — снимок ровно из переданного (прежнее поведение), без None-полей.
+
+    Поля из _VERSION_BOUND_KEYS, которых не передали, при смене version снимаются и
+    остаются только в history; второй элемент ответа — их имена в порядке снимка.
+    """
+    if replace:
+        return {k: v for k, v in new_facts.items() if v is not None}, []
+    merged = _snapshot_facts(old_current)
+    # Смена — только если версия уже была: трекеру без version не к чему привязать
+    # commit. Сравнение строкой: YAML читает «version: 1.0» как float, а клиент шлёт
+    # «1.0». version: null — тоже смена.
+    dropped = []
+    if ("version" in new_facts and merged.get("version") is not None
+            and str(new_facts["version"]) != str(merged["version"])):
+        dropped = [k for k in merged
+                   if str(k).lower() in _VERSION_BOUND_KEYS and k not in new_facts]
+        for k in dropped:
+            del merged[k]
+    for k, v in new_facts.items():
+        if v is None:
+            merged.pop(k, None)
+        else:
+            merged[k] = v
+    return merged, dropped
+
+
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
-                          guard_version_regression: bool = False) -> dict:
+                          guard_version_regression: bool = False, replace: bool = False) -> dict:
     """Create or update tracking article with bi-temporal frontmatter.
 
-    new_facts: dict of fields to set in 'current' (e.g. {"version": "1.3.50"}).
+    new_facts: поля для 'current' (e.g. {"version": "1.3.50"}). По умолчанию сливаются
+    с прежним снимком (v1.93.0): переданные заменяются, непереданные остаются, None
+    удаляет поле — см. _merge_tracking_facts. replace=True — снимок ровно из переданного.
     Existing 'current' moves to 'history[]' with to=now. New 'current.since' = now.
-    Returns: {"path": str, "action": "created"|"updated", "old_current": dict, "new_current": dict}
+    Returns: {"path": str, "action": "created"|"updated"|"unchanged", "old_current": dict,
+              "new_current": dict, "renamed_from": str|None, "dropped_with_version": list}
     """
     proj = safe_project_dir(project)
     fpath = proj / _tracking_filename(entity)
@@ -2878,12 +2935,15 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         except Exception:
             pass
 
-    # Check if facts actually changed
-    if old_current and all(old_current.get(k) == v for k, v in new_facts.items()):
-        # No change — don't touch
+    new_current, dropped = _merge_tracking_facts(old_current, new_facts, replace)
+
+    # Не изменилось: собранный снимок равен прежнему на той же базе (без since/from/to).
+    # Так ловятся и совпавшие поля, и null по отсутствующему полю, и replace с тем же
+    # набором. Новый трекер (пустой current) создаётся всегда.
+    if old_current and new_current == _snapshot_facts(old_current):
         return {"path": str(fpath.relative_to(KNOWLEDGE_DIR)), "action": "unchanged",
                 "old_current": old_current, "new_current": old_current,
-                "renamed_from": renamed_from}
+                "renamed_from": renamed_from, "dropped_with_version": []}
 
     # Archive old current to history
     if old_current:
@@ -2899,7 +2959,6 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         data["history"].append(hist_entry)
 
     # Set new current
-    new_current = dict(new_facts)
     new_current["since"] = now_iso
     data["current"] = new_current
 
@@ -2922,6 +2981,7 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         "old_current": old_current,
         "new_current": new_current,
         "renamed_from": renamed_from,   # «проект/файл» до переноса или None
+        "dropped_with_version": dropped,  # поля релиза, снятые сменой version (v1.93.0)
     }
 
 

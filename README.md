@@ -88,7 +88,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 | Tool | Description |
 |------|-------------|
-| `save_tracking(project, entity, facts)` | Bi-temporal snapshot: current state plus history (versions, deploys, configs) |
+| `save_tracking(project, entity, facts, replace)` | Bi-temporal snapshot: current state plus history (versions, deploys, configs). Passed facts merge into the current snapshot, `null` removes a field, `replace=true` swaps the whole snapshot |
 | `get_current(project, entity)` | Read the current status out of a tracking article |
 
 **Combined:**

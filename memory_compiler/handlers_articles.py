@@ -306,13 +306,16 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         refs_summary = ", ".join(f"{k}: {', '.join(v)}" for k, v in git_refs.items())
         result += f"\n\U0001f517 Git: {refs_summary}"
     for upd in tracking_updates:
-        # Show what changed
+        # Что изменилось. Снятые поля — тоже (v1.93.0): при смене версии поля релиза
+        # уходят в историю, и без «commit: … → —» сводка теряла бы их молча.
         old = upd["old"]
         new = upd["new"]
         changed_keys = [k for k in new if k != "since" and old.get(k) != new.get(k)]
-        if changed_keys:
-            diff = ", ".join(f"{k}: {old.get(k, '—')} → {new.get(k)}" for k in changed_keys)
-            result += f"\n🔄 tracking/{upd['entity']}: {diff}"
+        removed_keys = [k for k in old if k != "since" and k not in new]
+        parts = [f"{k}: {old.get(k, '—')} → {new.get(k)}" for k in changed_keys]
+        parts += [f"{k}: {old[k]} → —" for k in removed_keys]
+        if parts:
+            result += f"\n🔄 tracking/{upd['entity']}: {', '.join(parts)}"
     return [TextContent(type="text", text=result)]
 
 
@@ -1294,19 +1297,43 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 # ─── Tracking (bi-temporal current state) ────────────────────────────────
 
 
-async def save_tracking(project: str, entity: str, facts, narrative: str = "") -> list[TextContent]:
+def _tracking_removal_note(result: dict) -> str:
+    """Строки ответа save_tracking о полях, ушедших из снимка (v1.93.0): удалённых null
+    или заменой — и полях релиза, ушедших в историю вместе с прежней версией. Без них
+    агент не заметил бы, что commit и tag для новой версии надо передать заново."""
+    old, new = result["old_current"], result["new_current"]
+    dropped = result.get("dropped_with_version") or []
+    removed = [k for k in old if k != "since" and k not in new and k not in dropped]
+    note = ""
+    if removed:
+        note += f"\n  удалены: {', '.join(removed)}"
+    if dropped:
+        note += (f"\n  ушли в историю вместе с версией {old.get('version')}: "
+                 f"{', '.join(dropped)}")
+        if new.get("version") is not None:
+            note += f" — для {new['version']} передай их заново, если знаешь"
+    return note
+
+
+async def save_tracking(project: str, entity: str, facts, narrative: str = "",
+                        replace: bool = False) -> list[TextContent]:
     """Save/update tracking article (current state snapshot with history).
 
     ⚠️ `facts` принимается и строкой: прозаический отчёт о состоянии узла — самый
     частый вид этой записи, а схема ждала объект, и клиент отбивал такой вызов
     целиком, ещё до сервера («expected object, received string», живой случай
     19.09.2026 — запись зависла в очереди хуков и не легла вовсе). Строка
-    сохраняется одним полем `note`: лучше одно поле, чем потерянная запись.
+    сохраняется одним полем `note`: лучше одно поле, чем потерянная запись. С v1.93.0
+    факты сливаются с текущим снимком, и строка меняет только `note`.
+
+    ⚠️ Полную замену включает только настоящий True: строка «true» даёт слияние.
+    Ошибка так уходит в безопасную сторону — замена снимает все непереданные поля.
     """
     from memory_compiler.storage import save_tracking_article
     if isinstance(facts, str):
         facts = {"note": facts.strip()}
-    result = save_tracking_article(project, entity, facts, narrative)
+    result = save_tracking_article(project, entity, facts, narrative,
+                                   replace=replace is True)
     renamed_from = result.get("renamed_from")
     rename_note = (f"\n  файл переименован: {renamed_from} → {result['path']}"
                    if renamed_from else "")
@@ -1322,6 +1349,7 @@ async def save_tracking(project: str, entity: str, facts, narrative: str = "") -
         old_s = ", ".join(f"{k}={v}" for k, v in result["old_current"].items() if k != "since")
         new_s = ", ".join(f"{k}={v}" for k, v in result["new_current"].items() if k != "since")
         msg = f"🔄 tracking/{entity} в {project}\n  было: {old_s}\n  стало: {new_s}"
+        msg += _tracking_removal_note(result)
     msg += rename_note
 
     fpath = KNOWLEDGE_DIR / result["path"]

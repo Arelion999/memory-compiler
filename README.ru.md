@@ -88,7 +88,7 @@ docker-compose up -d --build
 
 | Инструмент | Описание |
 |------------|----------|
-| `save_tracking(project, entity, facts)` | Bi-temporal снимок: текущее состояние + история (версии, деплои, конфиги) |
+| `save_tracking(project, entity, facts, replace)` | Bi-temporal снимок: текущее состояние + история (версии, деплои, конфиги). Переданные факты сливаются с текущим снимком, `null` удаляет поле, `replace=true` заменяет снимок целиком |
 | `get_current(project, entity)` | Получить текущий статус из tracking-статьи |
 
 **Комбинированные:**
