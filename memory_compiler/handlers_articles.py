@@ -245,13 +245,17 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
             extract_facts_from_text, pending_versions, save_tracking_article,
         )
         from memory_compiler import versioning
-        # План и условие — не выпуск, даже с тегом release (v1.92.3): «релиз v1.50.0 НЕ
-        # оформлен» поднял трекер 27.07.2026. Отсев ДО выбора «заголовок или тело»: если
-        # в заголовке только план, версия берётся из тела.
+        # План и условие — не выпуск, даже с тегом release (v1.92.4): «релиз v1.50.0 НЕ
+        # оформлен» поднял трекер 27.07.2026. Отсев ПОСЛЕ выбора источника (v1.92.5):
+        # версия в заголовке отключает тело, даже если это план. В v1.92.4 отсев шёл
+        # раньше, заголовок «Выпуск v1.92.4: версия-план …» уходил в план, и max по телу
+        # записал в трекер обрывок IP из примера — 95.104.240 (живой случай 25.09.2026).
+        # У этой ветки нет гейта релевантности, поэтому тело — только когда заголовок
+        # версии не называет.
         pending = pending_versions(f"{topic}\n{content}")
-        versions = ([v for v in extract_facts_from_text(topic).get("version", []) if v not in pending]
-                    or [v for v in extract_facts_from_text(content).get("version", [])
-                        if v not in pending])
+        source = (extract_facts_from_text(topic).get("version")
+                  or extract_facts_from_text(content).get("version") or [])
+        versions = [v for v in source if v not in pending]
         if versions:
             version = versioning.max_version(versions)
             r = save_tracking_article(project, "release", {"version": version}, guard_version_regression=True)

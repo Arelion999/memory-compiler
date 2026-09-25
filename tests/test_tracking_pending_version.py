@@ -1,4 +1,4 @@
-"""Упоминание будущей версии не двигает трекеры (v1.92.3).
+"""Упоминание будущей версии не двигает трекеры (v1.92.4).
 
 Живой случай 25.09.2026, дважды за минуту. save_lesson «Решения владельца …, порядок
 выпуска v1.92.2» ответил «🔄 tracking/deployment: version: 1.91.0 → 1.92.2» и
@@ -129,16 +129,24 @@ def test_release_tag_skips_not_released_version(knowledge_dir):
     assert _version("release") == "1.49.0"
 
 
-def test_release_tag_takes_body_version_when_topic_only_plans(knowledge_dir):
-    """Ветка release-тега: в заголовке только план — версия берётся из тела, как
-    прежде при заголовке без версии. Отсев плана идёт ДО выбора «заголовок или тело»."""
+def test_release_tag_planned_topic_version_does_not_fall_back_to_body(knowledge_dir):
+    """Регрессия v1.92.4, живой случай 25.09.2026: finish_task с тегом release и
+    заголовком «Выпуск v1.92.4: версия-план …» записал tracking/release = 95.104.240.
+    «версия-план» совпало с маркером «план», версия заголовка ушла в план, и ветка
+    release-тега взяла версии тела: max выбрал обрывок IP из примера («…xx»), guard
+    скачка major его пропустил. Заголовок с версией отключает тело, как до v1.92.4:
+    отсев плана идёт ПОСЛЕ выбора источника. Цена — промах, если в заголовке план,
+    а выпуск назван только в теле."""
     from memory_compiler.handlers import save_lesson
-    save_tracking_article("testproj", "release", {"version": "1.92.1"})
-    asyncio.run(save_lesson(
-        "План на v1.93.0 и итоги дня",
-        "Выпущен v1.92.2: тег v1.92.2, push.",
-        "testproj", ["release"]))
-    assert _version("release") == "1.92.2"
+    save_tracking_article("testproj", "release",
+                          {"version": "1.92.4", "commit": "60b723b", "tag": "v1.92.4"})
+    out = asyncio.run(save_lesson(
+        "Выпуск v1.92.4: версия-план в заметке не двигает трекеры release и deployment",
+        "Выпущено: коммит 60b723b, тег v1.92.4, push.\n"
+        "НЕ ЗАКРЫТО: версия чужого продукта (mcp SDK 1.28.1), обрывки IP вида 10.20.30.xx.",
+        "testproj", ["bugfix", "tracking", "release"]))
+    assert "🔄 tracking/release" not in out[0].text, out[0].text
+    assert _version("release") == "1.92.4"
 
 
 def test_release_tag_still_takes_released_version(knowledge_dir):
