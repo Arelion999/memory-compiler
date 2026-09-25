@@ -2592,22 +2592,43 @@ def _fmt_scalar(v) -> str:
 
 # Имя файла трекера — сырое entity: в именах живых трекеров пробелы, заглавные, скобки
 # и кириллица, и слаг осиротил бы их вместе с историей версий. Заменяются ТОЛЬКО
-# разделители пути: «/» делал из имени подкаталог, и запись падала ENOENT (живой случай
-# 23.09.2026, entity «owner/repo PR #94»); «\» — то же самое на Windows.
-_TRACKING_PATH_SEPARATORS = re.compile(r"[/\\]")
+# символы, недопустимые в имени файла:
+#  • разделители пути (v1.92.1): «/» делал из имени подкаталог, и запись падала ENOENT
+#    (живой случай 23.09.2026, entity «owner/repo PR #94»); «\» — то же на Windows;
+#  • прочие запрещённые в Windows «:*?"<>|» и управляющие (v1.92.3): сервер на Linux их
+#    принимает, но такой файл не доезжает в локальное зеркало Synology Drive (живой
+#    случай 25.09.2026, infra/tracking_KHV NAT: …).
+_TRACKING_UNSAFE_CHARS = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+# Правило имён до v1.92.3: по нему находится трекер, ещё не переименованный.
+_TRACKING_LEGACY_UNSAFE = re.compile(r"[/\\]")
 
 
 def _tracking_filename(entity: str) -> str:
     """Имя файла трекера по entity — одно на запись и на чтение. В статье entity
     остаётся таким, как его назвали."""
-    return f"tracking_{_TRACKING_PATH_SEPARATORS.sub('-', entity)}.md"
+    return f"tracking_{_TRACKING_UNSAFE_CHARS.sub('-', entity)}.md"
+
+
+def _legacy_tracking_path(proj: Path, entity: str) -> Optional[Path]:
+    """Трекер под именем до v1.92.3, если он ещё лежит. Звать, когда файла под новым
+    именем нет: там, где имена совпадают, старого файла тогда нет тоже.
+
+    ⚠️ Без этого база, где entity с «:» записали раньше, после обновления потеряла бы
+    трекер молча: чтение его не нашло бы, а запись завела бы рядом новый файл без
+    истории. Чтение берёт старый файл как есть, запись переносит его под новое имя
+    (save_tracking_article)."""
+    legacy = proj / f"tracking_{_TRACKING_LEGACY_UNSAFE.sub('-', entity)}.md"
+    return legacy if legacy.exists() else None
 
 
 def load_tracking(project: str, entity: str) -> Optional[dict]:
     """Load tracking article for a project/entity. Returns full parsed frontmatter or None."""
-    fpath = safe_project_path(project) / _tracking_filename(entity)
+    proj = safe_project_path(project)
+    fpath = proj / _tracking_filename(entity)
     if not fpath.exists():
-        return None
+        fpath = _legacy_tracking_path(proj, entity)
+        if fpath is None:
+            return None
     text = fpath.read_text(encoding="utf-8")
     data, _ = _parse_frontmatter(text)
     return data if data.get("type") == "tracking" else None
@@ -2726,8 +2747,17 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     Existing 'current' moves to 'history[]' with to=now. New 'current.since' = now.
     Returns: {"path": str, "action": "created"|"updated", "old_current": dict, "new_current": dict}
     """
-    fpath = safe_project_dir(project) / _tracking_filename(entity)
+    proj = safe_project_dir(project)
+    fpath = proj / _tracking_filename(entity)
     now_iso = datetime.now().date().isoformat()
+    # Трекер под именем до v1.92.3 переезжает под новое при первой же записи, даже без
+    # новых фактов. Файл под новым именем, если он уже есть, главный: поверх него
+    # старый не переносим — это затёрло бы свежую историю.
+    legacy = None if fpath.exists() else _legacy_tracking_path(proj, entity)
+    renamed_from = None
+    if legacy is not None:
+        legacy.rename(fpath)
+        renamed_from = str(legacy.relative_to(KNOWLEDGE_DIR).as_posix())
 
     if fpath.exists():
         text = fpath.read_text(encoding="utf-8")
@@ -2773,7 +2803,8 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     if old_current and all(old_current.get(k) == v for k, v in new_facts.items()):
         # No change — don't touch
         return {"path": str(fpath.relative_to(KNOWLEDGE_DIR)), "action": "unchanged",
-                "old_current": old_current, "new_current": old_current}
+                "old_current": old_current, "new_current": old_current,
+                "renamed_from": renamed_from}
 
     # Archive old current to history
     if old_current:
@@ -2811,6 +2842,7 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         "action": action,
         "old_current": old_current,
         "new_current": new_current,
+        "renamed_from": renamed_from,   # «проект/файл» до переноса или None
     }
 
 

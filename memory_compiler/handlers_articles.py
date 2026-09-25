@@ -34,7 +34,7 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, _discover_projects, article_meta,
     is_secret_article, save_article_meta, track_access,
 )
-from memory_compiler.search import embed_document, index_document
+from memory_compiler.search import delete_document, embed_document, index_document, remove_embedding
 from memory_compiler.storage import (
     TEMPLATES, _parse_frontmatter, add_cross_references, article_title_tags, auto_tags,
     cross_reference_targets, decrypt_content, encrypt_content,
@@ -1293,21 +1293,32 @@ async def save_tracking(project: str, entity: str, facts, narrative: str = "") -
     if isinstance(facts, str):
         facts = {"note": facts.strip()}
     result = save_tracking_article(project, entity, facts, narrative)
+    renamed_from = result.get("renamed_from")
+    rename_note = (f"\n  файл переименован: {renamed_from} → {result['path']}"
+                   if renamed_from else "")
 
-    if result["action"] == "unchanged":
+    if result["action"] == "unchanged" and not renamed_from:
         return [TextContent(type="text", text=f"ℹ️ tracking/{entity} не изменился")]
 
-    if result["action"] == "created":
+    if result["action"] == "unchanged":
+        msg = f"ℹ️ tracking/{entity} не изменился"
+    elif result["action"] == "created":
         msg = f"✅ tracking/{entity} создан в {project}"
     else:
         old_s = ", ".join(f"{k}={v}" for k, v in result["old_current"].items() if k != "since")
         new_s = ", ".join(f"{k}={v}" for k, v in result["new_current"].items() if k != "since")
         msg = f"🔄 tracking/{entity} в {project}\n  было: {old_s}\n  стало: {new_s}"
+    msg += rename_note
 
     fpath = KNOWLEDGE_DIR / result["path"]
     if fpath.exists():
         text = fpath.read_text(encoding="utf-8")
         await _index_embed(text, fpath.name, project)
+    if renamed_from:
+        # Прежнее имя (до v1.92.3) — из индекса и эмбеддингов, иначе поиск вёл бы на
+        # файл, которого больше нет.
+        await asyncio.to_thread(delete_document, renamed_from)
+        await asyncio.to_thread(remove_embedding, renamed_from)
 
     await asyncio.to_thread(git_commit, f"tracking: {project}/{entity} {result['action']}")
     return [TextContent(type="text", text=msg)]
