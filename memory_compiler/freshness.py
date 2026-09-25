@@ -34,8 +34,9 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from weakref import WeakKeyDictionary
 
 # Последние записи в базу: (ts, project, tool, topic, session_key).
@@ -52,6 +53,11 @@ _started: dict[tuple[str, str], float] = {}
 # Стабильные ключи сессий: id() переиспользуется после сборки мусора.
 _keys: WeakKeyDictionary = WeakKeyDictionary()
 _counter = [0]
+
+# Что чат уже видел в start_task ЦЕЛИКОМ (v1.92.0): (ключ, проект) -> {метка: время}.
+# ⚠️ Только в памяти: после рестарта выдача снова полная — безопасная сторона ошибки,
+# файл для этого не заводим.
+_shown: dict[tuple[str, str], dict[str, float]] = {}
 
 # Старше этого записи не показываем: «изменилось вчера» — это не новость, а
 # нормальная история проекта, за ней идут в timeline.
@@ -73,6 +79,19 @@ SEEN_TTL_SEC = 7 * 24 * 3600
 SAVE_EVERY_SEC = 3600
 _loaded = [False]
 _last_save = [0.0]
+
+# Окно, в котором повторный start_task показывает уже виденное следом (v1.92.0).
+# Замер 25.09.2026 по транскриптам за 14 дней: 101 повтор в том же чате и проекте из
+# 310 вызовов; в пределах 3 ч — 77, из них после сжатия контекста на клиенте только 3.
+# Сервер о сжатии не знает, поэтому окно короткое, а повтор идёт следом, а не пропадает.
+SHOWN_WINDOW_SEC = 3 * 3600
+# Потолок пар «чат–проект»: сверх него забываем самые давние по последнему показу.
+MAX_SHOWN_PAIRS = 200
+# Ключ чата текущего вызова (v1.92.0). Кладёт tools.call_tool перед хендлером и только
+# вида c:<id>: у моста Claude Desktop одна MCP-сессия на все чаты Code, и по общему ключу
+# один чат прятал бы пункты от другого. ContextVar привязан к задаче — параллельные
+# вызовы не путаются (тот же приём, что search_payload_var).
+chat_key_var: ContextVar[str] = ContextVar("mc_chat_key", default="")
 
 # Служебный аргумент вызова — id чата на стороне клиента (v1.76.0). call_tool
 # вынимает его до аудита и хендлера. Зачем: Claude Desktop отдаёт чатам Code
@@ -289,6 +308,48 @@ def _plural(n: int) -> str:
     return "ей"
 
 
+def shown_recently(key: str, project: str) -> set[str]:
+    """Метки пунктов start_task, которые чат видел ЦЕЛИКОМ за SHOWN_WINDOW_SEC.
+
+    Попутно вычищает просроченное, чтобы память не росла на долгих чатах.
+    """
+    if not key or not project:
+        return set()
+    bucket = _shown.get((key, project))
+    if not bucket:
+        return set()
+    now = time.time()
+    fresh = {m: ts for m, ts in bucket.items() if now - ts <= SHOWN_WINDOW_SEC}
+    if len(fresh) != len(bucket):
+        if fresh:
+            _shown[(key, project)] = fresh
+        else:
+            _shown.pop((key, project), None)
+    return set(fresh)
+
+
+def remember_shown(key: str, project: str, idents: Iterable[str | None]) -> None:
+    """Отметить пункты, показанные чату ЦЕЛИКОМ.
+
+    ⚠️ След сюда не попадает: он не продлевает окно, и полный текст повторяется не
+    реже раза в SHOWN_WINDOW_SEC — иначе после сжатия контекста на клиенте пункт мог
+    бы жить одним следом бесконечно.
+    """
+    if not key or not project:
+        return
+    idents = [m for m in idents if m]
+    if not idents:
+        return
+    now = time.time()
+    bucket = _shown.setdefault((key, project), {})
+    for m in idents:
+        bucket[m] = now
+    if len(_shown) > MAX_SHOWN_PAIRS:
+        by_age = sorted(_shown.items(), key=lambda kv: max(kv[1].values()))
+        for pair, _bucket in by_age[:len(_shown) - MAX_SHOWN_PAIRS]:
+            _shown.pop(pair, None)
+
+
 def reset() -> None:
     """Только для тестов: состояние модульное и переживает между ними."""
     _writes.clear()
@@ -296,5 +357,6 @@ def reset() -> None:
     _last_project.clear()
     _work_project.clear()
     _started.clear()
+    _shown.clear()
     _loaded[0] = False                    # как рестарт: файл снимков на диске остаётся
     _last_save[0] = 0.0

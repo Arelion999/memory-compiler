@@ -3,7 +3,8 @@
 Дополняет scripts/model_side_usage.py: тот считает объём по инструментам, этот —
 состав. Сколько в read_article служебных разделов и frontmatter, сколько весит
 подсказка первого обращения, сколько статей и resource_link отдаёт search_by_tag,
-как часто start_task повторяет статью в разных блоках. Базовая линия — замер
+как часто start_task повторяет статью в разных блоках. С v1.92.0 считает и выдачи
+`start_task` со следами повтора (« ↺»). Базовая линия — замер
 24.09.2026 перед v1.91.0: read_article 41,3% ответов базы, «См. также» 11,5% его
 объёма, повтор статьи в 29% выдач start_task.
 
@@ -24,6 +25,8 @@ from datetime import datetime
 
 DEFAULT_PREFIX = "mcp__memory-compiler__"
 FIRST_TOUCH = "📌 **Первое обращение к `"
+# След повторного start_task в том же чате (v1.92.0) — как handlers_sessions.TRACE_MARK.
+TRACE_MARK = " ↺"
 # Заголовок находки до v1.91.0 нёс оценку «(hybrid: 90)», с v1.91.0 — нет. Замер
 # «до и после» обязан понимать оба вида.
 _FOUND = re.compile(r"^### \[[^\]]+\] (.+?)(?: \((?:hybrid|score)[^)]*\))?$", re.M)
@@ -110,7 +113,8 @@ def measure(files, since=0.0, prefix=DEFAULT_PREFIX):
     ra = dict.fromkeys(("n", "chars", "see_also", "git_links", "frontmatter"), 0)
     ft = {"n": 0, "chars": 0}
     bt = dict.fromkeys(("n", "chars", "lines", "links"), 0)
-    st = dict.fromkeys(("n", "with_repeat", "repeats", "title_dup_chars"), 0)
+    st = dict.fromkeys(("n", "with_repeat", "repeats", "title_dup_chars",
+                        "with_trace", "traces"), 0)
     for tool, blocks in iter_results(files, since, prefix):
         text = "".join(blocks)
         tools[tool] += len(text)
@@ -136,6 +140,10 @@ def measure(files, since=0.0, prefix=DEFAULT_PREFIX):
             bt["links"] += sum(1 for b in blocks if b.startswith("[Resource link"))
         elif tool == "start_task" and text.lstrip().startswith("# Контекст для:"):
             st["n"] += 1
+            traces = sum(1 for line in text.splitlines() if line.endswith(TRACE_MARK))
+            if traces:
+                st["with_trace"] += 1
+                st["traces"] += traces
             parts = _blocks(text)
             found_block = next((v for k, v in parts.items() if k.startswith("Найдено")), "")
             found = _FOUND.findall(found_block)
@@ -193,7 +201,9 @@ def main(argv=None):
     if st["n"]:
         print(f"start_task: {st['n']} выдач, с повтором статьи {st['with_repeat']} "
               f"({_pct(st['with_repeat'], st['n'])}), повторов {st['repeats']}, заголовок в "
-              f"отрывке {_pct(st['title_dup_chars'], r['tools'].get('start_task', 0))}")
+              f"отрывке {_pct(st['title_dup_chars'], r['tools'].get('start_task', 0))}, "
+              f"со следами {st['with_trace']} ({_pct(st['with_trace'], st['n'])}), "
+              f"следов {st['traces']}")
     return 0
 
 

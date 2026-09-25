@@ -30,12 +30,14 @@ handlers.<имя> как прежде.
 """
 
 import asyncio
+import hashlib
 import re
 from datetime import datetime
 
 from mcp.types import TextContent
 
 from memory_compiler.config import KNOWLEDGE_DIR, track_access
+from memory_compiler import freshness
 from memory_compiler.storage import (
     append_session, append_note, latest_session, RUNNING_MARK, running_notes_today,
     add_question, close_questions, open_questions_list, project_corrections,
@@ -286,15 +288,26 @@ class _Block:
     Пункты — целые смысловые единицы (вопрос, находка, факт). Внутри бюджета
     они набираются ЦЕЛИКОМ, пока влезают: половина вопроса хуже, чем вопрос и
     честная пометка «ещё 3».
+
+    Метка пункта (v1.92.0) — для памяти «что чат видел»: у статьи из «Найдено» и
+    «Из зависимых проектов» — art:<проект>/<файл>, у прочих — хэш текста целиком
+    (изменившийся блок журнала или срок с другим «осталось N дн» — это новый
+    пункт). None — след: его не запоминаем.
     """
 
-    __slots__ = ("key", "header", "items", "weight", "sep")
+    __slots__ = ("key", "header", "items", "weight", "sep", "idents")
 
     def __init__(self, key: str, header: str, items: list[str], weight: float,
-                 sep: str = "\n"):
+                 sep: str = "\n", idents: list[str | None] | None = None):
         self.key = key
         self.header = header
-        self.items = [i for i in items if i and i.strip()]
+        if idents is None:
+            idents = [_txt_id(i) if i else None for i in items]
+        elif len(idents) != len(items):
+            raise ValueError("метки и пункты блока разной длины")
+        pairs = [(i, m) for i, m in zip(items, idents) if i and i.strip()]
+        self.items = [i for i, _m in pairs]
+        self.idents = [m for _i, m in pairs]
         self.weight = weight
         self.sep = sep
 
@@ -305,9 +318,14 @@ class _Block:
         return len(self.header) + sum(len(i) + len(self.sep) for i in self.items)
 
 
-def _render_block(block: "_Block", budget: int) -> str:
+def _render_block(block: "_Block", budget: int, report: list | None = None) -> str:
     """Собрать блок в пределах бюджета: целые пункты, пока влезают; последний
-    подрезается по границе строки; не поместившиеся — считаются вслух."""
+    подрезается по границе строки; не поместившиеся — считаются вслух.
+
+    `report` (v1.92.0) получает метку каждого пункта, показанного ЦЕЛИКОМ
+    (у следа — None). Подрезанный хвост и скрытые за «…ещё N» туда не попадают:
+    чат их целиком не видел, и в следующий раз они придут полностью.
+    """
     from memory_compiler.handlers import _cut_section_body, START_BLOCK_FLOOR  # ядро
     if not block.items or budget <= 0:
         return ""
@@ -315,11 +333,13 @@ def _render_block(block: "_Block", budget: int) -> str:
     if left <= 0:
         return ""
     shown, cut_tail = [], False
-    for item in block.items:
+    for idx, item in enumerate(block.items):
         need = len(item) + len(block.sep)
         if need <= left:
             shown.append(item)
             left -= need
+            if report is not None:
+                report.append(block.idents[idx])
             continue
         # последний влезающий подрезаем, только если от него остаётся смысл
         if not shown and left > START_BLOCK_FLOOR:
@@ -363,6 +383,33 @@ def _clip_line(line: str) -> str:
     return line if len(line) <= PREVIEW_LINE_MAX else line[:PREVIEW_LINE_MAX] + "…"
 
 
+# ── Повтор в том же чате — следом (v1.92.0) ─────────────────────────────────
+# Предложение @link28rus, замер 25.09.2026 по транскриптам за 14 дней: 101 повтор
+# start_task в том же чате и проекте из 310 вызовов; в повторах в пределах 3 ч 36%
+# текста уже было в прошлой выдаче (вопросы — 49% повторённого). Совсем прятать
+# повтор нельзя: сервер не знает о сжатии контекста на клиенте, и после него начало
+# пункта — единственный след, по которому модель поймёт, что стоит спросить полное.
+TRACE_CHARS = 100
+TRACE_MARK = " ↺"
+
+
+def _txt_id(item: str) -> str:
+    return "txt:" + hashlib.sha1(item.encode("utf-8")).hexdigest()[:16]
+
+
+def _trace(item: str) -> str:
+    flat = " · ".join(line.strip() for line in item.splitlines() if line.strip())
+    if len(flat) > TRACE_CHARS:
+        flat = flat[:TRACE_CHARS].rstrip() + "…"
+    return flat + TRACE_MARK
+
+
+def _trace_pointer() -> str:
+    hours = freshness.SHOWN_WINDOW_SEC // 3600
+    return (f"*↺ — уже было в этом чате за последние {hours} ч, здесь только начало. "
+            f"Целиком: `open_questions`, `load_session`, `read_article`.*")
+
+
 async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     """Начать задачу: hybrid retrieval (BM25+semantic) + cross-encoder rerank + filter by relevance.
 
@@ -390,6 +437,9 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     shown_files: set[tuple[str, str]] = set()
     shown_titles: set[str] = set()
 
+    # Ключ чата (v1.92.0): кладёт tools.call_tool, только вида c:<id>. Пусто — сжатия нет.
+    chat_key = freshness.chat_key_var.get()
+
     # Topic words for relevance checks
     topic_words = {w.lower() for w in re.split(r'[\s\-_,.:;]+', topic) if len(w) > 3}
 
@@ -413,7 +463,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
 
         if relevant:
             track_access([f"{r['project']}/{r['file']}" for r in relevant])
-            found_items = []
+            found_items, found_idents = [], []
             for r in relevant[:3]:
                 lines = r["preview"].splitlines()
                 # Первая строка превью — заголовок этой же статьи («# …»), а он уже
@@ -424,6 +474,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 # Оценки в заголовке нет: между запросами она не откалибрована, а
                 # порядок находок и так идёт по ней.
                 found_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
+                found_idents.append(f"art:{r['project']}/{r['file']}")
                 shown_files.add((r["project"], r["file"]))
                 shown_titles.add(_title_key(r["title"]))
             # ⚠️ Заголовок называет то, что РЕАЛЬНО отбирало: реранкер выключен
@@ -434,7 +485,7 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
             from memory_compiler.handlers_search import RERANK_ENABLED
             how = "hybrid+rerank" if RERANK_ENABLED else "hybrid"
             blocks.append(_Block("found", f"## Найдено ({len(relevant)} релевантных, {how})",
-                                 found_items, weight=2.5, sep="\n\n"))
+                                 found_items, weight=2.5, sep="\n\n", idents=found_idents))
         else:
             parts.append("*Похожих кейсов не найдено в базе.*\n")
 
@@ -566,14 +617,15 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         dep_results = [r for r in dep_results if (r["project"], r["file"]) not in shown_files]
         if dep_results:
             dep_results.sort(key=lambda r: -r.get("score", 0))
-            dep_items = []
+            dep_items, dep_idents = [], []
             for r in dep_results[:2]:
                 preview = "\n".join(_clip_line(line) for line in r["preview"].splitlines()[:3])
                 dep_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
+                dep_idents.append(f"art:{r['project']}/{r['file']}")
                 shown_files.add((r["project"], r["file"]))
                 shown_titles.add(_title_key(r["title"]))
             blocks.append(_Block("deps", f"## Из зависимых проектов ({', '.join(deps)})",
-                                 dep_items, weight=1.0, sep="\n\n"))
+                                 dep_items, weight=1.0, sep="\n\n", idents=dep_idents))
 
     # 5. Relevant decisions (brief, only high-score)
     # ⚠️ ПОМЕЧАЕМ ПОКАЗАННЫМИ ТОЛЬКО ПЕРВЫЕ ТРИ (не каждое прошедшее фильтр):
@@ -635,14 +687,32 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                 runbooks_found.append(f"- **{title}** ({md.name}, {total} шагов)")
     blocks.append(_Block("runbooks", "## Runbooks", runbooks_found[:3], weight=0.5))
 
+    # 7-. Повтор в том же чате (v1.92.0): пункт, который чат видел ЦЕЛИКОМ за окно
+    # freshness.SHOWN_WINDOW_SEC, идёт следом. Замена — ДО раздачи бюджета: заявленная
+    # длина блока считается по следу, и освободившееся место достаётся пунктам, не
+    # влезавшим раньше, то есть новым для чата. Метка следа снимается: след не
+    # продлевает окно.
+    seen = freshness.shown_recently(chat_key, target_project) if chat_key else set()
+    if seen:
+        for b in blocks:
+            for i, ident in enumerate(b.idents):
+                if ident in seen:
+                    b.items[i] = _trace(b.items[i])
+                    b.idents[i] = None
+
     # 7. Раздача общего бюджета: короткий блок берёт своё целиком, неиспользованное
     # достаётся тем, кому не хватило, приоритет решает, кого резать первым.
     live = [b for b in blocks if b.items]
     budgets = _weighted_budgets([b.want for b in live], [b.weight for b in live], START_BUDGET)
+    report: list = []
     for b, bud in zip(live, budgets):
-        rendered = _render_block(b, bud)
+        rendered = _render_block(b, bud, report)
         if rendered:
             parts.append("\n" + rendered + "\n")
+    if chat_key:
+        freshness.remember_shown(chat_key, target_project, [m for m in report if m])
+    if any(m is None for m in report):
+        parts.insert(1, _trace_pointer() + "\n")
 
     parts.append("\n---\n*Приступай к задаче. По завершении вызови `finish_task`.*")
     return [TextContent(type="text", text="\n".join(parts))]

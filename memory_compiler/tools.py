@@ -1558,6 +1558,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "search":
             handlers.search_payload_var.set(None)   # выдачу собирать не из чего
 
+    # Ключ чата для хендлера (v1.92.0): start_task по нему показывает уже виденное
+    # следом. ⚠️ Только вида c:<id> — у моста Claude Desktop одна MCP-сессия на все
+    # чаты Code, и по общему ключу один чат прятал бы пункты от другого.
+    chat_key = _session_key(client_session)
+    chat_token = freshness.chat_key_var.set(chat_key if chat_key.startswith("c:") else "")
     try:
         result = ([TextContent(type="text", text=refusal)] if refusal
                   else await _dispatch_tool(name, arguments))
@@ -1575,6 +1580,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception:
             pass
         raise
+    finally:
+        freshness.chat_key_var.reset(chat_token)
     if not refusal:
         # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
         # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log

@@ -520,3 +520,110 @@ def test_client_session_description_follows_language(monkeypatch):
     ru = desc()
     assert not re.search(r"[а-яёА-ЯЁ]", en)
     assert re.search(r"[а-яёА-ЯЁ]", ru)
+
+
+# ── память «что чат видел» для повторного start_task (v1.92.0) ──────────────
+
+def test_shown_recently_returns_remembered_within_window():
+    freshness.remember_shown("c:a", "demo", ["txt:1", "art:demo/x.md"])
+    assert freshness.shown_recently("c:a", "demo") == {"txt:1", "art:demo/x.md"}
+    assert freshness.shown_recently("c:a", "other") == set(), "память чужого проекта"
+    assert freshness.shown_recently("c:b", "demo") == set(), "память чужого чата"
+
+
+def test_shown_expires_after_window(monkeypatch):
+    import types
+    now = time.time()
+    freshness.remember_shown("c:a", "demo", ["txt:1"])
+    later = now + freshness.SHOWN_WINDOW_SEC + 1
+    monkeypatch.setattr(freshness, "time", types.SimpleNamespace(time=lambda: later))
+    assert freshness.shown_recently("c:a", "demo") == set()
+    assert ("c:a", "demo") not in freshness._shown, "просроченное не вычищено"
+
+
+def test_shown_pairs_are_capped(monkeypatch):
+    import types
+    clock = [1000.0]
+    monkeypatch.setattr(freshness, "time", types.SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(freshness, "MAX_SHOWN_PAIRS", 3)
+    for i in range(5):
+        clock[0] += 1
+        freshness.remember_shown(f"c:{i}", "demo", ["txt:1"])
+    assert len(freshness._shown) == 3
+    assert ("c:4", "demo") in freshness._shown
+    assert ("c:0", "demo") not in freshness._shown and ("c:1", "demo") not in freshness._shown
+
+
+def test_remember_shown_ignores_empty_key_project_and_idents():
+    freshness.remember_shown("", "demo", ["txt:1"])
+    freshness.remember_shown("c:a", "", ["txt:1"])
+    freshness.remember_shown("c:a", "demo", ["", None])
+    assert freshness._shown == {}
+
+
+def test_reset_forgets_shown():
+    freshness.remember_shown("c:a", "demo", ["txt:1"])
+    freshness.reset()
+    assert freshness.shown_recently("c:a", "demo") == set()
+
+
+def test_chat_key_var_defaults_to_empty():
+    assert freshness.chat_key_var.get() == ""
+
+
+def test_call_tool_passes_chat_key_only_for_client_chat(monkeypatch, knowledge_dir):
+    """start_task узнаёт чат из ContextVar: ключ вида c:<id> — есть, ключ по
+    MCP-сессии (общий у моста Desktop) — пустой. После КАЖДОГО вызова ContextVar
+    возвращается к значению снаружи (сентинел) — второй вызов сам ставит "",
+    поэтому сравнение с исходным сентинелом, а не с ""; иначе reset доказывался
+    бы совпадением, а не причинно."""
+    import asyncio
+    from mcp.types import TextContent
+    (knowledge_dir / "infra").mkdir()
+    tools = _shared_bridge(monkeypatch)
+    seen = []
+
+    async def fake_dispatch(name, arguments):
+        seen.append(freshness.chat_key_var.get())
+        return [TextContent(type="text", text="ok")]
+
+    monkeypatch.setattr(tools, "_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tools, "audit_log", lambda *a, **k: None)
+
+    async def both():
+        freshness.chat_key_var.set("sentinel")
+        after = []
+        await tools.call_tool("start_task", {"topic": "x", "project": "infra",
+                                             freshness.CLIENT_SESSION_ARG: "chat-a"})
+        after.append(freshness.chat_key_var.get())
+        await tools.call_tool("start_task", {"topic": "x", "project": "infra"})
+        after.append(freshness.chat_key_var.get())
+        return after
+
+    after = asyncio.run(both())
+    assert seen == ["c:chat-a", ""]
+    assert after == ["sentinel", "sentinel"], "ключ чата остался висеть после вызова"
+
+
+def test_call_tool_resets_chat_key_even_when_handler_raises(monkeypatch, knowledge_dir):
+    """Хендлер упал — chat_key_var обязан вернуться к прежнему значению и в этом
+    случае, иначе следующий вызов в том же контексте унаследует чужой ключ чата."""
+    import asyncio
+    (knowledge_dir / "infra").mkdir()
+    tools = _shared_bridge(monkeypatch)
+
+    async def fake_dispatch(name, arguments):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tools, "_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tools, "audit_log", lambda *a, **k: None)
+
+    async def run():
+        freshness.chat_key_var.set("sentinel")
+        with pytest.raises(RuntimeError):
+            await tools.call_tool("start_task", {"topic": "x", "project": "infra",
+                                                 freshness.CLIENT_SESSION_ARG: "chat-a"})
+        return freshness.chat_key_var.get()
+
+    after = asyncio.run(run())
+    assert after == "sentinel", "ключ чата остался висеть после исключения в хендлере"

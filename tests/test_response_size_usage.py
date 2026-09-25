@@ -54,7 +54,8 @@ def test_start_task_repeat_and_title_duplicate(tmp_path):
     mod = _load()
     st = mod.measure(_write(tmp_path, [_use("t2", "start_task"), _res("t2", START)]))["start_task"]
     assert st == {"n": 1, "with_repeat": 1, "repeats": 1,
-                  "title_dup_chars": len("Выбор брокера") + 3}
+                  "title_dup_chars": len("Выбор брокера") + 3,
+                  "with_trace": 0, "traces": 0}
 
 
 def test_start_task_header_without_score_is_parsed(tmp_path):
@@ -71,6 +72,17 @@ def test_search_by_tag_counts_lines_and_links(tmp_path):
             _res("t3", "# Тег: x\n---\n### [p] A\na.md\n", "[Resource link: p/a.md] memory://p/a.md")]
     bt = mod.measure(_write(tmp_path, recs))["search_by_tag"]
     assert bt["lines"] == 1 and bt["links"] == 1
+
+
+def test_start_task_traces_are_counted(tmp_path):
+    """v1.92.0: повторный start_task в том же чате показывает виденное следом «… ↺»."""
+    mod = _load()
+    text = ("# Контекст для: брокер\n\n*↺ — уже было в этом чате за последние 3 ч, здесь "
+            "только начало. Целиком: `open_questions`, `load_session`, `read_article`.*\n\n"
+            "## Открытые вопросы (p)\n- **2026-09-25 10:00** — Какой брокер… ↺\n"
+            "- **2026-09-25 11:00** — Новый вопрос\n")
+    st = mod.measure(_write(tmp_path, [_use("t7", "start_task"), _res("t7", text)]))["start_task"]
+    assert st["with_trace"] == 1 and st["traces"] == 1
 
 
 def test_duplicates_and_sidechains_are_not_counted(tmp_path):
