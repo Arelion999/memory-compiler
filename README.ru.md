@@ -473,9 +473,9 @@ git log --format="%H|%s|%an|%aI" --numstat --since="7 days ago"
 
 ## Поддержать
 
-memory-compiler делается по вечерам. Если он сэкономил вам пару часов — можно угостить автора кофе на [Boosty](https://boosty.to/arelion): без закрытого контента и обязательств, просто «спасибо». Звёзды и баг-репорты тоже приветствуются.
+memory-compiler делается по вечерам. Если он сэкономил вам пару часов — поддержите проект на [Boosty](https://boosty.to/arelion): без закрытого контента и обязательств, просто «спасибо». Звёзды и баг-репорты тоже приветствуются.
 
-[![Boosty](https://img.shields.io/badge/Boosty-угостить_кофе-F15F2C?logo=boosty&logoColor=white)](https://boosty.to/arelion)
+[![Boosty](https://img.shields.io/badge/Boosty-поддержать-F15F2C?logo=boosty&logoColor=white)](https://boosty.to/arelion)
 
 ## Лицензия
 

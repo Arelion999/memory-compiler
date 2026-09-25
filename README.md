@@ -473,9 +473,9 @@ The default is 32000 and the documented maximum is 64000; it takes effect when t
 
 ## Support
 
-memory-compiler is built in the evenings. If it saved you a few hours, you can buy the author a coffee on [Boosty](https://boosty.to/arelion) — no paywalls and no obligations, just thanks. Stars and bug reports are appreciated too.
+memory-compiler is built in the evenings. If it saved you a few hours, you can support the project on [Boosty](https://boosty.to/arelion) — no paywalls and no obligations, just thanks. Stars and bug reports are appreciated too.
 
-[![Boosty](https://img.shields.io/badge/Boosty-buy_me_a_coffee-F15F2C?logo=boosty&logoColor=white)](https://boosty.to/arelion)
+[![Boosty](https://img.shields.io/badge/Boosty-support-F15F2C?logo=boosty&logoColor=white)](https://boosty.to/arelion)
 
 ## License
 
