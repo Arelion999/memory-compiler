@@ -2909,6 +2909,32 @@ _HISTORICAL_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+# Пара к _HISTORICAL_MARKERS (v1.92.3): те отсекают прошлое, эти — ещё не наступившее.
+# Предложение с таким признаком называет версию планом, требованием или несвершившимся,
+# а не состоянием сущности. Словарь собран по живым ложным авто-апдейтам (журналы
+# _log.md, 25.09.2026): «выпускать v1.92.2», «порядок выпуска», «до выпуска», «что
+# нужно установщику 0.4.0», «требуют HA 2026.9.0», «релиз v1.50.0 НЕ оформлен», «План
+# этапа 3». «ждёт» проверен и выкинут: на журналах давал только промахи верных апдейтов.
+_PENDING_MARKERS = re.compile(
+    r'\b(?:'
+    r'план\w*|запланир\w*|будет|будут|будем|будущ\w*|предсто\w*|следующ\w*'
+    r'|до\s+(?:выпуска|релиза|деплоя|выкатки|публикации)|порядок\s+(?:выпуска|релиза|деплоя)'
+    r'|нужн\w*|нужен|надо|необходим\w*|(?<!не\s)треб\w*'
+    r'|выпускать|выпустить|выкатить|выкатывать|задеплоить|деплоить|релизить|зарелизить'
+    r'|не\s+(?:\w+\s+){0,2}?(?:выпущен|оформлен|задеплоен|выкачен|опубликован|установлен'
+    r'|обновл[её]н|сделан|готов|вышел|вышла|вышло|вышли)\w*'
+    r'|plan(?:s|ned|ning)?|will|upcoming|next\s+(?:release|version)|todo|pending'
+    r'|requires?|required|unreleased|before\s+(?:the\s+)?(?:release|deploy\w*)'
+    r'|not\s+(?:yet\s+)?(?:released|deployed|published)'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Условие вместо состояния: версия сразу после оператора сравнения («версия < 0.4.0»,
+# «mcp>=1.28.1», «^1.2.3», «~=1.4.0»). Стрелки «->» и «=>» — запись перехода «было →
+# стало», не условие: перед их «>» стоит «-» или «=».
+_VERSION_CONSTRAINT = re.compile(r'(?<![-=<>])(?:[<>]=?|[≤≥]|~=?|\^)\s*(?=v?\d)', re.IGNORECASE)
+
 
 def _looks_like_date(v: str) -> bool:
     """Делегат → versioning.is_date_like."""
@@ -2946,6 +2972,33 @@ def _extract_versions(text: str) -> list:
         if v not in seen:
             seen.add(v)
             out.append(v)
+    return out
+
+
+def pending_versions(text: str) -> set:
+    """Версии, которые заметка сама ставит в план, требование, несвершившееся или
+    условие. Авто-апдейт трекера их не берёт НИГДЕ в этой заметке: план в одном
+    предложении снимает ту же версию из заголовка и из соседних предложений.
+
+    Живой случай 25.09.2026: «Решения владельца …, порядок выпуска v1.92.2» и следом
+    «Ревью фикса reindex (v1.92.2) и передача выпуска» подняли tracking/release и
+    deployment до 1.92.2 до выхода версии. Трекер признавал заметку своей по другому
+    предложению («v1.92.1», «fix=True» ↔ models_ready: true), а версию брал из
+    заголовка, и max выбирал план: он всегда больше текущей.
+
+    Признак ищется в предложении целиком, поэтому все версии предложения с планом
+    считаются планом. Промах авто-апдейта безвреднее порчи трекера (тот же принцип,
+    что у versioning.is_date_like).
+    """
+    text = strip_code_blocks(text)
+    out = set()
+    for seg in re.split(r'(?:\.\s+|\n)', text):
+        if _PENDING_MARKERS.search(seg):
+            out.update(_extract_versions(seg))
+    for m in _VERSION_CONSTRAINT.finditer(text):
+        vm = _VERSION4_RE.match(text, m.end()) or _FACT_PATTERNS["version"].match(text, m.end())
+        if vm:
+            out.add(vm.group(1))
     return out
 
 
@@ -3086,6 +3139,8 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         затирает поле даже когда сущность в заметке упомянута
       - Match by fact type (version, ip, port, url) with existing current keys
       - IP-роль (private/public/...) нового значения должна совпадать со старой
+      - Версия, которую заметка где-либо ставит в план или условие, не кандидат
+        (см. pending_versions)
       - Skip if new value same as current
     Returns list of updates performed: [{entity, key, old, new, path}]
     """
@@ -3093,12 +3148,19 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
     if not existing:
         return []
 
+    # По всей заметке, а не по предложениям сущности: план выпуска часто стоит в
+    # предложении, которое трекер своим не признаёт, а та же версия — в заголовке.
+    pending = pending_versions(f"{topic}\n{text}")
     updates = []
     for track in existing:
         current = track["current"] or {}
         entity = track["entity"]
         # Per-key relevance: факты только из сегментов, относящихся к этой сущности.
         facts = _entity_relevant_facts(entity, current, topic, text)
+        if "version" in facts:
+            facts["version"] = [v for v in facts["version"] if v not in pending]
+            if not facts["version"]:
+                del facts["version"]
         if not facts:
             continue
         new_current = dict(current)
