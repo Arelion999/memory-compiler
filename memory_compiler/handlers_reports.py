@@ -134,7 +134,7 @@ async def lint(project: str = "all", fix: bool = False, verbose: bool = False) -
     # (входящая ссылка приходит и из чужого проекта) и для битых вики-ссылок.
     known_stems, referenced_wiki, referenced_md = await asyncio.to_thread(_base_link_index)
     # Снимок эмбеддингов для Check 5 — один на вызов и в потоке: snapshot_embeddings
-    # ждёт _index_lock, а фоновый reindex держит его минутами (инцидент 25.09.2026).
+    # ждёт _emb_lock, а запись pickle держит его секундами (до 25.09.2026 — весь reindex).
     embeddings = await asyncio.to_thread(_search.snapshot_embeddings)
 
     for proj in check_projects:
@@ -645,8 +645,8 @@ def _topic_coverage(topics: dict, project: str):
     None — модели нет, [] — не с чем сравнить.
 
     Синхронно и только из потока: get_embed_model ждёт _model_load_lock, пока
-    прогрев на старте грузит модель (минуты на NAS), snapshot_embeddings — _index_lock
-    на время reindex, а encode — счёт на CPU."""
+    прогрев на старте грузит модель (минуты на NAS), snapshot_embeddings — _emb_lock
+    на время записи pickle, а encode — счёт на CPU."""
     from memory_compiler.search import get_embed_model, snapshot_embeddings
     import numpy as np
 

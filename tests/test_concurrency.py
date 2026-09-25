@@ -224,7 +224,7 @@ def test_reduce_chunks_during_rebuild_no_zombie(knowledge_dir, monkeypatch):
         if not state["done"]:
             state["done"] = True
             # конкурентно: статья стала односекционной — один вектор parent, без #chunk
-            with search_mod._index_lock:
+            with search_mod._emb_lock:
                 for k in [k for k in search_mod._embeddings
                           if k == "testproj/multi.md" or k.startswith("testproj/multi.md#")]:
                     search_mod._embeddings.pop(k, None)

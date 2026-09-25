@@ -104,6 +104,10 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
 
     # Reset whoosh index so it gets recreated in tmp dir
     monkeypatch.setattr(search_mod, "_ix", None)
+    # Очередь записей в индекс — модульное состояние: флаг, оставшийся от упавшего теста,
+    # отправлял бы в очередь все записи следующих.
+    monkeypatch.setattr(search_mod, "_ix_pending", {})
+    monkeypatch.setattr(search_mod, "_ix_rebuilding", {"v": False})
     # Изоляция эмбеддингов между тестами: часть тестов присваивает _embeddings напрямую
     # (2-мерные векторы), утечка ломала последующие тесты при прогоне подмножества.
     # monkeypatch авто-восстанавливает после каждого теста.

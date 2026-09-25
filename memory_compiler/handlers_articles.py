@@ -69,7 +69,7 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
     """Текстовый индекс — сразу, вектор — фоном.
 
     B2: обе операции уходят с event loop, иначе `embed_document` (encode модели плюс
-    `_index_lock`) морозил весь сервер — /api/health, параллельные MCP-вызовы, SSE.
+    `_emb_lock`) морозил весь сервер — /api/health, параллельные MCP-вызовы, SSE.
     save_article_meta/git_commit НАМЕРЕННО остаются на loop: перенос save_article_meta
     в поток дал бы гонку с track_access (loop мутирует article_meta ↔ поток итерирует
     его в json.dumps → 'dict changed size during iteration').
@@ -92,8 +92,8 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
 async def _find_merge_target(topic: str, content: str, project: str):
     """Статья для авто-мёржа: поиск — в потоке, решение — на loop.
 
-    find_existing_article ждёт _index_lock (snapshot_embeddings), а фоновый reindex
-    держит его весь дисковый скан — минуты на NAS. Синхронно на loop это вставало
+    find_existing_article ждёт _emb_lock (snapshot_embeddings) — запись pickle держит
+    его секундами, а до разделения замков держал и весь скан reindex. Синхронно на loop это вставало
     весь сервер (инцидент 25.09.2026: /api/health молчал три минуты).
 
     ⚠️ Пока поиск ждал, база сдвинулась: найденную статью могли удалить, а повтор
@@ -219,7 +219,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
     # решает tracking ниже (шаг 10): не предупреждает, а обновляет, и знает, что
     # новее. Подробности и цена — в docstring storage.detect_contradictions.
 
-    # 7. Cross-references: отбор ждёт _index_lock и модель — в потоке; запись в
+    # 7. Cross-references: отбор ждёт _emb_lock и модель — в потоке; запись в
     # чужие статьи — на loop (почему — в storage.add_cross_references).
     saved_key = f"{project}/{article_path.name}"
     targets = await asyncio.to_thread(cross_reference_targets, topic, project, saved_key)

@@ -174,8 +174,8 @@ async def web_related(request: Request):
         limit = 8
     limit = max(1, min(limit, 25))
     items = []
-    # В потоке: related_articles берёт _index_lock, а фоновый reindex держит его
-    # весь дисковый скан — на loop это вставало весь сервер (инцидент 25.09.2026).
+    # В потоке: related_articles берёт _emb_lock, а запись pickle эмбеддингов держит его
+    # секундами; до разделения замков (25.09.2026) — ещё и весь скан reindex.
     related = await asyncio.to_thread(related_articles, f"{project}/{filename}", limit=limit)
     for path, score in related:
         proj, _, fname = path.partition("/")
@@ -1142,7 +1142,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
         load_article_meta()
         # Открываем существующий индекс с диска (быстро) + фоновое обновление; полный
         # синхронный rebuild — только на холодном первом старте (см. startup_prepare_index).
-        # В потоке: функция берёт _index_lock, а ждать его на loop сторож запрещает
+        # В потоке: функция берёт _ix_lock, а ждать его на loop сторож запрещает
         # всем (test_no_lock_waits_in_event_loop); запросы до конца lifespan и так не идут.
         count = await asyncio.to_thread(_search_mod.startup_prepare_index)
         print(f"Whoosh index ready: {count} documents")

@@ -428,7 +428,7 @@ def drop_service_from_index(dry_run: bool = True):
     эмбеддинги с нуля — больше получаса. Здесь достаточно удалить ключи.
     """
     from memory_compiler import search as _s
-    from memory_compiler.search import SERVICE_FILES, get_index, _index_lock, persist_embeddings
+    from memory_compiler.search import SERVICE_FILES, get_index, _emb_lock, persist_embeddings
 
     # ⚠️ Эмбеддинги грузятся ЛЕНИВО, а этот проход обычно запускают отдельным
     # процессом (docker exec). Без явной загрузки словарь пуст, и чистка молча
@@ -450,7 +450,7 @@ def drop_service_from_index(dry_run: bool = True):
     keys = [k for k in list(_embeddings)
             if k.split('#')[0].split('/')[-1] in SERVICE_FILES]
     if keys and not dry_run:
-        with _index_lock:
+        with _emb_lock:
             for k in keys:
                 _embeddings.pop(k, None)
                 _chunk_hashes.pop(k, None)

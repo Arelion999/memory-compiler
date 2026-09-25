@@ -83,17 +83,24 @@ from memory_compiler.storage import make_preview, article_body_lines
 import threading as _threading
 import hashlib as _hashlib
 
-# Единый лок целостности индекса/эмбеддингов: сериализует мутации _embeddings, запись
-# pickle и работу Whoosh writer'а между фоновым reindex (демон-поток) и обработчиками
-# на event loop. RLock — реентрантный. Закрывает: торн-райт pickle, LockError двух
-# writer'ов, lost-update при свопе, RuntimeError «dict changed size» при итерации.
-_index_lock = _threading.RLock()
+# Два замка вместо одного общего (разделение 25.09.2026). Whoosh и эмбеддинги —
+# независимые вещи, а общий замок заставлял поиск и снимок эмбеддингов ждать пересборку
+# Whoosh: ~4,5 мин (замер 25.09.2026 — 270 с на 4443 документах, 99% времени — запись в
+# Whoosh). Ни одна функция не держит оба — сторож test_no_function_holds_both_index_locks
+# в tests/test_no_blocking_calls.py. Оба RLock — реентрантные.
+# _ix_lock — Whoosh: writer (два writer'а на одном каталоге дают LockError), сброс _ix,
+# набор _shared_paths.
+_ix_lock = _threading.RLock()
+# _emb_lock — эмбеддинги: _embeddings, _embed_texts, _chunk_hashes, журналы
+# _dirty_parents/_deleted_parents и запись .embeddings.pkl. Закрывает торн-райт pickle,
+# lost-update при свопе, RuntimeError «dict changed size» при итерации.
+_emb_lock = _threading.RLock()
 
 
 def snapshot_embeddings() -> dict:
     """Копия _embeddings под локом — для безопасной итерации читателями
     (semantic_search, lint, graph) пока фон/embed_document мутируют оригинал."""
-    with _index_lock:
+    with _emb_lock:
         return dict(_embeddings)
 
 # Служебные файлы движка вне поискового индекса (v1.63.0). Они дублируют то,
@@ -248,7 +255,7 @@ _chunk_hashes: dict[str, str] = {}
 # Журнал конкурентных изменений на время долгого encode в rebuild_embeddings: статьи,
 # сохранённые (dirty) или удалённые (deleted) ПОКА шла пересборка. При свопе rebuild
 # накатывает их поверх свежесобранных диктов — иначе сохранённая статья теряется до
-# следующей пересборки, а удалённая «воскресает». Мутации — только под _index_lock.
+# следующей пересборки, а удалённая «воскресает». Мутации — только под _emb_lock.
 _dirty_parents: set[str] = set()
 _deleted_parents: set[str] = set()
 
@@ -570,7 +577,7 @@ def _chunk_hash(text: str) -> str:
 
 
 def _persist_embeddings_locked():
-    """Записать .embeddings.pkl атомарно. Вызывать ТОЛЬКО под _index_lock."""
+    """Записать .embeddings.pkl атомарно. Вызывать ТОЛЬКО под _emb_lock."""
     atomic_write_bytes(EMBEDDINGS_PATH, pickle.dumps({
         "model": EMBED_MODEL_NAME,
         "late_chunking": LATE_CHUNKING,
@@ -584,19 +591,19 @@ def _persist_embeddings_locked():
 def persist_embeddings():
     """Публичная точка персиста pkl (берёт лок сама) — для батч-операций
     (remove_project), где remove_embedding вызывается с persist=False в цикле."""
-    with _index_lock:
+    with _emb_lock:
         _persist_embeddings_locked()
 
 
 def remove_embedding(parent_key: str, persist: bool = True):
     """Удалить эмбеддинги статьи (parent + все #chunkN) из индекса и pkl.
 
-    Единственная корректная точка удаления: под _index_lock и с журналированием
+    Единственная корректная точка удаления: под _emb_lock и с журналированием
     в _deleted_parents — фоновая rebuild_embeddings, уже прочитавшая файл с диска,
     при свопе выкинет статью, а не вернёт её «зомби». Вызывать из delete_article /
     remove_project вместо ручных .pop по _embeddings.
     """
-    with _index_lock:
+    with _emb_lock:
         for k in [k for k in _embeddings if k == parent_key or k.startswith(parent_key + "#")]:
             _embeddings.pop(k, None)
             _chunk_hashes.pop(k, None)
@@ -624,7 +631,7 @@ def rebuild_embeddings():
     свежее сохранение терялось, а удаление «воскресало».
     """
     global _embeddings, _embed_texts, _chunk_hashes
-    with _index_lock:
+    with _emb_lock:
         old_embeddings = dict(_embeddings)
         old_hashes = dict(_chunk_hashes)
         _dirty_parents.clear()
@@ -695,7 +702,7 @@ def rebuild_embeddings():
     # Atomic swap + pickle под локом: коммитим глобалы и пишем pickle ТОЛЬКО после
     # успешного encode, и так, чтобы конкурентный embed_document (event loop) не
     # пересёкся со свопом/записью (торн-райт / lost-update). Запись — atomic_write_bytes.
-    with _index_lock:
+    with _emb_lock:
         # Накат конкурентных изменений времён encode: сохранённое во время пересборки
         # свежее прочитанного с диска, удалённое — не должно вернуться со свопом.
         for parent in _dirty_parents:
@@ -790,7 +797,7 @@ def embed_document(text: str, filename: str, project: str):
 
     # Мутация _embeddings + запись pickle — под локом и атомарно (tmp+os.replace),
     # чтобы не пересечься с фоновым rebuild_embeddings (торн-райт / lost-update).
-    with _index_lock:
+    with _emb_lock:
         _embed_texts[parent_key] = title_lines[0].lstrip("# ").strip() if title_lines else filename
         # Remove any prior chunks for this article (chunking topology may have changed)
         for old_key in list(_embeddings.keys()):
@@ -820,7 +827,7 @@ def semantic_search(query: str, limit: int = 10, keep=None) -> list[tuple[str, f
     M @ q. На больших базах (тысячи чанков) это 10-50× быстрее Python-цикла. Эмбеддинги
     нормализованы (encode(normalize_embeddings=True)), поэтому dot = косинус — результат
     идентичен прежней реализации (дедуп берёт max по родителю независимо от порядка)."""
-    with _index_lock:  # консистентный снимок за один проход (дешевле dict-копии + цикла)
+    with _emb_lock:  # консистентный снимок за один проход (дешевле dict-копии + цикла)
         if not _embeddings:
             return []
         keys = list(_embeddings.keys())
@@ -867,7 +874,7 @@ def related_articles(path: str, limit: int = 8) -> list[tuple[str, float]]:
     чанк→статья: max по всем парам (чанк цели × чанк кандидата), как в
     semantic_search. Эмбеддинги нормализованы, поэтому dot = косинус (0..1).
     Сама статья (вместе со всеми своими #chunkN) из выдачи исключается."""
-    with _index_lock:  # один проход под локом: снимаем и матрицу, и векторы цели
+    with _emb_lock:  # один проход под локом: снимаем и матрицу, и векторы цели
         if not _embeddings:
             return []
         keys = list(_embeddings.keys())
@@ -897,9 +904,59 @@ _ix = None  # global whoosh index
 # При скоупе поиска на проект такие статьи раньше не находились. Помеченные тегом
 # `shared` или `global` попадают в выдачу ЛЮБОГО проекта. Множество путей
 # ("project/filename") наполняется при индексации (rebuild_index/index_document) —
-# там теги уже парсятся, лишних сканов диска нет. Мутации под _index_lock.
+# там теги уже парсятся, лишних сканов диска нет. Мутации под _ix_lock.
 _SHARED_TAG_MARKERS = frozenset({"shared", "global", "общий", "общая", "общее"})
 _shared_paths: set[str] = set()
+
+# ── Очередь записей в индекс на время пересборки (разделение _index_lock, 25.09.2026) ──
+# rebuild_index держит _ix_lock ~4,5 мин (замер 25.09.2026: 270 с на 4443 документах,
+# 99% — запись в Whoosh), и index_document из save_lesson ждал бы её целиком: клиент
+# ловил -32001, повторы забивали пул потоков. Вместо ожидания поля статьи встают в
+# очередь. Флаг и очередь — под одним коротким замком: решение «в очередь или сразу» и
+# снятие флага не перемежаются, иначе запись встала бы в очередь после её последнего
+# разбора и застряла. Порядок захвата — всегда _ix_lock → _ix_pending_lock.
+_ix_pending_lock = _threading.Lock()
+_ix_rebuilding = {"v": False}
+_ix_pending: dict[str, dict] = {}
+
+
+def _take_pending() -> dict:
+    """Забрать очередь записей целиком."""
+    with _ix_pending_lock:
+        batch = dict(_ix_pending)
+        _ix_pending.clear()
+    return batch
+
+
+def _shared_after(batch: dict, shared: set) -> None:
+    """Правка набора кросс-проектных путей по тегам записанных статей."""
+    for path, fields in batch.items():
+        if _tags_are_shared(fields.get("tags") or ""):
+            shared.add(path)
+        else:
+            shared.discard(path)
+
+
+def _write_batch(ix, batch: dict) -> None:
+    """Записать пачку полей статей одним writer'ом. Звать под _ix_lock.
+
+    Сбой — пачка возвращается в очередь (запись того же path, вставшая позже, главнее)
+    и исключение летит дальше: статьи не теряются, их подберёт следующая запись."""
+    writer = ix.writer()
+    try:
+        for fields in batch.values():
+            writer.update_document(**fields)
+        writer.commit()
+    except BaseException:
+        try:
+            writer.cancel()
+        except Exception:
+            pass
+        with _ix_pending_lock:
+            for path, fields in batch.items():
+                _ix_pending.setdefault(path, fields)
+        raise
+    _shared_after(batch, _shared_paths)
 
 
 def _tags_are_shared(tags: str) -> bool:
@@ -924,7 +981,7 @@ def load_shared_paths(ix) -> int:
                 path = sf.get("path")
                 if path:
                     found.add(path)
-    with _index_lock:
+    with _ix_lock:
         _shared_paths = found
     return len(found)
 
@@ -1086,61 +1143,100 @@ def rebuild_index():
     открытых файлах индекса).
 
     Схема считается стабильной: при изменении SCHEMA нужен холодный пересбор (удалить
-    каталог индекса → get_index соберёт заново на старте)."""
+    каталог индекса → get_index соберёт заново на старте).
+
+    ⚠️ ОЧЕРЕДЬ ЗАПИСЕЙ (разделение _index_lock, 25.09.2026). Пока идёт пересборка,
+    index_document кладёт поля статьи в очередь _ix_pending, а не ждёт ~4,5 мин. Очередь
+    пишется ПОСЛЕ commit пересборки отдельным writer'ом, пока _ix_lock ещё удерживается
+    (почему не writer'ом пересборки — комментарий в finally). Сбой пересборки очередь не
+    теряет: она пишется в finally."""
     global _shared_paths
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     ix = get_index()  # существующий с диска или пустой (create_in на холодном старте)
-    # Под локом: writer не пересекается с index_document/фоновым rebuild (event loop) —
-    # два writer'а на одном каталоге дают Whoosh LockError, рушивший save_lesson.
-    with _index_lock:
-        # Текущие path в индексе — чтобы вычислить устаревшие (снапшот до записи).
-        with ix.reader() as reader:
-            old_paths = {sf.get("path") for sf in reader.all_stored_fields()}
-        old_paths.discard(None)
+    # Под _ix_lock: writer не пересекается с index_document — два writer'а на одном
+    # каталоге дают Whoosh LockError, рушивший save_lesson.
+    with _ix_lock:
+        with _ix_pending_lock:
+            _ix_rebuilding["v"] = True
+        writer = None
+        try:
+            # Текущие path в индексе — чтобы вычислить устаревшие (снапшот до записи).
+            with ix.reader() as reader:
+                old_paths = {sf.get("path") for sf in reader.all_stored_fields()}
+            old_paths.discard(None)
 
-        writer = ix.writer()
-        new_shared: set[str] = set()
-        seen: set[str] = set()
-        count = 0
+            writer = ix.writer()
+            new_shared: set[str] = set()
+            seen: set[str] = set()
+            count = 0
 
-        def _index_dir(proj_name: str, dir_path):
-            nonlocal count
-            # glob, НЕ rglob — сознательно: daily/archive/ вне индекса (см. коммент
-            # к сбору daily ниже и tests/test_daily_archive_stays_out_of_index).
-            for md in dir_path.glob("*.md"):
-                if md.name in SERVICE_FILES:
-                    continue                  # служебное движка — не статья
-                # _index_safe_text: секрет (маркер '**Секрет:** да') не становится
-                # searchable — тело маскируется плейсхолдером (симметрично для daily).
-                text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
-                fields = _parse_article(text, md.name, proj_name)
-                writer.update_document(**fields)  # add или replace по unique path
-                seen.add(fields["path"])
-                if _tags_are_shared(fields["tags"]):
-                    new_shared.add(fields["path"])
-                count += 1
+            def _index_dir(proj_name: str, dir_path):
+                nonlocal count
+                # glob, НЕ rglob — сознательно: daily/archive/ вне индекса (см. коммент
+                # к сбору daily ниже и tests/test_daily_archive_stays_out_of_index).
+                for md in dir_path.glob("*.md"):
+                    if md.name in SERVICE_FILES:
+                        continue                  # служебное движка — не статья
+                    # _index_safe_text: секрет (маркер '**Секрет:** да') не становится
+                    # searchable — тело маскируется плейсхолдером (симметрично для daily).
+                    text = _index_safe_text(md.read_text(encoding="utf-8"), md.name)
+                    fields = _parse_article(text, md.name, proj_name)
+                    writer.update_document(**fields)  # add или replace по unique path
+                    seen.add(fields["path"])
+                    if _tags_are_shared(fields["tags"]):
+                        new_shared.add(fields["path"])
+                    count += 1
 
-        for proj in PROJECTS:
-            p = KNOWLEDGE_DIR / proj
-            if p.exists():
-                _index_dir(proj, p)
-        # daily/archive/ ВНЕ индекса — решение, а не побочный эффект нерекурсивного
-        # glob (2026-07-21, 86 файлов). Туда `compile` уносит логи, чьи записи уже
-        # разложены по статьям проектов: контент в базе представлен, а индексация
-        # архива дала бы дубли к скомпилированным статьям. Плюс в архивных логах
-        # лежат креды открытым текстом (категория C аудита) — находимость там не
-        # польза, а экспозиция. Симметрично в rebuild_embeddings.
-        # Захочешь включить — сперва разобрать креды, потом менять обход.
-        daily = KNOWLEDGE_DIR / "daily"
-        if daily.exists():
-            _index_dir("daily", daily)
+            for proj in PROJECTS:
+                p = KNOWLEDGE_DIR / proj
+                if p.exists():
+                    _index_dir(proj, p)
+            # daily/archive/ ВНЕ индекса — решение, а не побочный эффект нерекурсивного
+            # glob (2026-07-21, 86 файлов). Туда `compile` уносит логи, чьи записи уже
+            # разложены по статьям проектов: контент в базе представлен, а индексация
+            # архива дала бы дубли к скомпилированным статьям. Плюс в архивных логах
+            # лежат креды открытым текстом (категория C аудита) — находимость там не
+            # польза, а экспозиция. Симметрично в rebuild_embeddings.
+            # Захочешь включить — сперва разобрать креды, потом менять обход.
+            daily = KNOWLEDGE_DIR / "daily"
+            if daily.exists():
+                _index_dir("daily", daily)
 
-        # Удалить документы, исчезнувшие с диска (были в индексе, но не встречены).
-        for stale in old_paths - seen:
-            writer.delete_by_term("path", stale)
+            # Удалить документы, исчезнувшие с диска (были в индексе, но не встречены).
+            for stale in old_paths - seen:
+                writer.delete_by_term("path", stale)
 
-        writer.commit()
-        _shared_paths = new_shared  # атомарный своп под локом
+            writer.commit()
+            writer = None
+            _shared_paths = new_shared  # атомарный своп под локом
+        finally:
+            if writer is not None:
+                try:
+                    writer.cancel()
+                except Exception:
+                    pass
+            # Очередь пишется ПОСЛЕ commit отдельным writer'ом, а не writer'ом пересборки:
+            # Whoosh ищет прежнюю версию unique path только в закоммиченных сегментах, и
+            # второй update_document того же path в одном writer'е оставляет ДВЕ копии
+            # статьи — скан с диска и запись из очереди (проба 25.09.2026, whoosh 2.7.4).
+            # Лишнюю копию не снимают ни следующие записи (update снимает по одной), ни
+            # reindex. Флаг снимается под тем же замком, под которым index_document решает
+            # «в очередь или сразу»: вставшее до снятия забирается здесь, после — идёт
+            # обычным путём и ждёт _ix_lock только на время этой записи.
+            with _ix_pending_lock:
+                _ix_rebuilding["v"] = False
+                tail = dict(_ix_pending)
+                _ix_pending.clear()
+            if tail:
+                try:
+                    _write_batch(ix, tail)
+                except Exception as e:
+                    # Пачка уже вернулась в очередь (_write_batch) — её подберёт следующая
+                    # запись в индекс; исключение пересборки, если было, важнее.
+                    from memory_compiler import obs
+                    obs.get_logger("index").error(
+                        "очередь записей в индекс не записана, оставлена в очереди",
+                        extra={"count": len(tail), "error": repr(e)})
     return count
 
 
@@ -1152,7 +1248,7 @@ def startup_prepare_index() -> int:
 
     Полный синхронный rebuild_index на каждом старте блокировал готовность сервера.
     Автоматическое фоновое обновление на старте (v1.9.3) убрано (v1.9.6): rebuild_index
-    держит _index_lock весь дисковый скан, а вынести чтение из-под лока нельзя без
+    держит _ix_lock весь дисковый скан, а вынести чтение из-под лока нельзя без
     lost-update-гонки с конкурентным save. Внешние правки knowledge в обход
     index_document (bulk-edit на NAS, git pull) подхватываются ЯВНЫМ reindex.
 
@@ -1191,7 +1287,7 @@ def startup_prepare_index() -> int:
         elif schema_ok is False:
             # Схема поменялась → снести индекс, get_index соберёт под текущую SCHEMA.
             import shutil as _shutil
-            with _index_lock:
+            with _ix_lock:
                 _ix = None
             _shutil.rmtree(str(INDEX_DIR), ignore_errors=True)
             INDEX_DIR.mkdir(parents=True, exist_ok=True)
@@ -1202,7 +1298,7 @@ def startup_prepare_index() -> int:
         # «unpack requires a buffer of 4 bytes» / OSError из reader. Тот же класс
         # порчи, что и битый TOC, только глубже.
         corrupt = repr(e)
-    with _index_lock:
+    with _ix_lock:
         _ix = None
     _quarantine_corrupt_index(corrupt)
     # Чистый пересбор с нуля; повторный провал — уже не порча индекса, пусть летит.
@@ -1210,28 +1306,36 @@ def startup_prepare_index() -> int:
 
 
 def index_document(text: str, filename: str, project: str):
-    """Add or update a single document in the index."""
+    """Add or update a single document in the index.
+
+    ⚠️ Во время пересборки не ждёт её (~4,5 мин): поля статьи встают в очередь, и
+    rebuild_index запишет их отдельным writer'ом сразу после своего commit. Текстом
+    статья находится после commit пересборки — как и раньше, только без ожидания
+    (разделение _index_lock, 25.09.2026).
+    Вне пересборки заодно дописывает то, что осталось в очереди от сбойной пересборки."""
     ix = get_index()
     text = _index_safe_text(text, filename)
     fields = _parse_article(text, filename, project)
-    with _index_lock:  # сериализуем writer с фоновым rebuild_index (иначе Whoosh LockError)
-        writer = ix.writer()
-        writer.update_document(**fields)
-        writer.commit()
-        # Поддерживаем _shared_paths актуальным: тег shared могли добавить/снять
-        # при редактировании статьи.
-        if _tags_are_shared(fields["tags"]):
-            _shared_paths.add(fields["path"])
-        else:
-            _shared_paths.discard(fields["path"])
+    with _ix_pending_lock:
+        if _ix_rebuilding["v"]:
+            _ix_pending[fields["path"]] = fields
+            return
+    with _ix_lock:  # сериализуем writer с rebuild_index (иначе Whoosh LockError)
+        batch = _take_pending()
+        batch[fields["path"]] = fields  # своя запись — самая свежая
+        _write_batch(ix, batch)
 
 
 def delete_document(path_key: str) -> None:
     """Точечно удалить ОДИН документ из Whoosh по path (unique ID). Недеструктивно:
     не пересобирает индекс через create_in — нет blackout-окна и не блокирует event
-    loop на минуты, как полный rebuild_index (была причина зависания delete_article)."""
+    loop на минуты, как полный rebuild_index (была причина зависания delete_article).
+    Запись этой статьи, оставшаяся в очереди, снимается: иначе следующая запись в
+    индекс вернула бы удалённую статью."""
     ix = get_index()
-    with _index_lock:  # сериализуем writer с фоновым rebuild_index (иначе Whoosh LockError)
+    with _ix_lock:  # сериализуем writer с rebuild_index (иначе Whoosh LockError)
+        with _ix_pending_lock:
+            _ix_pending.pop(path_key, None)
         writer = ix.writer()
         writer.delete_by_term("path", path_key)
         writer.commit()
@@ -1243,7 +1347,10 @@ def delete_project_documents(project: str) -> int:
     для remove_project вместо полного rebuild_index. Возвращает число удалённых."""
     ix = get_index()
     prefix = f"{project}/"
-    with _index_lock:
+    with _ix_lock:
+        with _ix_pending_lock:
+            for path in [p for p in _ix_pending if p.startswith(prefix)]:
+                _ix_pending.pop(path, None)
         writer = ix.writer()
         n = writer.delete_by_term("project", project)
         writer.commit()

@@ -326,8 +326,8 @@ def find_article_by_slug(topic: str, project: str,
 def find_existing_article(topic: str, content: str, project: str) -> Optional[Path]:
     """Find existing article by semantic similarity or slug match.
 
-    ⚠️ Ждёт _index_lock (snapshot_embeddings) и модель (encode_query): из async-кода
-    только через to_thread — фоновый reindex держит замок весь дисковый скан."""
+    ⚠️ Ждёт _emb_lock (snapshot_embeddings) и модель (encode_query): из async-кода
+    только через to_thread — запись pickle держит замок секундами, прогрев модели — минутами."""
     from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np
 
@@ -1514,7 +1514,7 @@ def update_cross_references(topic: str, project: str, saved_path: str,
     нерелевантных кросс-ссылок через всю базу, в т.ч. в чужие проекты.
 
     Синхронная сборка двух половин. save_lesson зовёт их раздельно: отбор ждёт
-    _index_lock и модель — в потоке, запись — на loop (см. add_cross_references).
+    _emb_lock и модель — в потоке, запись — на loop (см. add_cross_references).
     """
     add_cross_references(topic, saved_path, cross_reference_targets(
         topic, project, saved_path, max_refs=max_refs, min_sim=min_sim, max_sim=max_sim))
@@ -1525,7 +1525,7 @@ def cross_reference_targets(topic: str, project: str, saved_path: str,
                             max_sim: float = 0.97) -> list[str]:
     """Кого связать «См. также» с сохранённой статьёй: ключи «проект/файл».
 
-    Только чтение, но ждёт _index_lock (snapshot_embeddings) и модель
+    Только чтение, но ждёт _emb_lock (snapshot_embeddings) и модель
     (encode_query): из async-кода — через to_thread."""
     from memory_compiler.search import snapshot_embeddings, encode_query
     import numpy as np

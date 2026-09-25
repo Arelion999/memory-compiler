@@ -100,11 +100,13 @@ def _cases():
     }
 
 
+@pytest.mark.parametrize("lock_name", ["_ix_lock", "_emb_lock"])
 @pytest.mark.parametrize("name", ["save_lesson", "finish_task", "compile", "lint",
                                   "web_related"])
-def test_handler_waits_index_lock_off_loop(name, knowledge_dir, monkeypatch):
-    """Пока соседний поток держит _index_lock (как rebuild_index), хендлер ждёт его
-    в потоке, а loop отвечает на /api/health."""
+def test_handler_waits_index_lock_off_loop(name, lock_name, knowledge_dir, monkeypatch):
+    """Пока соседний поток держит замок индекса (Whoosh — как rebuild_index, эмбеддинги —
+    как запись pickle), хендлер ждёт его в потоке, а loop отвечает на /api/health.
+    save_lesson ходит к обоим замкам, и loop не вправе стоять ни на одном."""
     import memory_compiler.handlers_articles as ha
     import memory_compiler.search as sm
 
@@ -113,11 +115,12 @@ def test_handler_waits_index_lock_off_loop(name, knowledge_dir, monkeypatch):
     monkeypatch.setattr(ha, "embed_document", lambda *a, **k: None)
     _write_daily_entry(knowledge_dir)
 
-    stall, result = asyncio.run(_loop_stall_while_locked(sm._index_lock, _cases()[name]))
+    stall, result = asyncio.run(
+        _loop_stall_while_locked(getattr(sm, lock_name), _cases()[name]))
 
     assert stall < STALL_MAX_SEC, (
         f"{name}: event loop стоял {stall:.2f} с, пока соседний поток держал "
-        f"_index_lock {HOLD_SEC} с — хендлер ждёт замок прямо на loop, а не в потоке")
+        f"{lock_name} {HOLD_SEC} с — хендлер ждёт замок прямо на loop, а не в потоке")
     assert result, f"{name}: хендлер не вернул ответ"
 
 
@@ -139,7 +142,7 @@ def test_retry_while_waiting_lock_does_not_duplicate_article(knowledge_dir, monk
 
     async def body():
         held = threading.Event()
-        holder = threading.Thread(target=_hold, args=(sm._index_lock, held, 0.5), daemon=True)
+        holder = threading.Thread(target=_hold, args=(sm._emb_lock, held, 0.5), daemon=True)
         holder.start()
         while not held.is_set():
             await asyncio.sleep(0.005)

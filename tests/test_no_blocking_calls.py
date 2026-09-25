@@ -103,7 +103,8 @@ def test_no_heavy_calls_in_event_loop(module):
 # test_every_lock_is_classified. Долгий = его держат дольше, чем вправе стоять loop,
 # неважно, как его берут сегодня.
 LONG_LOCKS = {
-    ("search", "_index_lock"): "rebuild_index держит весь дисковый скан (минуты на NAS)",
+    ("search", "_ix_lock"): "rebuild_index держит всю пересборку Whoosh (~4,5 мин на 4443 документах)",
+    ("search", "_emb_lock"): "запись pickle эмбеддингов под замком — секунды на NAS",
     ("search", "_model_load_lock"): "прогрев держит, пока грузит модель (минуты на NAS)",
     ("search", "_reindex_lock"): "занят всё время фонового reindex",
     ("reflexes", "_lock"): "refresh_index держит весь обход базы",
@@ -111,6 +112,7 @@ LONG_LOCKS = {
 SHORT_LOCKS = {
     ("embed_queue", "_lock"): "только операции со словарём очереди",
     ("obs", "_lock"): "только счётчики",
+    ("search", "_ix_pending_lock"): "только решение «в очередь или сразу» и забор очереди",
 }
 # Доходят до долгого замка лишь на холодном старте, который lifespan проходит ДО
 # приёма запросов; на работающем сервере это отдача готового объекта.
@@ -223,7 +225,8 @@ class CallGraph:
             stack.extend(ast.iter_child_nodes(n))
 
     def _collect(self, m, node, qual, scope):
-        info = {"async": isinstance(node, ast.AsyncFunctionDef), "locks": [], "calls": []}
+        info = {"async": isinstance(node, ast.AsyncFunctionDef), "locks": [], "calls": [],
+                "held": []}
         self.fns[(m, qual)] = info
         own = list(self._own(node.body))
         nested = [n for n in own if isinstance(n, _DEFS)]
@@ -232,10 +235,12 @@ class CallGraph:
             self._collect(m, n, f"{qual}.{n.name}", scope)
         for n in own:
             if isinstance(n, (ast.With, ast.AsyncWith)):
-                for item in n.items:
+                for i, item in enumerate(n.items):
                     key = self._resolve(m, item.context_expr, scope)
                     if key in self.locks:
                         info["locks"].append((n.lineno, key))
+                        info["held"].append((n.lineno, key,
+                                             self._held_inside(m, n.items[i + 1:], n.body, scope)))
             elif isinstance(n, ast.Call):
                 if (_call_name(n) == "acquire" and isinstance(n.func, ast.Attribute)
                         and _blocking_acquire(n)):
@@ -247,6 +252,57 @@ class CallGraph:
                     info["calls"].append((n.lineno, key))
         info["calls"].sort()   # в сообщении — путь через первый по тексту вызов
         info["locks"].sort()
+
+    def _held_inside(self, m, later, body, scope):
+        """Что делается, пока держится замок: следующие элементы того же with (with a, b:
+        берёт b, уже держа a), вызовы и захваты замков в теле блока."""
+        exprs = [it.context_expr for it in later]
+        inner = [("lock", k) for k in (self._resolve(m, e, scope) for e in exprs)
+                 if k in self.locks]
+        for sub in self._own(exprs + list(body)):
+            if isinstance(sub, (ast.With, ast.AsyncWith)):
+                for it in sub.items:
+                    k = self._resolve(m, it.context_expr, scope)
+                    if k in self.locks:
+                        inner.append(("lock", k))
+            elif isinstance(sub, ast.Call):
+                if (_call_name(sub) == "acquire" and isinstance(sub.func, ast.Attribute)
+                        and _blocking_acquire(sub)):
+                    k = self._resolve(m, sub.func.value, scope)
+                    if k in self.locks:
+                        inner.append(("lock", k))
+                k = self._resolve(m, sub.func, scope)
+                if k is not None:
+                    inner.append(("call", k))
+        return inner
+
+    def lock_reach(self) -> dict:
+        """Функция → замки, которые она берёт сама или через синхронные вызовы."""
+        reach = {k: {lk for _ln, lk in info["locks"]} for k, info in self.fns.items()}
+        changed = True
+        while changed:
+            changed = False
+            for key, info in self.fns.items():
+                for _ln, callee in info["calls"]:
+                    extra = reach.get(callee, set()) - reach[key]
+                    if extra:
+                        reach[key] |= extra
+                        changed = True
+        return reach
+
+    def nested_holds(self) -> list:
+        """(место, внешний замок, внутренний замок): внутренний берётся, пока держится
+        внешний, — прямым with в теле блока или через вызов из него."""
+        reach = self.lock_reach()
+        out = []
+        for (m, qual), info in sorted(self.fns.items()):
+            for ln, outer, inner in info["held"]:
+                for kind, key in inner:
+                    locks = {key} if kind == "lock" else reach.get(key, set())
+                    for lk in sorted(locks):
+                        if lk != outer:
+                            out.append((f"{m}.py:{ln} {qual}()", outer, lk))
+        return out
 
     def lock_paths(self, long_locks, cold_start_only) -> dict:
         """sync-функция → цепочка вызовов до захвата долгого замка."""
@@ -316,7 +372,7 @@ def test_every_lock_is_classified():
 
 def _ix_resets(sources: dict) -> set:
     """Функции, обнуляющие глобальный индекс (_ix = None) — после такого get_index
-    строит индекс заново и держит _index_lock весь дисковый скан."""
+    строит индекс заново и держит _ix_lock весь дисковый скан."""
     found = set()
     for m, src in sources.items():
         for fn in ast.walk(ast.parse(src)):
@@ -383,6 +439,81 @@ def test_lock_guard_catches_known_shapes():
     flagged = {f.split(" async ", 1)[1].split("(", 1)[0] for f in found}
     assert flagged == {"held", "direct", "via_module", "eager_arg", "nested_direct",
                        "reexport"}, found
+
+
+# ─── Разделение замков индекса (25.09.2026): никто не держит оба ────────────────
+# Whoosh (_ix_lock) и эмбеддинги (_emb_lock) разведены по разным замкам, чтобы поиск не
+# ждал пересборку Whoosh. Функция, берущая один, пока держит другой, задаёт порядок
+# захвата — и взаимоблокировку, если соседний поток когда-нибудь возьмёт их в обратном.
+# Последовательные вызовы (сначала один, отпустила, потом другой) — не нарушение.
+INDEX_LOCKS = {("search", "_ix_lock"), ("search", "_emb_lock")}
+
+
+def test_no_function_holds_both_index_locks():
+    bad = [f for f in _package_graph().nested_holds() if {f[1], f[2]} == INDEX_LOCKS]
+    assert not bad, "держат оба замка индекса разом:\n  " + "\n  ".join(
+        f"{where}: держит {outer[1]}, берёт {inner[1]}" for where, outer, inner in bad)
+
+
+def test_nested_hold_guard_catches_known_shapes():
+    """Позитивный контроль: вложенный захват ловится прямым with, через вызов, вторым
+    элементом того же with и через acquire(); последовательный — нет."""
+    src = {"search": (
+        "import threading\n"
+        "_ix_lock = threading.RLock()\n"
+        "_emb_lock = threading.RLock()\n"
+        "def emb_part():\n"
+        "    with _emb_lock:\n"
+        "        return 1\n"
+        "def nested_call():\n"
+        "    with _ix_lock:\n"
+        "        emb_part()\n"
+        "def nested_with():\n"
+        "    with _emb_lock:\n"
+        "        with _ix_lock:\n"
+        "            pass\n"
+        "def sequential():\n"
+        "    with _ix_lock:\n"
+        "        pass\n"
+        "    emb_part()\n"
+        "def multi_with():\n"
+        "    with _ix_lock, _emb_lock:\n"
+        "        pass\n"
+        "def nested_acquire():\n"
+        "    with _emb_lock:\n"
+        "        _ix_lock.acquire()\n"
+        "        _ix_lock.release()\n"
+    )}
+    found = {f[0].split()[1] for f in CallGraph(src).nested_holds()
+             if {f[1], f[2]} == INDEX_LOCKS}
+    assert found == {"nested_call()", "nested_with()", "multi_with()", "nested_acquire()"}, found
+
+
+def test_ix_pending_lock_is_never_held_while_taking_ix_lock():
+    """Порядок захвата — всегда _ix_lock → _ix_pending_lock. Обратный (взять _ix_lock,
+    держа короткий замок очереди) — взаимоблокировка с пересборкой, которая держит
+    _ix_lock и ждёт _ix_pending_lock. Позитивный контроль — на синтетическом коде."""
+    order = (("search", "_ix_pending_lock"), ("search", "_ix_lock"))
+
+    def reversed_order(graph):
+        return [f[0] for f in graph.nested_holds() if (f[1], f[2]) == order]
+
+    found = reversed_order(_package_graph())
+    assert not found, found
+    control = {"search": (
+        "import threading\n"
+        "_ix_lock = threading.RLock()\n"
+        "_ix_pending_lock = threading.Lock()\n"
+        "def right():\n"
+        "    with _ix_lock:\n"
+        "        with _ix_pending_lock:\n"
+        "            pass\n"
+        "def wrong():\n"
+        "    with _ix_pending_lock:\n"
+        "        with _ix_lock:\n"
+        "            pass\n"
+    )}
+    assert [w.split()[1] for w in reversed_order(CallGraph(control))] == ["wrong()"]
 
 
 # ⚠️ ОБРАТНЫЙ СЛУЧАЙ, и он не симметричен списку выше. save_article_meta итерирует
