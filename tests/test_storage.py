@@ -2116,13 +2116,14 @@ def test_guard_off_allows_explicit_any_change(knowledge_dir):
 
 def test_guard_major_jump_boundary(knowledge_dir):
     from memory_compiler.storage import save_tracking_article, load_tracking
-    # ровно +100 → разрешено (строгое >); +101 → отклонено
+    # следующий major → разрешено (строгое >); через один → отклонено. До v1.92.7 граница
+    # стояла на +100 и пропускала обрывки адресов и версии чужих продуктов (1 → 44, 1 → 95).
     save_tracking_article("testproj", "b1", {"version": "1.0.0"})
-    save_tracking_article("testproj", "b1", {"version": "101.0.0"}, guard_version_regression=True)
-    assert load_tracking("testproj", "b1")["current"]["version"] == "101.0.0"  # 1→101 = +100
+    save_tracking_article("testproj", "b1", {"version": "2.0.0"}, guard_version_regression=True)
+    assert load_tracking("testproj", "b1")["current"]["version"] == "2.0.0"  # 1→2 = +1
     save_tracking_article("testproj", "b2", {"version": "1.0.0"})
-    save_tracking_article("testproj", "b2", {"version": "102.0.0"}, guard_version_regression=True)
-    assert load_tracking("testproj", "b2")["current"]["version"] == "1.0.0"    # 1→102 = +101 отклонён
+    save_tracking_article("testproj", "b2", {"version": "3.0.0"}, guard_version_regression=True)
+    assert load_tracking("testproj", "b2")["current"]["version"] == "1.0.0"  # 1→3 = +2 отклонён
 
 
 def test_guard_garbage_version_no_crash(knowledge_dir):

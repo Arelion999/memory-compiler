@@ -242,7 +242,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         # 192.0.2.100 иначе давала «версию» 192.0.2 (первые 3 октета) и, т.к.
         # 192 > любого мажора, guard не считал это откатом и затирал трекер вживую.
         from memory_compiler.storage import (
-            extract_facts_from_text, pending_versions, save_tracking_article,
+            extract_facts_from_text, foreign_versions, pending_versions, save_tracking_article,
         )
         from memory_compiler import versioning
         # План и условие — не выпуск, даже с тегом release (v1.92.4): «релиз v1.50.0 НЕ
@@ -252,10 +252,13 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         # записал в трекер обрывок IP из примера — 95.104.240 (живой случай 25.09.2026).
         # У этой ветки нет гейта релевантности, поэтому тело — только когда заголовок
         # версии не называет.
-        pending = pending_versions(f"{topic}\n{content}")
+        # Версия чужого продукта — тоже не выпуск (v1.92.7): заголовок «v1.10.1 апгрейд mcp
+        # SDK 1.28.1 + v1.10.2» поднимал трекер до версии SDK.
+        skip = (pending_versions(f"{topic}\n{content}")
+                | foreign_versions(f"{topic}\n{content}", ("release", project)))
         source = (extract_facts_from_text(topic).get("version")
                   or extract_facts_from_text(content).get("version") or [])
-        versions = [v for v in source if v not in pending]
+        versions = [v for v in source if v not in skip]
         if versions:
             version = versioning.max_version(versions)
             r = save_tracking_article(project, "release", {"version": version}, guard_version_regression=True)

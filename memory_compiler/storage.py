@@ -2736,7 +2736,12 @@ def _semver_key(v):
     return versioning.version_key(v)
 
 
-_VERSION_MAJOR_JUMP_CAP = 100  # major-скачок больше → неправдоподобно (IP-фрагмент/мусор)
+# Скачок major больше этого на авто-пути — мусор, а не выпуск (v1.92.7). Был +100, и он
+# пропускал обрывок адреса поверх 1.x (1.3.56 → обрывок с major 95, дальше лестницей 95 → 192),
+# версию Electron поверх Claude Desktop (1 → 44) и платформу 1С поверх 1.3.x (1 → 8).
+# Замер 25.09.2026 по историям живых трекеров: 135 смен версии, настоящих скачков major
+# ни одного. Переход на следующий major проходит, дальше — только явным save_tracking.
+_VERSION_MAJOR_JUMP_CAP = 1
 
 
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
@@ -2852,11 +2857,18 @@ _FACT_PATTERNS = {
     # version '80.81.82', poisoning auto_update_tracking for every key matching version.
     "version": re.compile(
         # Lookbehind: not preceded by digit+dot (would mean we're mid-IP)
-        # Lookahead:  not followed by dot+digit  (would mean another octet)
-        r'(?<!\d\.)\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)(?!\.\d)\b',
+        # Lookahead:  not followed by dot+digit (another octet) nor dot+mask. Маска
+        # последнего октета — тоже адрес: «A.B.C.xx» давал версию A.B.C, и она подняла
+        # трекер release с 1.3.56 на обрывок с major 95 (v1.92.7). В живой базе маски такие:
+        # .x/.X/.х(кириллица)/.xx/.*, в том числе с хвостом «/32» и «:443». Имена файлов
+        # вида «Setup-1.1.0.exe» маской не считаются: за «x» в маске не идёт буква.
+        r'(?<!\d\.)\bv?(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)(?!\.(?:\d|[xх*?]+(?![^\W\d_])))\b',
         re.IGNORECASE,
     ),
-    "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?!/\d)(?::(\d{2,5}))?\b'),
+    # «/» после адреса — подсеть, только если дальше длина префикса (/24, /8). Перечень
+    # через «/» («…/203.0.113.10/192.0.2.100») раньше отрезал адрес перед «/1…», второй
+    # оставался в заметке единственным и уходил в поле server (v1.92.7).
+    "ip": re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})(?!/\d{1,2}(?!\d))(?::(\d{2,5}))?\b'),
     # Port: NOT a bare ':(\d{2,5})'. Голое двоеточие с цифрами делало портом ЛЮБУЮ
     # метку времени: заметка со строкой '11:20:55' давала порт 20 и молча затирала
     # tracking/deployment (живой случай 2026-07-21, port 8765 → 20). Сравнить с
@@ -3002,6 +3014,79 @@ def pending_versions(text: str) -> set:
     return out
 
 
+# Чья версия — решает слово прямо перед ней (v1.92.7). Слово выпуска («релиз v1.5.0»,
+# «release», «тег», «health 1.10.1», «APP_VERSION=…») — версия самой сущности. Латинское
+# имя перед ГОЛОЙ версией — другой продукт: «mcp SDK 1.28.1», «(Electron 44.2.0)»,
+# «mcp[cli]==1.28.1», «на NAS 1.27.0». Перед vX.Y.Z имя ничего не решает: так пишут и
+# свои теги, а имя продукта с именем проекта совпадает не всегда («memory-compiler
+# v1.20.1» в проекте под другим именем). Кириллица имени не даёт: «против 1.28.1»,
+# «Выкатили 1.1.0» — ничьи. Версии перечисления («7.1.26/7.1.27», «1.1.1→1.1.4»)
+# наследуют владельца первой.
+_OWN_VERSION_WORDS = re.compile(
+    r'(?:релиз|верси|выпуск|тег|сборк|билд|хотфикс|release|version|tag|build|hotfix)\w*'
+    r'|ver|health', re.IGNORECASE)
+# Связки и глаголы пропускаются: владелец — подлежащее перед ними («SDK обновлён до
+# 1.29.0» — версия SDK, «NAS обновлён до 1.2.4» — версия NAS).
+_OWNER_SKIP = re.compile(
+    r'(?:до|на|с|со|в|во|к|по|от|и|to|from|on|at|in|of|and|as|is'
+    r'|обновл\w*|выкач\w*|задеплоен\w*|выпущен\w*|подня\w*|переведен\w*|переведён\w*'
+    r'|updated|upgraded|bumped|deployed|released|[-–—→>]+'
+    r'|v?\d+(?:\.\d+)+\S*)', re.IGNORECASE)
+_OWNER_PUNCT = "()[]{}«»\"'.,;:!?=<>@#*/\\|+"
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r'[\W_]+', ' ', s.lower()).strip()
+
+
+def _version_owner(left: str, names: tuple) -> str:
+    """Чья версия по тексту строки перед ней: 'own', 'foreign' или '' (не понять)."""
+    tokens = [t.strip(_OWNER_PUNCT) for t in left.split()]
+    tokens = [t for t in tokens if t]
+    while tokens and _OWNER_SKIP.fullmatch(tokens[-1]):
+        tokens.pop()
+    if not tokens:
+        return ""
+    tail = _norm_name(" ".join(tokens[-4:]))
+    if any(tail == n or tail.endswith(" " + n) for n in names):
+        return "own"
+    runs = re.findall(r'[^\W\d_]+', tokens[-1])
+    if not runs:
+        return ""
+    if _OWN_VERSION_WORDS.fullmatch(runs[-1]):
+        return "own"
+    # Имя продукта похоже на имя: заглавная (SDK, Electron) или составное слово
+    # (mcp[cli], xiaomi_miot, node-red). Строчное слово английской прозы («running
+    # 1.4.2», «fixed in 1.4.2») — ничьё, как кириллица.
+    if re.fullmatch(r'[A-Za-z]+', runs[-1]) and re.search(r'[A-Z]|[A-Za-z][-_.\[@]', tokens[-1]):
+        return "foreign"
+    return ""
+
+
+def foreign_versions(text: str, names) -> set:
+    """Версии, которые заметка называет только при имени ДРУГОГО продукта. Авто-апдейт
+    трекера их не берёт: кандидатом был максимум по всем версиям заметки, и версия
+    соседа побеждала свою, когда была больше.
+
+    Живые случаи (журналы 25.09.2026): «v1.10.1 апгрейд mcp SDK 1.28.1 + v1.10.2» поднял
+    release 1.10.1 → 1.28.1; «Claude Desktop 1.52386 (Electron 44.2.0)» поднял
+    claude-desktop 1.52386.0.0 → 44.2.0. Хоть раз названная своей («релиз v1.5.0», имя
+    сущности или проекта перед ней) версия остаётся кандидатом, даже если в другом месте
+    стоит после имени продукта. `names` — имя сущности и проекта.
+    """
+    text = strip_code_blocks(text)
+    names = tuple(n for n in (_norm_name(str(x)) for x in names) if n)
+    own, foreign = set(), set()
+    for rx in (_FACT_PATTERNS["version"], _VERSION4_RE):
+        for m in rx.finditer(text):
+            who = _version_owner(text[text.rfind("\n", 0, m.start()) + 1:m.start()], names)
+            if who == "own":
+                own.add(m.group(1))
+            elif who == "foreign" and m.group(0)[0] not in "vV":
+                foreign.add(m.group(1))
+    return foreign - own
+
+
 def extract_facts_from_text(text: str, topic: str = "") -> dict:
     """Extract structural facts from free text. Returns {kind: [values]}.
     Only returns values that appear in non-historical context.
@@ -3138,9 +3223,11 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         (см. _entity_relevant_facts) — посторонний факт из чужого предложения не
         затирает поле даже когда сущность в заметке упомянута
       - Match by fact type (version, ip, port, url) with existing current keys
-      - IP-роль (private/public/...) нового значения должна совпадать со старой
+      - IP-поле: старое значение — адрес той же роли (private/public/...), а в
+        релевантном тексте ровно один адрес
       - Версия, которую заметка где-либо ставит в план или условие, не кандидат
-        (см. pending_versions)
+        (см. pending_versions); версия, названная только при имени другого продукта,
+        тоже (см. foreign_versions)
       - Skip if new value same as current
     Returns list of updates performed: [{entity, key, old, new, path}]
     """
@@ -3158,7 +3245,11 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         # Per-key relevance: факты только из сегментов, относящихся к этой сущности.
         facts = _entity_relevant_facts(entity, current, topic, text)
         if "version" in facts:
-            facts["version"] = [v for v in facts["version"] if v not in pending]
+            # Версия чужого продукта — тоже по всей заметке, но своя для каждого
+            # трекера: своей её делает имя сущности или проекта перед ней.
+            foreign = foreign_versions(f"{topic}\n{text}", (entity, project))
+            facts["version"] = [v for v in facts["version"]
+                                if v not in pending and v not in foreign]
             if not facts["version"]:
                 del facts["version"]
         if not facts:
@@ -3185,12 +3276,20 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                 # для версий берём МАКСИМАЛЬНУЮ (semver), не первую в тексте —
                 # иначе перечисление 1.7.11…1.7.16 откатывало трекер на 1.7.11.
                 candidate = _max_semver(vals) if (fact_type == "version" and len(vals) > 1) else vals[0]
-                # IP-роль должна совпадать: LAN-адрес (192.168.x) и публичный — разные
-                # сущности по природе; не подменяем одну роль другой. Сравниваем, только
-                # когда ОБА значения — валидные IP (host-имена пропускаем).
                 if fact_type == "ip":
-                    old_role, new_role = _ip_role(str(value)), _ip_role(str(candidate))
-                    if "invalid" not in (old_role, new_role) and old_role != new_role:
+                    # Адрес берём, только когда в релевантном тексте он ОДИН: предложение
+                    # с двумя адресами описывает связь узлов («с NAS через 192.0.2.2 →
+                    # 203.0.113.10»), и первый из них обычно чужой. Живой случай (v1.92.7):
+                    # server трекера «домашний выход» за сентябрь шесть раз сменился на
+                    # адреса соседних узлов и туннеля.
+                    if len(vals) != 1:
+                        continue
+                    # IP-роль должна совпадать: LAN-адрес (192.168.x) и публичный — разные
+                    # сущности по природе. У описания узла («VPS-2, хостинг, Токио») и у
+                    # имени хоста роли нет вовсе: такое поле адресом не подменяем, иначе
+                    # описание теряется (до v1.92.7 роли сравнивались, только когда оба
+                    # значения — адреса, и описание уходило молча).
+                    if _ip_role(str(value)) != _ip_role(str(candidate)):
                         continue
                 if str(candidate) != str(value):
                     new_current[key] = candidate

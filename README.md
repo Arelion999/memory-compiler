@@ -239,7 +239,7 @@ The backfill is interruptible and resumable (the state is the frontmatter itself
 4. Cross-references in related articles
 5. An update to the active-context feed
 6. Extraction of git references (commits, issues, tags)
-7. An update to matching tracking articles (version, IP, port, URL) — the current value is owned by tracking, with a guard against version regression; a version the note itself calls a plan, a requirement, not yet done or a condition (`< 0.4.0`) is not taken
+7. An update to matching tracking articles (version, IP, port, URL) — the current value is owned by tracking, with a guard against version regression; a version the note itself calls a plan, a requirement, not yet done or a condition (`< 0.4.0`) is not taken, nor is a bare version that follows only the name of another product (`Electron 44.2.0`, `mcp[cli]==1.28.1`); an IP field changes only when the relevant text names exactly one address of the same role
 8. A git commit
 
 ### Memory reflexes
