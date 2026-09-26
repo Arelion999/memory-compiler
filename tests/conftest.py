@@ -121,3 +121,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     monkeypatch.setattr(freshness_mod, "STATE_PATH", None)
     monkeypatch.setattr(freshness_mod, "_loaded", [False])
     monkeypatch.setattr(freshness_mod, "_last_save", [0.0])
+
+    # Решение hf_offline (v1.95.0) — модульное состояние процесса: тест, вызвавший
+    # apply(), оставил бы следующим «первую загрузку» или чужой режим.
+    import memory_compiler.hf_offline as hf_offline_mod
+    monkeypatch.setattr(hf_offline_mod, "_decision", None)
+
+    # Отказ загрузки модели (v1.95.0) — модульное состояние: оставшись от упавшего теста,
+    # он включил бы notice «поиск по смыслу выключен» в выдачах следующих.
+    monkeypatch.setattr(search_mod, "_embed_load_error", None)

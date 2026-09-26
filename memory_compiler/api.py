@@ -1,6 +1,7 @@
 """REST API endpoints and Starlette application factory."""
 import asyncio
 import hmac
+import logging
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
@@ -44,6 +45,7 @@ from memory_compiler import obs
 from memory_compiler import analytics
 from memory_compiler import embed_queue
 from memory_compiler import reflexes
+from memory_compiler import hf_offline
 
 
 # ─── Web endpoints ──────────────────────────────────────────────────────────
@@ -452,9 +454,40 @@ async def warm_models() -> float:
               + (" + reranker)" if RERANK_ENABLED else ", reranker выключен)"))
         return dt
     except Exception as e:
-        log.warning("model preload failed", extra={"err": str(e)})
-        print(f"[warm] model preload failed (lazy-load on first use): {e}")
+        # Отказ называется вслух (v1.95.0): раньше здесь была одна строка без причины, и
+        # свежая установка без модели выглядела здоровой. Сообщение «model preload failed»
+        # сохранено — по нему уже ищут в app.jsonl.
+        state, reason = _search_mod.semantic_state()
+        if state == "on":
+            # get_embed_model успел загрузить модель — упал только фиктивный
+            # encode_query/reranker. reason="load_failed" здесь был бы ложной тревогой:
+            # модель загружена, поиск по смыслу работает, просто первый живой запрос
+            # заплатит за прогрев вместо старта.
+            log.warning("model preload failed", extra={"err": str(e)[:500], "reason": None})
+            print(f"[warm] ⚠️ прогрев модели не удался ({e}) — модель загружена, "
+                  "поиск по смыслу работает; первый запрос заплатит за прогрев")
+            return 0.0
+        reason = reason if state == "off" else "load_failed"
+        hint = hf_offline.hint(reason, _search_mod.EMBED_MODEL_NAME)
+        log.warning("model preload failed",
+                    extra={"err": str(e)[:500], "reason": reason, "hint": hint})
+        print(f"[warm] ⚠️ Поиск по смыслу выключен ({reason}): {hint}")
         return 0.0
+
+
+def _report_hf_decision() -> None:
+    """Строка лога старта о режиме HF (v1.95.0). Решение принял server.py ДО импорта
+    ML-библиотек, а структурный лог настраивается только в lifespan — поэтому отчёт здесь.
+    WARNING — когда офлайн задан явно, а модели в кеше нет: поиск по смыслу будет выключен."""
+    decision = hf_offline.current()
+    if decision is None:
+        return
+    text = hf_offline.describe(decision)
+    print(f"[hf] {text}")
+    level = (logging.WARNING if decision.mode == "explicit_offline" and decision.missing
+             else logging.INFO)
+    obs.get_logger("hf").log(level, "hf offline mode", extra={
+        "mode": decision.mode, "missing": list(decision.missing), "text": text})
 
 
 def _mcp_session_count(request) -> int | None:
@@ -481,6 +514,7 @@ def _mcp_session_count(request) -> int | None:
 
 async def web_health(request: Request):
     ix = get_index()
+    semantic, semantic_reason = _search_mod.semantic_state()
     # models_ready отдаётся ПУБЛИЧНО (как status/version/documents): это состояние
     # сервера, а не сведения о базе. Без него «поиск молчит» неотличимо от «сервер
     # сломан» — health отвечает ok, потому что индекс открыт, а семантический запрос
@@ -498,8 +532,13 @@ async def web_health(request: Request):
     # не растёт монотонно в тихие периоды без рестартов. SDK пишет о рождении транспорта
     # на уровне INFO, а логгер `mcp` у нас намеренно на WARNING (obs.py — там же рождаются
     # транспортные -32602/-32001, поднятие зальёт лог шумом).
+    # semantic / semantic_reason (v1.95.0) — ПУБЛИЧНО, по основанию models_ready: это
+    # состояние сервера. models_ready=false не отличал «ещё грузится» от «не загрузится
+    # никогда» — свежая установка с пустым кешем моделей жила так молча. Текст ошибки и
+    # решение об офлайн-режиме — только под auth (в них пути и сообщения библиотек).
     payload = {"status": "ok", "version": VERSION, "documents": ix.doc_count(),
                "models_ready": _search_mod.embed_model_ready(),
+               "semantic": semantic, "semantic_reason": semantic_reason,
                "embed_pending": embed_queue.pending(),
                "mcp_sessions": _mcp_session_count(request)}
     # Детали (имена проектов = клиентов, размеры, usage-счётчики) — только под
@@ -527,6 +566,7 @@ async def web_health(request: Request):
             audit_kb = round(_audit.stat().st_size / 1024, 1) if _audit.exists() else 0
         except Exception:
             audit_kb = None
+        hf_decision = hf_offline.current()
         payload.update({
             "embeddings": len(_search_mod._embeddings),
             "total_articles": total_articles,
@@ -538,6 +578,8 @@ async def web_health(request: Request):
                 **obs.stats(),
                 "reindex_running": _search_mod.reindex_running(),
                 "audit_log_size_kb": audit_kb,
+                "semantic_error": _search_mod.semantic_error_detail(),
+                "hf_offline": hf_decision.as_dict() if hf_decision else None,
             },
         })
     return JSONResponse(payload)
@@ -1119,6 +1161,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         obs.setup_logging()  # структурное логирование (JSON-lines + ротация) до всего
+        _report_hf_decision()  # режим HF, выбранный в server.py до импорта ML (v1.95.0)
         # Снимки свежести чатов переживают рестарт (v1.88.1), иначе после каждого рестарта
         # тот же чат снова получает «Первое обращение к проекту». Временный каталог
         # контейнера, а не база знаний, — почему, см. докстринг freshness.

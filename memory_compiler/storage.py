@@ -352,7 +352,14 @@ def find_existing_article(topic: str, content: str, project: str) -> Optional[Pa
     embeddings = snapshot_embeddings()
     if not embeddings:
         return None
-    q_vec = encode_query(f"{topic} {content[:300]}")
+    try:
+        q_vec = encode_query(f"{topic} {content[:300]}")
+    except Exception:
+        # Модель недоступна: идёт первая загрузка/пауза повтора (EmbedModelUnavailable)
+        # или первый неудачный load (исключение самой библиотеки, напр. OSError). Об этом
+        # уже сказано в health/логе/notice (v1.95.0) — запись важнее авто-мёржа, слаг-матч
+        # выше уже отработал.
+        return None
 
     MERGE_MIN_SIM = 0.90
     MERGE_MARGIN = 0.05
@@ -1537,7 +1544,11 @@ def cross_reference_targets(topic: str, project: str, saved_path: str,
     if _is_meta_article(saved_path.split("/")[-1]):
         return []
 
-    q_vec = encode_query(topic)
+    try:
+        q_vec = encode_query(topic)
+    except Exception:
+        # См. find_existing_article: модель недоступна — запись важнее «См. также».
+        return []
 
     # Кандидаты: тот же проект, не meta, similarity в окне. Затем — top-N.
     cands = []

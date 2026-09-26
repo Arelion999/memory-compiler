@@ -94,6 +94,20 @@ MC_API_KEY = os.environ.get("MC_API_KEY", "")
 MC_ENCRYPT_KEY = os.environ.get("MC_ENCRYPT_KEY", "")
 
 
+# ─── ML-модели по умолчанию ──────────────────────────────────────────────────
+# Единый источник для search.py (загрузка моделей) и hf_offline.py (проверка кеша ДО
+# импорта ML-библиотек). hf_offline не может взять их из search: тот при импорте тянет
+# sentence_transformers, а с ним huggingface_hub, и офлайн-режим замёрз бы до решения.
+DEFAULT_EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
+
+def env_flag(name: str, environ=None) -> bool:
+    """Флаг из env: «1», «true» или «yes» без учёта регистра; иначе False."""
+    env = os.environ if environ is None else environ
+    return env.get(name, "false").lower() in ("1", "true", "yes")
+
+
 # ─── Version ─────────────────────────────────────────────────────────────────
 
 def _read_version() -> str:

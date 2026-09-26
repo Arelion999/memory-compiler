@@ -78,8 +78,10 @@ from whoosh.scoring import BM25F
 from memory_compiler.config import (
     KNOWLEDGE_DIR, INDEX_DIR, PROJECTS, SCHEMA,
     decay_factor, atomic_write_bytes, is_secret_article,
+    DEFAULT_EMBED_MODEL, DEFAULT_RERANKER_MODEL,
 )
 from memory_compiler.storage import make_preview, article_body_lines
+from memory_compiler import hf_offline
 import threading as _threading
 import hashlib as _hashlib
 
@@ -125,7 +127,7 @@ EMBEDDINGS_PATH = KNOWLEDGE_DIR / ".embeddings.pkl"
 # Recommended upgrade: EMBED_MODEL=BAAI/bge-m3 (1024 dim, MTEB +13, multilingual)
 # or EMBED_MODEL=Alibaba-NLP/gte-multilingual-base. Cache auto-invalidates on change.
 import os as _os_embed
-EMBED_MODEL_NAME = _os_embed.environ.get("EMBED_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+EMBED_MODEL_NAME = _os_embed.environ.get("EMBED_MODEL", DEFAULT_EMBED_MODEL)
 
 # Late chunking (Jina AI 2024 pattern, pragmatic variant): encode whole document as one
 # embedding instead of splitting on ### sections. Preserves anaphoric refs and cross-section
@@ -247,6 +249,29 @@ _embed_model: Optional[SentenceTransformer] = None
 # потоках executor'а, оба видели _model is None → две конструкции → двойной пик RAM
 # (риск OOM на NAS). Общий лок ещё и не даёт грузить embed и reranker одновременно.
 _model_load_lock = _threading.Lock()
+import time as _time
+
+# Отказ загрузки embed-модели (v1.95.0): {"reason", "detail", "at"}. Без него отказ был
+# немым: /api/health вечно показывал models_ready=false — неотличимо от «ещё грузится», а
+# semantic_degraded при пустых эмбеддингах не взводился вовсе (semantic_search выходит до
+# модели). reason — код hf_offline.failure_reason: offline_no_cache | download_failed |
+# load_failed. Пишется только под _model_load_lock.
+_embed_load_error: Optional[dict] = None
+# Пауза между попытками после отказа: без неё при закрытой сети каждый поиск заново шёл бы
+# на huggingface.co и висел на сетевых таймаутах. Повтор — по требованию, первым вызовом
+# после паузы; рестарт сервера пробует сразу.
+EMBED_RETRY_SEC = 600
+
+
+class EmbedModelUnavailable(RuntimeError):
+    """Модель эмбеддингов недоступна — поиск по смыслу выключен; reason — код причины."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+        self.detail = detail
+
+
 _embeddings: dict[str, np.ndarray] = {}  # path -> embedding
 _embed_texts: dict[str, str] = {}  # path -> title+tags for display
 # chunk_key -> sha1(chunk_text): позволяет rebuild_embeddings пере-кодировать ТОЛЬКО
@@ -273,11 +298,30 @@ def embed_model_ready() -> bool:
 
 
 def get_embed_model() -> SentenceTransformer:
-    global _embed_model
+    global _embed_model, _embed_load_error
     if _embed_model is None:
         with _model_load_lock:
             if _embed_model is None:  # double-check под локом
-                m = SentenceTransformer(EMBED_MODEL_NAME)
+                err = _embed_load_error
+                if err is not None and _time.monotonic() - err["at"] < EMBED_RETRY_SEC:
+                    raise EmbedModelUnavailable(err["reason"], err["detail"])
+                try:
+                    m = SentenceTransformer(EMBED_MODEL_NAME)
+                except Exception as e:
+                    # failure_reason сам может упасть (напр. PermissionError от rglob по
+                    # нечитаемому снимку кеша) — тогда исходное исключение подменялось бы
+                    # этим сбоем, а _embed_load_error не записывался вовсе: без причины,
+                    # без паузы повтора, semantic_state оставался бы "loading" навсегда.
+                    try:
+                        reason = hf_offline.failure_reason(EMBED_MODEL_NAME, "embed")
+                    except Exception:
+                        reason = "load_failed"
+                    _embed_load_error = {
+                        "reason": reason,
+                        "detail": str(e)[:500],
+                        "at": _time.monotonic(),
+                    }
+                    raise
                 # Cap context length — long-context defaults (8192) make peak memory
                 # allocation explode during batch encoding. 2048 covers >99% of our
                 # articles; longer ones are truncated rather than OOM the host.
@@ -286,8 +330,46 @@ def get_embed_model() -> SentenceTransformer:
                         m.max_seq_length = EMBED_MAX_SEQ_LENGTH
                 except Exception:
                     pass
+                # Порядок важен: _embed_load_error сбрасывается ДО публикации модели —
+                # иначе безлоковый читатель (semantic_state) мог бы увидеть _embed_model
+                # уже выставленным, а _embed_load_error ещё со старой деталью отказа.
+                _embed_load_error = None
                 _embed_model = m  # публикуем только полностью готовую (с seq-cap) модель
     return _embed_model
+
+
+def semantic_state() -> tuple[str, Optional[str]]:
+    """Состояние поиска по смыслу для /api/health, notice в search и баннера (v1.95.0).
+
+    ("on", None) — модель загружена; ("off", reason) — загрузка не удалась, причина из
+    hf_offline.failure_reason (и после паузы — до успешной загрузки); ("loading",
+    "first_download") — этот запуск впервые качает модель (hf_offline: auto_download);
+    ("loading", None) — обычный прогрев."""
+    if _embed_model is not None:
+        return "on", None
+    err = _embed_load_error
+    if err is not None:
+        return "off", err["reason"]
+    if hf_offline.first_download_pending(EMBED_MODEL_NAME, "embed"):
+        return "loading", "first_download"
+    return "loading", None
+
+
+def semantic_error_detail() -> Optional[str]:
+    """Текст последнего отказа загрузки модели — для /api/health под авторизацией."""
+    err = _embed_load_error
+    return err["detail"] if err is not None else None
+
+
+def semantic_notice() -> str:
+    """Строка для notice в выдаче search: пусто, пока поиск по смыслу работает или модель
+    штатно прогревается; иначе — что случилось и что делать."""
+    state, reason = semantic_state()
+    if state == "off":
+        return f"⚠️ Поиск по смыслу выключен ({reason}): {hf_offline.hint(reason, EMBED_MODEL_NAME)}"
+    if reason == "first_download":
+        return f"⏳ Поиск по смыслу ещё не готов: {hf_offline.hint(reason, EMBED_MODEL_NAME)}"
+    return ""
 
 
 def _needs_e5_prefix() -> bool:
@@ -329,7 +411,13 @@ def encode_passages(texts: list[str], progress_label: Optional[str] = None):
 
 
 def encode_query(text: str):
-    """Закодировать поисковый запрос/тему (query-сторона) с нужным префиксом."""
+    """Закодировать поисковый запрос/тему (query-сторона) с нужным префиксом.
+
+    Пока идёт ПЕРВАЯ загрузка модели (hf_offline: auto_download), запрос её не ждёт: иначе
+    при переехавшей базе (.embeddings.pkl есть, кеш моделей пуст) поиск висел бы под
+    _model_load_lock минутами, до -32001. whoosh_search при этом уходит на BM25."""
+    if _embed_model is None and semantic_state() == ("loading", "first_download"):
+        raise EmbedModelUnavailable("first_download")
     model = get_embed_model()
     if _needs_e5_prefix():
         text = f"query: {text}"
@@ -342,7 +430,7 @@ import os as _os
 # Default: BAAI/bge-reranker-v2-m3 — multilingual (built on BGE-M3), strong RU+EN.
 # Override via RERANKER_MODEL env var (e.g. cross-encoder/ms-marco-MiniLM-L-6-v2 for
 # RAM-constrained NAS deployments).
-RERANKER_MODEL_NAME = _os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANKER_MODEL_NAME = _os.environ.get("RERANKER_MODEL", DEFAULT_RERANKER_MODEL)
 _reranker_model: Optional[CrossEncoder] = None
 
 
@@ -1451,6 +1539,11 @@ def whoosh_search(query_str: str, project: str = "all", limit: int = 10) -> list
     try:
         sem_results = semantic_search(query_str, limit=pool, keep=keep)
         obs.set_semantic_degraded(False)
+    except EmbedModelUnavailable:
+        # Модель недоступна, и это уже объявлено: лог старта, /api/health, notice в
+        # search (v1.95.0). Печать на каждый запрос только засоряла бы лог.
+        obs.set_semantic_degraded(True)
+        sem_results = []
     except Exception as e:
         print(f"Semantic search failed, fallback to BM25: {e}")
         obs.set_semantic_degraded(True)

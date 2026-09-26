@@ -1648,6 +1648,94 @@ def test_find_existing_article_merges_clear_winner(knowledge_dir, monkeypatch):
     assert result is not None and result.name == "a.md", f"должен смёржить в a.md: {result}"
 
 
+# ─── F1 (final-fix-findings.md): семантический шаг не должен ронять запись ───
+# encode_query теперь может отказать во время первой загрузки модели
+# (EmbedModelUnavailable), в паузе повтора (тот же тип) или на первом неудачном load
+# (исключение самой библиотеки, например OSError). find_existing_article и
+# cross_reference_targets звались из save_lesson/finish_task БЕЗ защиты — отказ модели
+# ронял всю запись, хотя слаг-матч (и сама статья) не имеют к модели никакого отношения.
+
+import numpy as np
+import pytest as _pytest
+
+
+def _exc_first_download():
+    from memory_compiler.search import EmbedModelUnavailable
+    return EmbedModelUnavailable("first_download")
+
+
+def _exc_os_error():
+    return OSError("модель не загрузилась")
+
+
+@_pytest.mark.parametrize("make_exc", [_exc_first_download, _exc_os_error])
+def test_find_existing_article_ignores_semantic_when_model_unavailable(
+        knowledge_dir, monkeypatch, make_exc):
+    """Непустые эмбеддинги + encode_query отказывает → find_existing_article не падает,
+    просто пропускает семантический шаг (слаг уже не совпал выше)."""
+    import memory_compiler.search as search_mod
+    from memory_compiler.storage import find_existing_article
+
+    proj = knowledge_dir / "testproj"
+    (proj / "a.md").write_text("# A\n\nрыба", encoding="utf-8")
+    monkeypatch.setattr(search_mod, "_embeddings",
+                        {"testproj/a.md": np.array([1.0, 0.0], dtype=np.float32)})
+
+    def boom(text):
+        raise make_exc()
+    monkeypatch.setattr(search_mod, "encode_query", boom)
+
+    result = find_existing_article("совсем другая тема xyz", "тело заметки", "testproj")
+    assert result is None
+
+
+@_pytest.mark.parametrize("make_exc", [_exc_first_download, _exc_os_error])
+def test_cross_reference_targets_ignores_semantic_when_model_unavailable(
+        knowledge_dir, monkeypatch, make_exc):
+    """Та же защита в cross_reference_targets: отказ модели → [] вместо падения."""
+    import memory_compiler.search as search_mod
+    from memory_compiler.storage import cross_reference_targets
+
+    proj = knowledge_dir / "testproj"
+    (proj / "a.md").write_text("# A\n\nрыба", encoding="utf-8")
+    monkeypatch.setattr(search_mod, "_embeddings",
+                        {"testproj/a.md": np.array([1.0, 0.0], dtype=np.float32)})
+
+    def boom(text):
+        raise make_exc()
+    monkeypatch.setattr(search_mod, "encode_query", boom)
+
+    result = cross_reference_targets("тема", "testproj", "testproj/new.md")
+    assert result == []
+
+
+def test_save_lesson_succeeds_when_semantic_enrichment_unavailable(knowledge_dir, monkeypatch):
+    """Сквозной случай: save_lesson не должен падать, когда модель недоступна во время
+    авто-мёржа/кросс-рефов (v1.95.0: состояние модели уже видно в health/логе/notice —
+    запись важнее авто-мёржа и «См. также»)."""
+    import asyncio
+    import memory_compiler.search as search_mod
+    import memory_compiler.handlers_articles as articles_mod
+
+    proj = knowledge_dir / "testproj"
+    (proj / "other.md").write_text("# Other\n\nдругая статья", encoding="utf-8")
+    monkeypatch.setattr(search_mod, "_embeddings",
+                        {"testproj/other.md": np.array([1.0, 0.0], dtype=np.float32)})
+
+    def boom(text):
+        raise search_mod.EmbedModelUnavailable("first_download")
+    monkeypatch.setattr(search_mod, "encode_query", boom)
+    # embed_document — отдельная модельная операция (encode_passages, не encode_query),
+    # к F1 не относится; фейк держит тест офлайн и быстрым.
+    monkeypatch.setattr(articles_mod, "embed_document", lambda *a, **kw: None)
+
+    result = asyncio.run(articles_mod.save_lesson(
+        "Новая тема без совпадений", "содержимое новой заметки", "testproj"))
+    assert "❌" not in result[0].text, result[0].text
+    saved = [p.name for p in proj.glob("*.md")]
+    assert any("новая" in name for name in saved), saved
+
+
 # ─── Контекст-гард версии (v1.7.20): 4-октетная версия после cue-слова ≠ IP ──
 # Узкий остаток v1.7.19: dotted-quad версии 1С (9.2.5.75) — валидный IP по форме.
 # Если число стоит сразу после version-слова, это версия, а не сетевой адрес.

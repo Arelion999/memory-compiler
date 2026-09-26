@@ -13,6 +13,8 @@ WEB_HTML = """<!DOCTYPE html>
 body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:12px;max-width:720px;margin:0 auto}
 h1{font-size:1.3em;margin-bottom:12px;color:var(--accent)}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sem-banner{margin:0 0 12px;padding:10px 12px;border:1px solid var(--red);border-left-width:4px;border-radius:6px;background:var(--bg2);color:var(--text);font-size:14px;line-height:1.45}
+.sem-banner.loading{border-color:var(--accent)}
 .theme-toggle{background:none;border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text2);cursor:pointer;font-size:14px}
 .search-box{display:flex;gap:8px;margin-bottom:12px}
 .search-box input{flex:1;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:16px}
@@ -162,6 +164,7 @@ body.wide{max-width:min(1600px,100%)}
 <button class="theme-toggle" onclick="toggleTheme()">&#9728;/&#9790;</button>
 <button class="theme-toggle" onclick="toggleLang()" title="RU / EN">RU/EN</button>
 </div>
+<div id="semantic-banner" class="sem-banner" style="display:none"></div>
 <div class="tab-bar">
 <a href="#" class="active" onclick="showTab('search');return false" id="tab-search" data-i18n="tab.search">Поиск</a>
 <a href="#" onclick="showTab('ask');return false" id="tab-ask" data-i18n="tab.ask">Ответы</a>
@@ -346,7 +349,12 @@ var I18N={
     "ask.secretFragment":"[зашифровано]",
     "ask.secretShow":"Показать",
     "ask.secretError":"Не удалось раскрыть",
-    "ask.queryError":"Ошибка запроса"
+    "ask.queryError":"Ошибка запроса",
+    "sem.off":"Поиск по смыслу выключен — причина в /api/health и в логе сервера. Поиск идёт только по словам.",
+    "sem.offlineNoCache":"Поиск по смыслу выключен: модели нет в локальном кеше, а офлайн-режим (HF_HUB_OFFLINE=1) задан явно. Поиск идёт только по словам. Уберите HF_HUB_OFFLINE и TRANSFORMERS_OFFLINE из .env и перезапустите сервер — модель скачается один раз.",
+    "sem.downloadFailed":"Поиск по смыслу выключен: не удалось скачать модель с huggingface.co. Поиск идёт только по словам. Проверьте доступ к huggingface.co и перезапустите сервер.",
+    "sem.loadFailed":"Поиск по смыслу выключен: модель не загрузилась, подробности в логе сервера. Поиск идёт только по словам. Если кеш модели неполный после прерванной загрузки — удалите его (в Docker — том hf_cache, без Docker — каталог модели в ~/.cache/huggingface/hub) или поставьте HF_HUB_OFFLINE=0 на один запуск.",
+    "sem.firstDownload":"Первый запуск: скачивается модель для поиска по смыслу, это может занять несколько минут. Пока поиск идёт только по словам."
   },
   en:{
     "tab.search":"Search",
@@ -436,7 +444,12 @@ var I18N={
     "ask.secretFragment":"[encrypted]",
     "ask.secretShow":"Show",
     "ask.secretError":"Could not reveal",
-    "ask.queryError":"Query error"
+    "ask.queryError":"Query error",
+    "sem.off":"Semantic search is off — the reason is in /api/health and the server log. Search matches keywords only.",
+    "sem.offlineNoCache":"Semantic search is off: the model is not in the local cache and offline mode (HF_HUB_OFFLINE=1) is set explicitly. Search matches keywords only. Remove HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE from .env and restart the server — the model will be downloaded once.",
+    "sem.downloadFailed":"Semantic search is off: the model could not be downloaded from huggingface.co. Search matches keywords only. Check access to huggingface.co and restart the server.",
+    "sem.loadFailed":"Semantic search is off: the model failed to load, details are in the server log. Search matches keywords only. If the model cache is incomplete after an interrupted download, remove it (the hf_cache volume in Docker, the model folder under ~/.cache/huggingface/hub without Docker) or set HF_HUB_OFFLINE=0 for one start.",
+    "sem.firstDownload":"First start: the model for semantic search is being downloaded, this can take a few minutes. Until then search matches keywords only."
   }
 };
 /* /i18n-dict */
@@ -463,7 +476,7 @@ function toggleLang(){
 }
 
 let PROJECTS=[];
-fetch("/api/health").then(function(r){return r.json()}).then(function(d){PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
+fetch("/api/health").then(function(r){return r.json()}).then(function(d){renderSemantic(d);PROJECTS=Object.keys(d.projects||{});renderProjects();loadTags();
 if(d.version){$("version-badge").textContent="v"+d.version;}
 $("f-project").innerHTML=PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
 $("q-project").innerHTML='<option value="">All</option>'+PROJECTS.map(function(p){return '<option value="'+p+'">'+p+'</option>'}).join("");
@@ -487,6 +500,33 @@ function renderProjects(){
   $("projects").innerHTML=PROJECTS.map(p=>
     `<a href="#" data-p="${p}" class="${p===current?'active':''}" onclick="loadProject('${p}');return false">${p}</a>`
   ).join("");
+}
+
+// Баннер состояния поиска по смыслу (v1.95.0). Свежая установка с пустым кешем моделей
+// жила без него молча: поиск шёл только по словам, и этого не видел никто. Состояние —
+// из /api/health (semantic, semantic_reason). Ключи словаря — литералами: динамический
+// ключ сторож словаря не увидит.
+function renderSemantic(d){
+  var b=$("semantic-banner");
+  if(!b)return;
+  var loading=d.semantic==="loading"&&d.semantic_reason==="first_download";
+  var msg="";
+  if(d.semantic==="off"){
+    var byReason={offline_no_cache:t("sem.offlineNoCache"),download_failed:t("sem.downloadFailed"),load_failed:t("sem.loadFailed")};
+    msg=byReason[d.semantic_reason]||t("sem.off");
+  }else if(loading){
+    msg=t("sem.firstDownload");
+    setTimeout(pollSemantic,30000);
+  }
+  b.textContent=msg;
+  b.className=loading?"sem-banner loading":"sem-banner";
+  b.style.display=msg?"block":"none";
+}
+
+// Пока идёт первая загрузка, страница перечитывает health раз в 30 с — баннер снимется
+// сам, как только модель загрузится.
+function pollSemantic(){
+  fetch("/api/health").then(function(r){return r.json()}).then(renderSemantic).catch(function(){setTimeout(pollSemantic,30000);});
 }
 
 let lastQueryWords=[];

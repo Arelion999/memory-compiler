@@ -21,7 +21,7 @@ from datetime import datetime
 from mcp.types import TextContent
 
 from memory_compiler.config import (
-    KNOWLEDGE_DIR, PROJECTS, track_access, is_secret_article,
+    KNOWLEDGE_DIR, PROJECTS, track_access, is_secret_article, env_flag,
 )
 from memory_compiler.storage import (
     article_title_tags, make_preview, safe_project_path, superseded_by,
@@ -102,7 +102,7 @@ SEARCH_CANDIDATE_POOL = int(os.environ.get("SEARCH_CANDIDATE_POOL", "10"))
 # CPU невозможно (14.5 с за 10 кандидатов → ~70 с за 50). Включить: RERANK_ENABLED=1 —
 # осмысленно только вместе с бо́льшим SEARCH_CANDIDATE_POOL и/или лёгкой моделью,
 # и обязательно с повторным замером тем же харнессом.
-RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").lower() in ("1", "true", "yes")
+RERANK_ENABLED = env_flag("RERANK_ENABLED")
 
 
 async def _rerank_async(query: str, results: list[dict], top_k: int) -> list[dict]:
@@ -191,6 +191,17 @@ def _search_payload(query: str, results: list[dict], secrets: dict,
     return payload
 
 
+def _with_semantic_notice(blocks: list[TextContent]) -> list[TextContent]:
+    """Дописать к выдаче строку о выключенном поиске по смыслу (v1.95.0).
+
+    Отдельным блоком: tools._search_response сворачивает не-JSON блоки в поле notice
+    единственного JSON, и модель видит строку рядом с результатами. Пока поиск по смыслу
+    работает, блока нет — выдача байт-в-байт прежняя."""
+    from memory_compiler.search import semantic_notice  # отложенно, как прочие импорты search
+    note = semantic_notice()
+    return blocks + [TextContent(type="text", text=note)] if note else blocks
+
+
 async def search(query: str, project: str = "all") -> list[TextContent]:
     from memory_compiler.handlers import _whoosh_async
     # Industry pattern 2026: fetch wider candidate pool, then cross-encoder rerank to final K.
@@ -208,7 +219,7 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
         # предыдущего вызова и показала чужие результаты под новым запросом.
         payload = _search_payload(query, [], {})
         search_payload_var.set(payload)
-        return [TextContent(type="text", text=search_json(payload))]
+        return _with_semantic_notice([TextContent(type="text", text=search_json(payload))])
 
     results = await _rerank_async(query, results, top_k=8)
     # Поправки к найденному подтягиваются НЕЗАВИСИМО от релевантности и встают
@@ -226,7 +237,7 @@ async def search(query: str, project: str = "all") -> list[TextContent]:
     # Markdown-рендер и resource_link модель в Claude Code не видела ни разу.
     payload = _search_payload(query, results, secrets, project if fallback_all else None)
     search_payload_var.set(payload)
-    return [TextContent(type="text", text=search_json(payload))]
+    return _with_semantic_notice([TextContent(type="text", text=search_json(payload))])
 
 
 # ─── ask ─────────────────────────────────────────────────────────────────────

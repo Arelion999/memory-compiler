@@ -46,11 +46,12 @@ services:
       - SPLADE_ENABLED=${SPLADE_ENABLED:-false}
       - EMBED_BATCH_SIZE=${EMBED_BATCH_SIZE:-8}
       - EMBED_MAX_SEQ_LENGTH=${EMBED_MAX_SEQ_LENGTH:-2048}
-      # HF Hub: после первой загрузки модели работать только из кеша,
-      # не делать сетевых вызовов (telemetry/version-check) — иначе на
-      # некоторых сетях падаем Errno 99 при обращении к huggingface.co
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
-      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
+      # HF Hub, офлайн-режим. Пусто (по умолчанию) — решает сервер при старте: модель уже
+      # в кеше → офлайн, без обращений к huggingface.co (на сетях с rate-limit/firewall
+      # они давали Errno 99); модели нет → этот запуск скачивает её один раз.
+      # 1 — строго офлайн, 0 — всегда онлайн. Подробности — README, «Первый запуск».
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
       - HF_HUB_DISABLE_TELEMETRY=1
       # - PROJECTS=project-a,project-b,infra,general
 

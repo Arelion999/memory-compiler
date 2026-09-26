@@ -22,6 +22,34 @@ The server starts on `http://localhost:8765`. Or via Docker:
 docker-compose up -d --build
 ```
 
+### First start and the model cache
+
+On the first start the server downloads the embedding model from huggingface.co once — about 0.5 GB for the default `paraphrase-multilingual-MiniLM-L12-v2`. Until the download finishes, search matches keywords only. Later starts run offline from the local cache (the `hf_cache` volume in Docker) and make no requests to huggingface.co.
+
+Check the state:
+
+```bash
+curl -s http://localhost:8765/api/health
+```
+
+`semantic` is `on` when semantic search works and `loading` while the model loads (`semantic_reason: first_download` during the first download). When it is `off`, `semantic_reason` says why:
+
+| `semantic_reason` | What happened | What to do |
+|---|---|---|
+| `offline_no_cache` | The model is not in the cache and offline mode is set explicitly | Remove `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` from `.env` and restart: the model is downloaded once |
+| `download_failed` | The download from huggingface.co failed | Check access to huggingface.co and restart |
+| `load_failed` | The model is in the cache but did not load | See the server log; if an interrupted download left the cache incomplete, remove it (the `hf_cache` volume in Docker, the model folder under `~/.cache/huggingface/hub` without Docker) or set `HF_HUB_OFFLINE=0` for one start |
+
+The same state shows up as a banner in the web interface and as a `notice` in `search` results, so the assistant sees it too.
+
+Offline mode follows `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`:
+
+- unset (the default) — the server decides at start: models in the cache → offline, missing → this start downloads them once;
+- `1` — strictly offline: without the model in the cache, semantic search stays off;
+- `0` — always online: models are checked against huggingface.co at every start.
+
+Offline is the default for a reason: on networks with rate limiting or a firewall, requests to huggingface.co after the model had loaded used to crash the start with `Errno 99`.
+
 ### Connecting to Claude Code
 
 ```json

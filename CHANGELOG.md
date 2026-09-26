@@ -2,6 +2,38 @@
 
 Semantic versioning: major.minor.patch. Versions below 1.0 were development milestones (v8-v12 pre-release).
 
+## v1.95.0 — 2026-09-26
+
+Первый запуск без ручных флагов. Сервер сам выбирает офлайн-режим Hugging Face по состоянию кеша моделей: модель в кеше — офлайн, как раньше; нет — этот запуск скачивает её один раз. Отказ поиска по смыслу больше не немой: состояние видно в `/api/health`, в логе старта, в выдаче `search` и баннером в Web UI.
+
+### Fixed
+
+- **Свежая установка молча оставалась без поиска по смыслу.** `docker-compose.yml` ставил `HF_HUB_OFFLINE=1` по умолчанию, а на новой машине том `hf_cache` пуст: модель не скачивалась, `warm_models` глотал ошибку, поиск шёл только по словам. `/api/health` при этом отвечал `status: ok` и `models_ready: false` — навсегда, неотличимо от «ещё грузится», а `semantic_degraded` не взводился: `semantic_search` при пустых эмбеддингах выходит до модели. Воспроизведено 25.09.2026 на пустом `HF_HOME`. Лечилось только ручными `HF_HUB_OFFLINE=0`/`TRANSFORMERS_OFFLINE=0` в `.env` на первый запуск.
+
+### Added
+
+- **`memory_compiler/hf_offline.py`** — решение об офлайн-режиме до импорта ML-библиотек: `server.py` зовёт `hf_offline.apply()` первым делом, потому что `huggingface_hub` читает `HF_HUB_OFFLINE` один раз, при импорте. Переменные пусты — сервер смотрит в кеш (`models--org--name/refs/main` → `snapshots/<sha>/` с `config.json` и весами, без недокачанных `*.incomplete`): всё есть — ставит обе переменные в `1`, чего-то нет — этот запуск онлайн. Явное `1` или `0` в `.env` не трогается. Схему кеша держит контрактный тест с `huggingface_hub.try_to_load_from_cache`.
+- **`/api/health`: `semantic` (`on` / `loading` / `off`) и `semantic_reason`** (`offline_no_cache`, `download_failed`, `load_failed`; во время первой загрузки — `loading` + `first_download`) — публично, рядом с `models_ready`. Под авторизацией в `observability` — текст ошибки (`semantic_error`) и решение об офлайн-режиме (`hf_offline`).
+- **Лог старта:** строка `[hf]` о выбранном режиме; при отказе модели — `[warm] ⚠️ Поиск по смыслу выключен (<причина>): <что делать>` и поля `reason`/`hint` у записи `model preload failed`.
+- **notice в выдаче `search`**, пока поиск по смыслу выключен или идёт первая загрузка модели: ассистент видит, что выдача только по словам, и может сказать об этом пользователю.
+- **Баннер в Web UI** с причиной и действием, RU/EN; во время первой загрузки страница перечитывает health раз в 30 с.
+
+### Changed
+
+- **`docker-compose.yml`:** `HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}` и `TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}` вместо умолчания `1`. При заполненном кеше режим прежний — офлайн, без обращений к huggingface.co (офлайн по умолчанию появился из-за `Errno 99` на сетях с rate-limit/firewall, v1.7.2).
+- **Отказ загрузки модели запоминается** (`search.get_embed_model`): повтор — не чаще раза в 10 минут, иначе при закрытой сети каждый поиск висел бы на сетевых таймаутах. Пока идёт первая загрузка, запрос не ждёт модель под замком и ищет по словам.
+- Значения моделей по умолчанию переехали в `config.py` (`DEFAULT_EMBED_MODEL`, `DEFAULT_RERANKER_MODEL`, `env_flag`): их читают и загрузка, и проверка кеша.
+- `.env.example` и README-пара: подраздел «Первый запуск и кеш модели» в «Быстром старте».
+
+### Deploy
+
+- Код в смонтированных каталогах — достаточно рестарта. Установка с явным `HF_HUB_OFFLINE=1` в `.env` поведения не меняет: режим явный, модели в кеше.
+- Новое умолчание compose действует на заново созданный контейнер (`docker-compose up -d --force-recreate`); у существующего контейнера env прежний.
+
+### Notes
+
+- Держат `tests/test_hf_offline.py`, `tests/test_first_start_guards.py`, `tests/test_semantic_state.py`, `tests/test_semantic_health.py`, `tests/test_search_notice.py`, `tests/test_ui_semantic_banner.py`.
+
 ## v1.94.0 — 2026-09-25
 
 Во время reindex поиск и запись в базу больше не ждут пересборку Whoosh (~4,5 мин на NAS). Единый замок индекса разделён на два, а запись в индекс на время пересборки встаёт в очередь.
