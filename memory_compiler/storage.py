@@ -1871,7 +1871,11 @@ def log_event(project: str, action: str, details: str = "") -> None:
     log_path = proj_dir / "_log.md"
     archive_path = proj_dir / "_log.archive.md"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    line = f"- [{ts}] **{action}** — {details}".rstrip(" —") + "\n"
+    # Разделитель — только когда есть что отделять (v1.96.0): прежний rstrip(" —") резал
+    # хвостовую " — " заглушку у пустых details тем же символом, которым запись о снятом
+    # сменой версии поле легитимно заканчивается («tag: v1.0.0→—») — портил её молча.
+    sep = f" — {details}" if details else ""
+    line = f"- [{ts}] **{action}**{sep}\n"
     try:
         # Rotation: if current log too big, move to archive (append-only) then start fresh
         if log_path.exists() and log_path.stat().st_size >= LOG_ROTATE_BYTES:
@@ -2850,6 +2854,16 @@ def _snapshot_facts(current: dict) -> dict:
     return {k: v for k, v in current.items() if k not in _TRACKING_INTERVAL_KEYS}
 
 
+def _version_changed(old_current: dict, new_facts: dict) -> bool:
+    """Меняет ли запись версию трекера — одно условие на уход полей релиза
+    (_merge_tracking_facts, v1.93.0) и их возврат (_restore_release_fields, v1.96.0): два
+    экземпляра условия разошлись бы молча. Смена — только если версия уже была: трекеру
+    без version не к чему привязать commit. Сравнение строкой: YAML читает «version: 1.0»
+    как float, а клиент шлёт «1.0». version: null — тоже смена."""
+    return ("version" in new_facts and old_current.get("version") is not None
+            and str(new_facts["version"]) != str(old_current["version"]))
+
+
 def _merge_tracking_facts(old_current: dict, new_facts: dict, replace: bool) -> tuple[dict, list]:
     """Новый снимок трекера (без since) и поля, снятые сменой версии.
 
@@ -2865,12 +2879,8 @@ def _merge_tracking_facts(old_current: dict, new_facts: dict, replace: bool) -> 
     if replace:
         return {k: v for k, v in new_facts.items() if v is not None}, []
     merged = _snapshot_facts(old_current)
-    # Смена — только если версия уже была: трекеру без version не к чему привязать
-    # commit. Сравнение строкой: YAML читает «version: 1.0» как float, а клиент шлёт
-    # «1.0». version: null — тоже смена.
     dropped = []
-    if ("version" in new_facts and merged.get("version") is not None
-            and str(new_facts["version"]) != str(merged["version"])):
+    if _version_changed(merged, new_facts):
         dropped = [k for k in merged
                    if str(k).lower() in _VERSION_BOUND_KEYS and k not in new_facts]
         for k in dropped:
@@ -2883,6 +2893,38 @@ def _merge_tracking_facts(old_current: dict, new_facts: dict, replace: bool) -> 
     return merged, dropped
 
 
+def _restore_release_fields(merged: dict, new_facts: dict, history: list) -> tuple[dict, list]:
+    """Поля релиза версии, к которой вернулся трекер, — из ПОСЛЕДНЕГО снимка истории с
+    этой версией (v1.96.0, решение владельца 25.09.2026). Пара к уходу в
+    _merge_tracking_facts: поля релиза ходят вместе со своей версией. Без возврата откат
+    ложного подъёма оставлял бы current без commit и tag — авто-путь снимает их при
+    подъёме, а откатов после ложных подъёмов за три месяца было 10 (замер 25.09.2026).
+
+    Звать только при смене версии в этом же вызове (_version_changed): иначе запись
+    {port: …} вернула бы commit, снятый раньше null. Переданное — и значением, и None —
+    главнее: поле, чьё имя без учёта регистра уже есть в снимке или среди переданных, не
+    возвращается. Поля не релиза от версии не зависят и не трогаются; None из истории не
+    возвращается. Последний снимок версии без полей релиза — возвращать нечего, более
+    старые снимки той же версии не смотрим.
+
+    Возвращает новый снимок и имена вернувшихся полей в порядке снимка истории; входные
+    словари не мутирует.
+    """
+    target = merged.get("version")
+    if target is None:
+        return merged, []
+    snap = next((h for h in reversed(history or [])
+                 if isinstance(h, dict) and h.get("version") is not None
+                 and str(h["version"]) == str(target)), None)
+    if snap is None:
+        return merged, []
+    taken = {str(k).lower() for k in merged} | {str(k).lower() for k in new_facts}
+    back = {k: v for k, v in snap.items()
+            if v is not None and str(k).lower() in _VERSION_BOUND_KEYS
+            and str(k).lower() not in taken}
+    return {**merged, **back}, list(back)
+
+
 def save_tracking_article(project: str, entity: str, new_facts: dict, narrative: str = "",
                           guard_version_regression: bool = False, replace: bool = False) -> dict:
     """Create or update tracking article with bi-temporal frontmatter.
@@ -2890,9 +2932,12 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
     new_facts: поля для 'current' (e.g. {"version": "1.3.50"}). По умолчанию сливаются
     с прежним снимком (v1.93.0): переданные заменяются, непереданные остаются, None
     удаляет поле — см. _merge_tracking_facts. replace=True — снимок ровно из переданного.
+    При смене версии на бывшую непереданные поля релиза возвращаются из истории (v1.96.0) —
+    см. _restore_release_fields.
     Existing 'current' moves to 'history[]' with to=now. New 'current.since' = now.
     Returns: {"path": str, "action": "created"|"updated"|"unchanged", "old_current": dict,
-              "new_current": dict, "renamed_from": str|None, "dropped_with_version": list}
+              "new_current": dict, "renamed_from": str|None, "dropped_with_version": list,
+              "restored_with_version": list}
     """
     proj = safe_project_dir(project)
     fpath = proj / _tracking_filename(entity)
@@ -2948,13 +2993,20 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
 
     new_current, dropped = _merge_tracking_facts(old_current, new_facts, replace)
 
+    # Возврат (v1.96.0): версия сменилась на бывшую — её поля релиза из истории. История
+    # берётся ДО архивации прежнего снимка: его версия заведомо другая.
+    restored = []
+    if not replace and _version_changed(old_current, new_facts):
+        new_current, restored = _restore_release_fields(new_current, new_facts, data["history"])
+
     # Не изменилось: собранный снимок равен прежнему на той же базе (без since/from/to).
     # Так ловятся и совпавшие поля, и null по отсутствующему полю, и replace с тем же
     # набором. Новый трекер (пустой current) создаётся всегда.
     if old_current and new_current == _snapshot_facts(old_current):
         return {"path": str(fpath.relative_to(KNOWLEDGE_DIR)), "action": "unchanged",
                 "old_current": old_current, "new_current": old_current,
-                "renamed_from": renamed_from, "dropped_with_version": []}
+                "renamed_from": renamed_from, "dropped_with_version": [],
+                "restored_with_version": []}
 
     # Archive old current to history
     if old_current:
@@ -2993,6 +3045,7 @@ def save_tracking_article(project: str, entity: str, new_facts: dict, narrative:
         "new_current": new_current,
         "renamed_from": renamed_from,   # «проект/файл» до переноса или None
         "dropped_with_version": dropped,  # поля релиза, снятые сменой version (v1.93.0)
+        "restored_with_version": restored,  # поля релиза, вернувшиеся из истории (v1.96.0)
     }
 
 
@@ -3373,6 +3426,8 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
       - Версия, которую заметка где-либо ставит в план или условие, не кандидат
         (см. pending_versions); версия, названная только при имени другого продукта,
         тоже (см. foreign_versions)
+      - В save_tracking_article уходят только изменённые поля (v1.96.0): при смене
+        версии поля релиза уходят в историю, при возврате к бывшей — возвращаются
       - Skip if new value same as current
     Returns list of updates performed: [{entity, key, old, new, path}]
     """
@@ -3400,7 +3455,7 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
         if not facts:
             continue
         new_current = dict(current)
-        changed = False
+        changed_keys = []
 
         # Match fact types to existing keys via strict whitelist (NOT substring).
         # Substring caused: 'iptables_policy' → ip, 'hosting' → ip, 'bitrix_version_date'
@@ -3438,11 +3493,14 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                         continue
                 if str(candidate) != str(value):
                     new_current[key] = candidate
-                    changed = True
+                    changed_keys.append(key)
 
-        if changed:
-            # Remove 'since' — save_tracking_article regenerates it
-            new_facts = {k: v for k, v in new_current.items() if k != "since"}
+        if changed_keys:
+            # Только изменённое (v1.96.0). Полный снимок обходил правило полей релиза:
+            # переданы все поля — снимать нечего, и commit/tag прежней версии переезжали к
+            # новой (замер 25.09.2026: 30 авто-подъёмов из 30). А None в полном снимке
+            # слияние читает как «удалить поле» — поле со значением null исчезало.
+            new_facts = {k: new_current[k] for k in changed_keys}
             result = save_tracking_article(project, entity, new_facts, guard_version_regression=True)
             if result["action"] == "updated":
                 updates.append({
@@ -3455,7 +3513,10 @@ def auto_update_tracking(project: str, text: str, topic: str = "") -> list[dict]
                 # вскрывался случайно. Пишем что→куда в журнал проекта.
                 old_cur, new_cur = track["current"], result["new_current"]
                 ck = [k for k in new_cur if k != "since" and old_cur.get(k) != new_cur.get(k)]
-                detail = ", ".join(f"{k}: {old_cur.get(k, '—')}→{new_cur[k]}" for k in ck)
+                # Снятое сменой версии — тоже (v1.96.0), иначе журнал терял бы его молча.
+                rk = [k for k in old_cur if k != "since" and k not in new_cur]
+                detail = ", ".join([f"{k}: {old_cur.get(k, '—')}→{new_cur[k]}" for k in ck]
+                                   + [f"{k}: {old_cur[k]}→—" for k in rk])
                 log_event(project, "auto_update", f"{entity}: {detail}")
     return updates
 

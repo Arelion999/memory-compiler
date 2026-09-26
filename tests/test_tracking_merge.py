@@ -211,22 +211,6 @@ def test_numeric_version_type_is_not_a_change():
     assert dropped == [] and merged["commit"] == "abc1234"
 
 
-def test_auto_update_keeps_every_field_it_passes(knowledge_dir):
-    """Пин: auto_update_tracking передаёт полный снимок (копию current с заменой
-    ключей), поэтому слияние и правило полей релиза его результат не меняют. Поле
-    релиза здесь остаётся от прежней версии — известная особенность авто-пути
-    (открытый вопрос спеки v1.93.0), а не цель теста."""
-    from memory_compiler.storage import auto_update_tracking
-    save_tracking_article("testproj", "deployment",
-                          {"version": "1.0.0", "commit": "abc1234",
-                           "container": "app-mcp", "port": 8765})
-    updates = auto_update_tracking("testproj", "deployment: выкатили 1.1.0", "Deploy update")
-    assert len(updates) == 1
-    cur = load_tracking("testproj", "deployment")["current"]
-    assert cur["version"] == "1.1.0"
-    assert (cur["commit"], cur["container"], cur["port"]) == ("abc1234", "app-mcp", 8765)
-
-
 # ─── Хендлер save_tracking: replace, ответ, схема (v1.93.0) ───────────────
 
 

@@ -116,7 +116,7 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 | Tool | Description |
 |------|-------------|
-| `save_tracking(project, entity, facts, replace)` | Bi-temporal snapshot: current state plus history (versions, deploys, configs). Passed facts merge into the current snapshot, `null` removes a field, `replace=true` swaps the whole snapshot |
+| `save_tracking(project, entity, facts, replace)` | Bi-temporal snapshot: current state plus history (versions, deploys, configs). Passed facts merge into the current snapshot, `null` removes a field, `replace=true` swaps the whole snapshot. Release fields (`commit`, `tag`…) follow their version: they move to history when it changes and come back when it returns |
 | `get_current(project, entity)` | Read the current status out of a tracking article |
 
 **Combined:**

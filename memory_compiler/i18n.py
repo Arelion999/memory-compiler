@@ -368,7 +368,7 @@ TOOLS_EN: dict[str, dict] = {
         'params': {
             'project': 'Project name',
             'entity': 'Entity name: release, deployment, config',
-            'facts': "Facts: {version: '1.3.50', url: ...}. Passed fields are replaced, the rest stay; null removes a field. When version changes, release fields (commit, tag, tests, verified…) without new values move to history. May be a string — it becomes the note field",
+            'facts': "Facts: {version: '1.3.50', url: ...}. Passed fields are replaced, the rest stay; null removes a field. When version changes, release fields (commit, tag, tests, verified…) without new values move to history, and come back from its snapshot when version returns to an earlier value. May be a string — it becomes the note field",
             'narrative': 'Optional description (auto-generated otherwise)',
             'replace': 'true — replace the whole snapshot with the passed facts; other fields move to history (default: false — merge)',
         },

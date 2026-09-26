@@ -315,7 +315,14 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
         parts = [f"{k}: {old.get(k, '—')} → {new.get(k)}" for k in changed_keys]
         parts += [f"{k}: {old[k]} → —" for k in removed_keys]
         if parts:
-            result += f"\n🔄 tracking/{upd['entity']}: {', '.join(parts)}"
+            line = f"\n🔄 tracking/{upd['entity']}: {', '.join(parts)}"
+            # Подсказка, как в ответе save_tracking (v1.96.0): снятые сменой версии поля
+            # релиза для новой версии сами не появятся. На этих путях (авто-путь, ветка
+            # тега release) null не передаётся — снятое снято сменой версии.
+            if (removed_keys and new.get("version") is not None
+                    and str(new.get("version")) != str(old.get("version"))):
+                line += f"; для {new['version']} передай их через save_tracking, если знаешь"
+            result += line
     return [TextContent(type="text", text=result)]
 
 
@@ -1300,9 +1307,11 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
 def _tracking_removal_note(result: dict) -> str:
     """Строки ответа save_tracking о полях, ушедших из снимка (v1.93.0): удалённых null
     или заменой — и полях релиза, ушедших в историю вместе с прежней версией. Без них
-    агент не заметил бы, что commit и tag для новой версии надо передать заново."""
+    агент не заметил бы, что commit и tag для новой версии надо передать заново.
+    С v1.96.0 — и о полях релиза, вернувшихся из истории вместе с бывшей версией."""
     old, new = result["old_current"], result["new_current"]
     dropped = result.get("dropped_with_version") or []
+    restored = result.get("restored_with_version") or []
     removed = [k for k in old if k != "since" and k not in new and k not in dropped]
     note = ""
     if removed:
@@ -1310,8 +1319,13 @@ def _tracking_removal_note(result: dict) -> str:
     if dropped:
         note += (f"\n  ушли в историю вместе с версией {old.get('version')}: "
                  f"{', '.join(dropped)}")
-        if new.get("version") is not None:
+        # Подсказка — только если что-то из ушедшего не вернулось (v1.96.0): откат к
+        # версии, чьи поля релиза вернулись из истории, иначе просил бы передать их зря.
+        if new.get("version") is not None and any(k not in restored for k in dropped):
             note += f" — для {new['version']} передай их заново, если знаешь"
+    if restored:
+        note += (f"\n  вернулись из истории вместе с версией {new.get('version')}: "
+                 f"{', '.join(restored)}")
     return note
 
 
