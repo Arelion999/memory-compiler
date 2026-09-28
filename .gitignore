@@ -31,6 +31,7 @@ backups/
 
 # Claude
 CLAUDE.md
+AGENTS.md
 .claude/
 .vscode/
 .idea/
