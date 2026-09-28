@@ -344,6 +344,17 @@ def _tool_response(event):
     return resp if resp is not None else event.get("tool_output")
 
 
+def _error_text(event):
+    """Текст ошибки инструмента: Claude Code шлёт error строкой, Kimi Code —
+    объектом {"code": ..., "message": ...} (живой замер 28.09.2026: isinstance-гейт
+    cmd_reflex молча пропускал ВСЕ ошибки Bash в Kimi — рефлексы по ошибкам не
+    работали никогда)."""
+    err = event.get("error")
+    if isinstance(err, dict):
+        err = err.get("message")
+    return str(err or "")
+
+
 def state_path(event):
     sid = str(event.get("session_id") or "nosession")
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:120]
@@ -758,13 +769,13 @@ def cmd_fail(event):
     rec = _pending_load(p)
     if rec is not None:
         rec["attempts"] = int(rec.get("attempts") or 0) + 1
-        rec["last_error"] = str((event.get("error") or _tool_response(event)) or "")[:400]
+        rec["last_error"] = (_error_text(event) or str(_tool_response(event) or ""))[:400]
         try:
             p.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
-    err = str((event.get("error") or _tool_response(event)) or "").lower()
+    err = (_error_text(event) or str(_tool_response(event) or "")).lower()
     hint = _fail_hint(event, err)
 
     journal(event, "mc.fail", tool=tool, detail=err[:120])
@@ -2560,7 +2571,7 @@ def cmd_probe(event):
     if not targets:
         return 0
     out = str(_tool_response(event) or "")
-    err = str(event.get("error") or "")
+    err = _error_text(event)
     if PROBE_NET_RE.search(err) or PROBE_NET_RE.search(out):
         return 0                          # узел недоступен — факт в этом не виноват
     if node:
@@ -2649,8 +2660,8 @@ def cmd_reflex(event):
     if tool.startswith("mcp__memory-compiler__"):
         return 0                          # свои отказы разбирает cmd_fail
     if name == "PostToolUseFailure":
-        err = event.get("error")
-        if event.get("is_interrupt") or not isinstance(err, str) or not err.strip():
+        err = _error_text(event)
+        if event.get("is_interrupt") or not err.strip():
             return 0
         text = _reflex_lookup(event, "error", err)
     elif name == "PostToolUse" and tool == "Read":

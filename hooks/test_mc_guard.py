@@ -507,6 +507,19 @@ mg.cmd_reflex(dict(EV_FAIL, error="Exit code 2\nдругая ошибка"))
 check(calls and calls[0][1]["exclude"] == ["infra/sftp.md"],
       "reflex: уже показанная памятка не исключена из следующего запроса")
 
+# Kimi Code шлёт error объектом {"code", "message"}, а не строкой — раньше гейт
+# isinstance(err, str) молча пропускал такие ошибки (живой замер 28.09.2026).
+calls.clear(); got.clear()
+mg.cmd_reflex(dict(EV_FAIL, session_id="rx-16",
+                   error={"code": "internal", "message": "Exit code 1\nSFTP connection failed"}))
+check(calls and calls[0][1]["text"] == "Exit code 1\nSFTP connection failed",
+      "reflex: error-объект Kimi (code/message) не разобран")
+check(got and "Память" in got[0]["hookSpecificOutput"].get("additionalContext", ""),
+      "reflex: по error-объекту Kimi памятка не отдана")
+calls.clear(); got.clear()
+mg.cmd_reflex(dict(EV_FAIL, session_id="rx-17", error={"code": "internal"}))
+check(not calls and not got, "reflex: error-объект без message — лишний запрос")
+
 for ev, why in ((dict(EV_FAIL, is_interrupt=True, session_id="rx-2"), "прерывание"),
                 (dict(EV_FAIL, tool_name="mcp__memory-compiler__save_lesson", session_id="rx-3"), "свой инструмент"),
                 (dict(EV_FAIL, hook_event_name="PostToolUse", session_id="rx-4"), "PostToolUse не на Read"),
