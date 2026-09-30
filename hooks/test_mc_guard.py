@@ -449,6 +449,64 @@ got.clear()
 mg.cmd_session_arg(dict(EV_READ, tool_input={"project": "infra", "note": "битое �"}))
 check(not got, "session_arg переслал ввод с U+FFFD — это след порчи кодировки, такое не трогаем")
 
+# -------------------- session_hint: отпечаток вызова → id чата (30.09)
+# Kimi Code updatedInput хукам не отдаёт — _client_session до сервера не доезжает,
+# и чаты склеиваются в одну MCP-сессию. Боковой канал: хук шлёт серверу пару
+# (отпечаток вызова, id чата), сервер подставляет id чата вызову с совпавшим
+# отпечатком. Канонизация в mc_guard.py — ДУБЛИКАТ freshness.call_fingerprint;
+# хардкодный вектор ловит расхождение любой из сторон.
+
+_post_json_orig = mg._post_json
+sent = []
+def _capture_post(path, payload, timeout=None):
+    sent.append((path, payload, timeout))
+    return {"ok": True}
+mg._post_json = _capture_post
+
+FP_READ_ARTICLE = "e15feace7e03a378abc966c655ea19787c2c3d06"  # read_article {"project":"infra","filename":"x.md"}
+
+got.clear(); sent.clear()
+mg.cmd_session_arg(EV_READ)
+check(len(sent) == 1 and sent[0][0] == "/api/session_hint",
+      "session_hint: подсказка не отправлена на /api/session_hint")
+check(sent[0][1].get("fp") == FP_READ_ARTICLE,
+      "session_hint: отпечаток не совпал с серверным паритетным вектором: %r"
+      % (sent[0][1].get("fp"),))
+check(sent[0][1].get("chat_id") == EV_READ["session_id"], "session_hint: id чата не доехал")
+check(sent[0][2] == 2, "session_hint: таймаут 2 с не передан")
+hso = (got[0].get("hookSpecificOutput") if got else {})
+check(hso.get("updatedInput", {}).get(mg.CLIENT_SESSION_ARG) == EV_READ["session_id"],
+      "session_hint: updatedInput не отдан рядом с подсказкой")
+
+# _client_session, заполненный моделью, исключается из отпечатка: сервер считает
+# отпечаток по сырым args до инъекции, и с полем они разошлись бы
+got.clear(); sent.clear()
+mg.cmd_session_arg(dict(EV_READ, tool_input={"project": "infra", "filename": "x.md",
+                                             mg.CLIENT_SESSION_ARG: "made-up-by-model"}))
+check(len(sent) == 1 and sent[0][1].get("fp") == FP_READ_ARTICLE,
+      "session_hint: _client_session модели попал в отпечаток")
+
+# сбой HTTP не меняет поведение хука: updatedInput отдаём и код 0 возвращаем
+def _boom_post(path, payload, timeout=None):
+    raise RuntimeError("нет сети")
+mg._post_json = _boom_post
+got.clear()
+rc = mg.cmd_session_arg(EV_READ)
+check(rc == 0 and got and got[0].get("hookSpecificOutput", {}).get("updatedInput"),
+      "session_hint: сбой отправки сломал updatedInput")
+
+# ранние выходы подсказку не шлют (те же кейсы, что у updatedInput выше)
+mg._post_json = _capture_post
+for ev in (dict(EV_READ, session_id=""),
+           dict(EV_READ, session_id="a b"),
+           dict(EV_READ, tool_input="строка"),
+           dict(EV_READ, tool_input={"project": "infra", mg.CLIENT_SESSION_ARG: EV_READ["session_id"]}),
+           dict(EV_READ, tool_input={"project": "infra", "note": "битое �"})):
+    sent.clear()
+    mg.cmd_session_arg(ev)
+    check(not sent, "session_hint не должен отправляться: %r" % (ev,))
+mg._post_json = _post_json_orig
+
 # ------------------------------------ session_arg через НАСТОЯЩИЙ stdin (11.09)
 # Проверки выше зовут функцию напрямую и чтение stdin обходят. Живой прогон хука
 # испортил кириллицу: клиент пишет в stdin UTF-8, а python на Windows читает

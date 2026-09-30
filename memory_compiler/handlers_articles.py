@@ -39,7 +39,7 @@ from memory_compiler.storage import (
     TEMPLATES, _parse_frontmatter, add_cross_references, article_title_tags, auto_tags,
     cross_reference_targets, decrypt_content, encrypt_content,
     extract_git_refs, extract_secret_identifiers, find_article_by_slug, find_existing_article,
-    git_commit, is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
+    git_commit_background, is_duplicate_entry, is_encrypted, log_event, make_slug, mark_dependents,
     mark_superseded, merge_into_article, project_dir, regenerate_index,
     safe_article_path, safe_project_dir, safe_project_path, today_log_path, update_active_context,
 )
@@ -70,9 +70,11 @@ async def _index_embed(text: str, filename: str, project: str) -> None:
 
     B2: обе операции уходят с event loop, иначе `embed_document` (encode модели плюс
     `_emb_lock`) морозил весь сервер — /api/health, параллельные MCP-вызовы, SSE.
-    save_article_meta/git_commit НАМЕРЕННО остаются на loop: перенос save_article_meta
-    в поток дал бы гонку с track_access (loop мутирует article_meta ↔ поток итерирует
-    его в json.dumps → 'dict changed size during iteration').
+    save_article_meta НАМЕРЕННО остаётся на loop: перенос его в поток дал бы
+    гонку с track_access (loop мутирует article_meta ↔ поток итерирует его в
+    json.dumps → 'dict changed size during iteration'). Коммит истории на loop
+    не стоит — его уносит git_commit_background (см. storage), клиент не ждёт
+    git add -A по всей базе.
 
     ⚠️ РАЗДЕЛЕНИЕ СИНХРОННОГО И ФОНОВОГО (v1.59.0). Уход в поток снимал нагрузку с
     сервера, но КЛИЕНТ всё равно ждал инференс: замер показал медиану записи 7081 мс
@@ -294,7 +296,7 @@ async def save_lesson(topic: str, content: str, project: str, tags: list = None,
             superseded_ok.append(old_name)
 
     # 12. Git commit
-    await asyncio.to_thread(git_commit, f"save: {topic} [{project}]")
+    git_commit_background(f"save: {topic} [{project}]")
 
     result = action
     if superseded_ok:
@@ -458,7 +460,7 @@ async def compile(dry_run: bool = True, project: str = None, since: str = None) 
             log.rename(archive_dir / log.name)
 
         await asyncio.to_thread(regenerate_index)
-        await asyncio.to_thread(git_commit, f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
+        git_commit_background(f"compile: {total_entries} entries, {updated} updated, {created} created, {skipped} skipped")
         summary = f"\u2705 Скомпилировано: {total_entries} записей \u2014 {updated} обновлено, {created} создано, {len(processed_logs)} логов архивировано" + (f" (пропущено дублей: {skipped})" if skipped else "")
         return [TextContent(type="text", text=summary)]
 
@@ -482,7 +484,7 @@ async def delete_article(project: str, filename: str) -> list[TextContent]:
     save_article_meta()                   # loop: json.dumps итерирует article_meta
     await asyncio.to_thread(_search.delete_document, key)  # точечно, вне event loop
     await asyncio.to_thread(regenerate_index)
-    await asyncio.to_thread(git_commit, f"delete: {filename} [{project}]")
+    git_commit_background(f"delete: {filename} [{project}]")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Удалено: {project}/{filename}")]
 
 
@@ -655,7 +657,7 @@ async def edit_article(project: str, filename: str, content: str = "", append: b
     cascaded = mark_dependents(project, filename, ts) if has_content and not repeated else 0
 
     log_event(project, "edit_article", f"{filename}" + (f" (cascade: {cascaded})" if cascaded else ""))
-    await asyncio.to_thread(git_commit, f"edit: {filename} [{project}]")
+    git_commit_background(f"edit: {filename} [{project}]")
 
     if repeated:
         msg = repeat_msg
@@ -834,7 +836,7 @@ async def save_contexts(project: str, filename: str, contexts: list) -> list[Tex
     still_missing = [hd for hd in valid if hd not in _article_contexts(new_text)]
 
     log_event(project, "save_contexts", f"{filename} (+{len(accepted)}, skip {len(skipped)})")
-    await asyncio.to_thread(git_commit, f"contexts: {filename} [{project}]")
+    git_commit_background(f"contexts: {filename} [{project}]")
 
     msg = f"✅ Контексты сохранены: {project}/{filename} (+{len(accepted)}: {list(accepted)})"
     if skipped:
@@ -1123,7 +1125,7 @@ async def save_runbook(topic: str, steps: list, project: str, tags: list = None)
 
     await _index_embed(article_text, article_path.name, project)
     await asyncio.to_thread(regenerate_index)
-    await asyncio.to_thread(git_commit, f"runbook: {topic} [{project}]")
+    git_commit_background(f"runbook: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cb Runbook создан: {project}/{article_path.name} ({len(steps)} шагов)")]
 
@@ -1205,7 +1207,7 @@ async def save_decision(title: str, decision: str, reasoning: str, project: str,
     await _index_embed(article_text, article_path.name, project)
     update_active_context(project, f"Decision: {title}", decision)
     await asyncio.to_thread(regenerate_index)
-    await asyncio.to_thread(git_commit, f"decision: {title} [{project}]")
+    git_commit_background(f"decision: {title} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f4cc Решение записано: {project}/{article_path.name}")]
 
@@ -1296,7 +1298,7 @@ async def save_secret(topic: str, content: str, project: str, tags: list = None)
     await asyncio.to_thread(regenerate_index)
     update_active_context(project, f"Secret: {topic}", "[зашифровано]")
     track_access([f"{project}/{article_path.name}"])
-    await asyncio.to_thread(git_commit, f"secret: {topic} [{project}]")
+    git_commit_background(f"secret: {topic} [{project}]")
 
     return [TextContent(type="text", text=f"\U0001f512 Секрет сохранён: {project}/{article_path.name}")]
 
@@ -1376,7 +1378,7 @@ async def save_tracking(project: str, entity: str, facts, narrative: str = "",
         await asyncio.to_thread(delete_document, renamed_from)
         await asyncio.to_thread(remove_embedding, renamed_from)
 
-    await asyncio.to_thread(git_commit, f"tracking: {project}/{entity} {result['action']}")
+    git_commit_background(f"tracking: {project}/{entity} {result['action']}")
     return [TextContent(type="text", text=msg)]
 
 

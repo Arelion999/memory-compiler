@@ -45,6 +45,7 @@ from memory_compiler import obs
 from memory_compiler import analytics
 from memory_compiler import embed_queue
 from memory_compiler import reflexes
+from memory_compiler import freshness
 from memory_compiler import hf_offline
 
 
@@ -222,6 +223,34 @@ async def web_reflex(request: Request):
     obs.get_logger("reflex").info("reflex", extra={
         "kind": kind, "memos": len(shown), "ms": round((_time.perf_counter() - t0) * 1000)})
     return JSONResponse({"memos": [m.as_dict() for m in shown], "text": rendered})
+
+
+async def web_session_hint(request: Request):
+    """Подсказка от хука (обход Kimi Code без updatedInput): отпечаток вызова → id чата.
+
+    Хук PreToolUse шлёт сюда пару (отпечаток вызова, id чата); call_tool, не
+    получивший _client_session в аргументах, подставляет id чата к вызову с
+    совпавшим отпечатком. Ручка ПИШЕТ состояние, поэтому авторизация обязательна
+    и проверяется здесь (fail-closed, как у web_probe): при пустом MC_API_KEY
+    middleware не смонтирован, и без этой проверки ручка осталась бы открытой.
+    Кэш в памяти (freshness._hints) — эфемерный, после рестарта хук шлёт заново."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    if not MC_API_KEY or not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    fp = data.get("fp") if isinstance(data, dict) else None
+    chat_id = data.get("chat_id") if isinstance(data, dict) else None
+    if not isinstance(fp, str) or not freshness._HINT_FP_RE.fullmatch(fp):
+        return JSONResponse({"error": "fp must be a 40-char hex string"}, status_code=400)
+    if not freshness.valid_client_session(chat_id):
+        return JSONResponse({"error": "chat_id is invalid"}, status_code=400)
+    t0 = _time.perf_counter()
+    await asyncio.to_thread(freshness.hint_put, fp, chat_id)
+    obs.get_logger("hint").info("session_hint", extra={
+        "ms": round((_time.perf_counter() - t0) * 1000)})
+    return JSONResponse({"ok": True})
 
 
 async def web_probe(request: Request):
@@ -1299,6 +1328,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/related", endpoint=web_related),
             Route("/api/reflex", endpoint=web_reflex, methods=["POST"]),
             Route("/api/probe", endpoint=web_probe, methods=["POST"]),
+            Route("/api/session_hint", endpoint=web_session_hint, methods=["POST"]),
             Route("/api/timeline", endpoint=web_timeline),
             Route("/api/ask", endpoint=web_ask),
             Route("/api/save", endpoint=web_save, methods=["POST"]),

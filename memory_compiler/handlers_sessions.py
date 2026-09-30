@@ -41,7 +41,7 @@ from memory_compiler import freshness
 from memory_compiler.storage import (
     append_session, append_note, latest_session, RUNNING_MARK, running_notes_today,
     add_question, close_questions, open_questions_list, project_corrections,
-    relevant_reflections, read_project_deps, git_commit,
+    relevant_reflections, read_project_deps, git_commit_background,
     extract_reflections, append_reflections, safe_project_path,
 )
 
@@ -61,7 +61,7 @@ async def save_session(project: str, summary: str, decisions: str = "", open_que
     """
     await asyncio.to_thread(append_session, project, summary, decisions, open_questions)
     added = await asyncio.to_thread(add_question, project, open_questions) if open_questions else False
-    await asyncio.to_thread(git_commit, f"session: {project}")
+    git_commit_background(f"session: {project}")
     msg = f"✅ Контекст сессии сохранён: {project}/_session.md"
     if added:
         n = len(open_questions_list(project))
@@ -195,7 +195,7 @@ async def close_question(project: str, match: str, remainder: str = "") -> list[
     n = await asyncio.to_thread(close_questions, project, match, remainder)
     if not n:
         return [TextContent(type="text", text=f"⚠️ В {project} не найдено открытых вопросов по «{match}».")]
-    await asyncio.to_thread(git_commit, f"questions: close in {project}")
+    git_commit_background(f"questions: close in {project}")
     left = len(open_questions_list(project))
     msg = f"✅ Закрыто вопросов: {n}. Осталось открытых в {project}: {left}"
     if remainder and remainder.strip():

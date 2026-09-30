@@ -1513,6 +1513,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Используется только ключом свежести (_append_freshness).
     client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
 
+    # Подсказка от хука (Kimi Code без updatedInput): вызов с совпавшим
+    # отпечатком получает id чата. Отпечаток считаем по СЫРЫМ args — хук видит
+    # их до серверного heal, после heal они разошлись бы.
+    if not client_session and isinstance(arguments, dict):
+        client_session = freshness.hint_take(freshness.call_fingerprint(name, arguments))
+
     # ⚠️ ПРОПУЩЕННЫЙ `project` БЕРЁМ ИЗ ИСТОРИИ СЕССИИ (v1.90.0). Замер
     # 20.09.2026 по транскриптам: 78 отказов -32602 за 30 дней, и крупнейшая их
     # часть — именно он (finish_task 21, save_lesson 7, session_note 2). Корень

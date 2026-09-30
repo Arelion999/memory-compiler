@@ -36,7 +36,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import threading
 import time
 from collections import deque
 from contextvars import ContextVar
@@ -113,6 +116,25 @@ _CLIENT_SESSION_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
 _CLIENT_SESSION_MAX = 128
 
+# Подсказки от хука (обход Kimi Code без updatedInput): отпечаток вызова → id
+# чата. Хук PreToolUse шлёт пару (отпечаток, id чата) на /api/session_hint, а
+# call_tool, не получивший _client_session в аргументах, подставляет id чата к
+# вызову с совпавшим отпечатком. Только в памяти: после рестарта хук просто
+# шлёт подсказку заново, файла под этот эфемерный кэш заводить незачем.
+_HINT_TTL_SEC = 120
+_HINT_MAX = 1000
+_HINT_FP_RE = re.compile(r"[0-9a-f]{40}")
+_hints: dict[str, tuple[str, float]] = {}
+_hints_lock = threading.Lock()
+
+
+def valid_client_session(value: Any) -> bool:
+    """Годный ли id чата от клиента: строка из допустимых символов, не длиннее
+    потолка. Общая проверка для key_for и подсказок от хука."""
+    return (isinstance(value, str)
+            and 0 < len(value) <= _CLIENT_SESSION_MAX
+            and set(value) <= _CLIENT_SESSION_CHARS)
+
 
 def key_for(session: Any, client_session: Any = None) -> str:
     """Стабильный ключ сессии для снимка свежести. Пустая строка = вне запроса.
@@ -121,9 +143,7 @@ def key_for(session: Any, client_session: Any = None) -> str:
     мостом и переживает переподключение и смену маршрута. Кривой id молча
     игнорируется — ключ остаётся прежним, по MCP-сессии.
     """
-    if (isinstance(client_session, str)
-            and 0 < len(client_session) <= _CLIENT_SESSION_MAX
-            and set(client_session) <= _CLIENT_SESSION_CHARS):
+    if valid_client_session(client_session):
         return "c:" + client_session
     if session is None:
         return ""
@@ -137,6 +157,58 @@ def key_for(session: Any, client_session: Any = None) -> str:
     except TypeError:
         # Объект без поддержки weakref — id() как запасной вариант.
         return "i%x" % id(session)
+
+
+def call_fingerprint(tool: str, args: dict) -> str:
+    """Отпечаток вызова: короткое имя инструмента + канонический JSON аргументов.
+
+    ⚠️ ИСТОЧНИК ИСТИНЫ канонизации: хук mc_guard.py дублирует эту формулу
+    (не может импортировать сервер) — паритет ловит test_session_hint.py
+    хардкодным вектором. Ключи сортируются, юникод не экранируется, разделители
+    компактные: одинаковые аргументы дают одинаковый отпечаток на любой машине.
+    """
+    raw = tool + "\0" + json.dumps(args, sort_keys=True, ensure_ascii=False,
+                                   separators=(",", ":"), default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _hint_sweep(now: float) -> None:
+    """Ленивая чистка протухших; зовётся под _hints_lock из put/take."""
+    stale = [fp for fp, (_cid, ts) in _hints.items() if now - ts > _HINT_TTL_SEC]
+    for fp in stale:
+        _hints.pop(fp, None)
+
+
+def hint_put(fp: str, chat_id: str) -> None:
+    """Записать подсказку (отпечаток вызова → id чата). Кривой ввод молча
+    игнорируется — ручка уже отфильтровала, здесь страховка на прямой вызов."""
+    if not (isinstance(fp, str) and _HINT_FP_RE.fullmatch(fp)):
+        return
+    if not valid_client_session(chat_id):
+        return
+    with _hints_lock:
+        _hint_sweep(time.time())
+        if len(_hints) >= _HINT_MAX:
+            oldest = min(_hints, key=lambda k: _hints[k][1])
+            _hints.pop(oldest, None)
+        _hints[fp] = (chat_id, time.time())
+
+
+def hint_take(fp: str) -> str:
+    """Consume-on-use: отдать id чата и удалить запись. Повторный вызов с тем
+    же отпечатком (перезапрос модели) подсказки уже не видит — иначе один чат
+    навсегда привязал бы к себе чужой вызов. Протухшая/отсутствующая → ""."""
+    if not (isinstance(fp, str) and _HINT_FP_RE.fullmatch(fp)):
+        return ""
+    with _hints_lock:
+        item = _hints.get(fp)
+        if item is None:
+            return ""
+        chat_id, ts = item
+        del _hints[fp]
+        if time.time() - ts > _HINT_TTL_SEC:
+            return ""
+        return chat_id
 
 
 def note_write(project: str, tool: str, topic: str, key: str) -> None:
@@ -405,5 +477,7 @@ def reset() -> None:
     _work_ts.clear()
     _started.clear()
     _shown.clear()
+    with _hints_lock:
+        _hints.clear()
     _loaded[0] = False                    # как рестарт: файл снимков на диске остаётся
     _last_save[0] = 0.0

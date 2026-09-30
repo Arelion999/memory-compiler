@@ -19,7 +19,7 @@ from memory_compiler.search import whoosh_search
 # новому → удалённая статья оставалась бы фантомом. Обращаемся через модуль.
 import memory_compiler.search as _search
 from memory_compiler.storage import (
-    regenerate_index, git_commit,
+    regenerate_index, git_commit_background,
     read_project_deps, write_project_deps,
     log_event, safe_project_dir, project_article_count, project_key,
 )
@@ -461,7 +461,7 @@ async def add_project(name: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"Проект '{name}' уже существует.")]
     proj_path.mkdir(parents=True, exist_ok=True)
     _cfg.PROJECTS[:] = _discover_projects()
-    await asyncio.to_thread(git_commit, f"add project: {name}")
+    git_commit_background(f"add project: {name}")
     return [TextContent(type="text", text=f"\u2705 Проект '{name}' создан. Всего проектов: {len(_cfg.PROJECTS)}")]
 
 
@@ -493,7 +493,7 @@ async def remove_project(name: str, confirm: bool = False) -> list[TextContent]:
     _cfg.PROJECTS[:] = _discover_projects()
     await asyncio.to_thread(_search.delete_project_documents, name)  # точечно, вне event loop
     await asyncio.to_thread(regenerate_index)
-    await asyncio.to_thread(git_commit, f"remove project: {name} ({len(articles)} articles)")
+    git_commit_background(f"remove project: {name} ({len(articles)} articles)")
     return [TextContent(type="text", text=f"\U0001f5d1\ufe0f Проект '{name}' удалён ({len(articles)} статей). Осталось проектов: {len(_cfg.PROJECTS)}")]
 
 
@@ -531,7 +531,7 @@ async def set_project_deps(project: str, depends_on: list) -> list[TextContent]:
             return [TextContent(type="text", text=f"Проект не может зависеть от себя.")]
 
     write_project_deps(project, depends_on)
-    await asyncio.to_thread(git_commit, f"deps: {project} -> {', '.join(depends_on)}")
+    git_commit_background(f"deps: {project} -> {', '.join(depends_on)}")
     return [TextContent(type="text", text=f"\U0001f517 Зависимости {project}: {', '.join(depends_on) if depends_on else 'нет'}")]
 
 

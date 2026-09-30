@@ -48,6 +48,7 @@ mtime там проставляет mc-drive-nudge.sh пачками — то е
 свежесть/счётчики молча не работают, остальное функционирует.
 """
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -2698,8 +2699,9 @@ def cmd_session_arg(event):
     updatedInput claude.exe применяет и без permissionDecision. Значение,
     отличное от id чата, перезаписывается: поле видно модели в схеме, и она
     может заполнить его сама. В документации Kimi Code updatedInput нет — он,
-    скорее всего, игнорируется; JSON-ответ оставляем как есть: он безвреден,
-    а свежесть контекста сервер умеет считать и без этого поля.
+    скорее всего, игнорируется; поэтому для Kimi дополнительно шлём серверу
+    подсказку (отпечаток вызова → id чата, /api/session_hint): сервер сам
+    подставит id чата вызову с совпавшим отпечатком.
     """
     sid = event.get("session_id")
     args = event.get("tool_input")
@@ -2712,6 +2714,24 @@ def cmd_session_arg(event):
     if "�" in json.dumps(args, ensure_ascii=False):
         journal(event, "session_arg.skip", detail="U+FFFD во вводе")
         return 0
+    # Подсказка серверу (Kimi Code без updatedInput, аудит 28.09.2026): kimi
+    # updatedInput не применяет — аргумент _client_session до сервера не доезжает,
+    # и чаты склеиваются в одну MCP-сессию. Боковой канал: отпечаток вызова → id
+    # чата; call_tool подставит id чата вызову с совпавшим отпечатком. Отпечаток —
+    # ДУБЛИКАТ канонизации freshness.call_fingerprint (хук не может импортировать
+    # сервер): tool без префикса + исходный tool_input ДО инъекции, с вырезанным
+    # _client_session, если модель успела его заполнить. Сбой отправки не меняет
+    # поведение хука: updatedInput отдаём в любом случае.
+    try:
+        raw_args = dict(args)
+        raw_args.pop(CLIENT_SESSION_ARG, None)
+        fp = hashlib.sha1((short_tool(event.get("tool_name", "")) + "\0" + json.dumps(
+            raw_args, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+            default=str)).encode("utf-8")).hexdigest()
+        _post_json("/api/session_hint", {"fp": fp, "chat_id": sid}, timeout=2)
+        journal(event, "session_arg.hint")
+    except Exception:
+        pass
     emit({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "updatedInput": dict(args, **{CLIENT_SESSION_ARG: sid}),

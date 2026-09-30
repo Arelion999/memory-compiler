@@ -8,6 +8,7 @@ import ipaddress
 import json
 import re
 import subprocess
+import threading
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -842,6 +843,53 @@ def git_commit(message: str):
             )
     except Exception:
         pass  # git not available — silently skip
+
+
+# ─── Фоновый коммит (2026-09-30): запись не ждёт git add -A ──────────────────
+# git add -A по всей базе — 5,5–8,6 с (замер 2026-07-20 на 1815 статьях, на NAS
+# дольше), и каждый save_lesson ждал его в to_thread. Хендлеры зовут
+# git_commit_background: коммит уходит в daemon-поток, клиент получает ответ сразу.
+# Синхронный git_commit остаётся для maintenance-проходов и тестов.
+_git_commit_lock = threading.Lock()
+_commit_worker = None  # живой поток фонового коммита (проверка — под _git_commit_lock)
+
+
+def _commit_locked(message: str):
+    """git_commit под замком: два воркера не коммитят друг поверх друга."""
+    with _git_commit_lock:
+        git_commit(message)
+
+
+def _commit_worker_run(message: str):
+    try:
+        _commit_locked(message)
+    except Exception:
+        pass
+    # Инвариант: упавший или прерванный коммит не теряет данные — следующий
+    # `git add -A` подхватывает ВСЁ грязное (коммитим базу целиком, а не дельту
+    # от конкретного сообщения), поэтому пропуск при живом воркере безопасен.
+
+
+def git_commit_background(message: str):
+    """Коммит в фоне: возвращается сразу, не дожидаясь git add -A.
+
+    Новый воркер стартует, только если предыдущий уже завершился; иначе вызов
+    молча пропускается — следующее сохранение догонит всё грязное одним add -A.
+    acquire(blocking=False): захват не должен ждать на event loop, пока воркер
+    держит замок всем коммитом.
+    """
+    global _commit_worker
+    if not _git_commit_lock.acquire(blocking=False):
+        return  # воркер жив — следующий add -A догонит всё грязное
+    try:
+        if _commit_worker is not None and _commit_worker.is_alive():
+            return
+        worker = threading.Thread(target=_commit_worker_run, args=(message,),
+                                  name="mc-git-commit", daemon=True)
+        _commit_worker = worker
+        worker.start()
+    finally:
+        _git_commit_lock.release()
 
 
 GC_LOOSE_MB = 150   # выше этого веса рыхлых объектов пакуем принудительно

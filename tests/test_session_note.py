@@ -104,7 +104,7 @@ async def test_tool_does_not_touch_git(proj, monkeypatch):
     ради одной строки его не платят. Заметка доедет с ближайшим сохранением."""
     from memory_compiler import handlers
     called = []
-    monkeypatch.setattr(handlers, "git_commit", lambda *a, **k: called.append(a))
+    monkeypatch.setattr(handlers, "git_commit_background", lambda *a, **k: called.append(a))
     out = await handlers.session_note("нашёл причину в конфиге nginx", proj)
     assert not called, "session_note не должен коммитить"
     assert "нашёл причину" in storage.latest_session(proj)

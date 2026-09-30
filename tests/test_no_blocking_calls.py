@@ -113,6 +113,12 @@ SHORT_LOCKS = {
     ("embed_queue", "_lock"): "только операции со словарём очереди",
     ("obs", "_lock"): "только счётчики",
     ("search", "_ix_pending_lock"): "только решение «в очередь или сразу» и забор очереди",
+    # Фоновый git-коммит (2026-09-30): на loop захват ТОЛЬКО неблокирующий
+    # (acquire(blocking=False) в git_commit_background), долгое удержание —
+    # внутри _commit_locked, который зовётся исключительно из daemon-воркера.
+    ("storage", "_git_commit_lock"): "неблокирующий acquire на loop; весь коммит под "
+                                     "замком — только в фоновом воркере",
+    ("freshness", "_hints_lock"): "только словарь подсказок (put/take, микросекунды)",
 }
 # Доходят до долгого замка лишь на холодном старте, который lifespan проходит ДО
 # приёма запросов; на работающем сервере это отдача готового объекта.
@@ -553,4 +559,41 @@ def test_loop_only_functions_stay_on_loop(module):
     assert not found, (
         "уехало в поток, хотя обязано остаться на loop:\n  " + "\n  ".join(found)
         + "\nЗвать синхронно (см. handlers._index_embed про гонку с track_access)"
+    )
+
+
+# ─── Фоновый git-коммит (2026-09-30): запись не ждёт git add -A ──────────────
+# git add -A по всей базе — 5,5–8,6 с, и хендлеры ждали его через
+# to_thread(git_commit, ...). Теперь вызов обязан идти в git_commit_background:
+# коммит уезжает в daemon-поток, а следующий add -A догоняет всё грязное, если
+# воркер ещё жив. to_thread(git_commit) в handlers-модулях — регрессия к
+# ожиданию записи. Синхронный git_commit в HEAVY остаётся: им пользуются
+# maintenance-проходы и тесты, вызовы из async кода там вне хендлеров.
+GIT_BG_MODULES = ("handlers.py", "handlers_articles.py", "handlers_sessions.py")
+
+
+def git_commit_on_thread(path: Path):
+    """to_thread(git_commit, ...) в handlers-модуле — ожидание записи вернулось."""
+    found = []
+    for call in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(call, ast.Call):
+            continue
+        if (getattr(call.func, "id", None) or getattr(call.func, "attr", "")) != "to_thread":
+            continue
+        # Первый аргумент to_thread — сама функция: ast.Name (имя) или ast.Attribute.
+        for arg in call.args[:1]:
+            name = getattr(arg, "id", None) or getattr(arg, "attr", "")
+            if name == "git_commit":
+                found.append(f"{path.name}:{call.lineno} → to_thread(git_commit)")
+    return found
+
+
+@pytest.mark.parametrize("module", GIT_BG_MODULES)
+def test_handlers_commit_in_background(module):
+    """Хендлеры не ждут git add -A: коммит — через git_commit_background, не to_thread."""
+    found = git_commit_on_thread(MC / module)
+    assert not found, (
+        "git_commit вернулся в ожидание записи:\n  " + "\n  ".join(found)
+        + "\nЗови git_commit_background (фоновый коммит; синхронный git_commit — "
+          "для maintenance-проходов)"
     )

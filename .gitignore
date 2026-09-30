@@ -48,3 +48,6 @@ Thumbs.db
 
 # Test
 test_all.py
+
+# Локальный лог dev-запусков сервера (не прод)
+mcp-server.log*
