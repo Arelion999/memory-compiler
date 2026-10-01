@@ -2688,6 +2688,54 @@ check("MC_API_URL" in _miss_nr and "MC_API_KEY" in _miss_nr,
 check(_vals_nr.get("MC_API_URL") == "http://127.0.0.1:8765" and "MC_API_KEY" not in _vals_nr,
       "install: нейтральные дефолты env-значений сломаны")
 
+# ── install.py: клиент kimiwork (плагин Kimi Work desktop) ──────────────────
+# Хуки плагина Kimi Work — нативный канал исполнения mc_guard в daimon:
+# рантайм сам зовёт команды манифеста на событиях сессии (PreToolUse, Stop...).
+_kw_tmp = pathlib.Path(tempfile.mkdtemp(prefix="mikw_"))
+_kw_plugin = _kw_tmp / "memory-compiler"
+(_kw_plugin / "hooks").mkdir(parents=True)
+_kw_manifest = _kw_plugin / "kimi.plugin.json"
+_kw_manifest.write_text(json.dumps({
+    "name": "memory-compiler", "version": "0.1.0", "skills": "./skills/",
+    "mcpServers": {"memory-compiler": {"url": "http://127.0.0.1:8765/mcp"}},
+}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+_kw_hooks = inst.build_kimiwork_hooks("C:/Python/python.exe")
+check(isinstance(_kw_hooks, list) and len(_kw_hooks) == 7,
+      "kimiwork: build_kimiwork_hooks должен дать 7 записей, дал %r" % _kw_hooks)
+for _h in _kw_hooks:
+    check(set(_h) <= {"event", "command", "matcher", "timeout"},
+          "kimiwork: лишние ключи хука: %s" % sorted(_h))
+    check(_h["event"] in inst.KIMIWORK_EVENTS, "kimiwork: недопустимое событие: %s" % _h["event"])
+    check("--client=kimi" in _h["command"], "kimiwork: команда без --client=kimi: %s" % _h["command"])
+    check(_h["command"].startswith('"'), "kimiwork: путь python не квотирован: %s" % _h["command"])
+_kw_gate = [_h for _h in _kw_hooks
+            if _h.get("matcher") and "plugin-(mikrotik" in _h["matcher"]]
+check(_kw_gate and _kw_gate[0]["event"] == "PreToolUse" and "gate" in _kw_gate[0]["command"],
+      "kimiwork: гейт с матчером инфры не найден")
+_kw_arg = [_h for _h in _kw_hooks
+           if _h.get("matcher") and "plugin-memory-compiler" in _h["matcher"]]
+check(_kw_arg and any("session_arg" in _h["command"] for _h in _kw_arg),
+      "kimiwork: session_arg на инструментах плагина не найден")
+
+inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals), report=[])
+_kw_want = inst.build_kimiwork_hooks(inst.resolve_hook_python())
+_kw_data = json.loads(_kw_manifest.read_text(encoding="utf-8"))
+check(_kw_data.get("hooks") == _kw_want, "kimiwork: hooks манифеста не совпали с отданными")
+check((_kw_plugin / "hooks" / "mc_guard.py").exists(), "kimiwork: mc_guard.py не скопирован")
+check((_kw_plugin / "hooks" / "mc_guard.env").exists(), "kimiwork: mc_guard.env не создан")
+check(_kw_data.get("version", "").count("+local.") == 1, "kimiwork: version не забамплен")
+check(_kw_data.get("name") == "memory-compiler", "kimiwork: посторонние поля манифеста потеряны")
+check(len(list(_kw_plugin.glob("kimi.plugin.json.bak-*"))) >= 1,
+      "kimiwork: бэкап манифеста не создан")
+# повторный прогон не падает и не ломает hooks:
+inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals), report=[])
+_kw_data2 = json.loads(_kw_manifest.read_text(encoding="utf-8"))
+check(_kw_data2.get("hooks") == _kw_want, "kimiwork: повторный прогон испортил hooks")
+shutil.rmtree(_kw_tmp, ignore_errors=True)
+
 shutil.rmtree(inst_dir, ignore_errors=True)
 
 

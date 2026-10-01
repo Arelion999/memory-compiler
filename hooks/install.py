@@ -65,6 +65,90 @@ HOOKS = [
 ]
 
 
+# ── Kimi Work (desktop, daimon): хуки через манифест плагина ─────────────────
+# Плагин Kimi Work объявляет hooks [{event, command, matcher?, timeout?}]
+# (HookDefSchema, 16 событий); рантайм daimon исполняет их на событиях сессии
+# сам — это нативная замена [[hooks]] из config.toml, которого daimon не читает.
+# Matcher'ы обобщены под имена инструментов Kimi Work mcp__plugin-<plugin>_<server>__*:
+# mc_guard сам сводит их к mcp__<server>__<tool>, поэтому НАЗНАЧЕНИЕ записей
+# (что гейтить) совпадает с CLI-клиентами, меняется только орфография матчера.
+# Подмножество HOOKS намеренно: intent/probe/nudge/reflex/compact — после первой
+# живой проверки payload (YAGNI до подтверждённой необходимости).
+KIMIWORK_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest",
+                   "PermissionResult", "UserPromptSubmit", "Stop", "StopFailure", "Interrupt",
+                   "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",
+                   "PreCompact", "PostCompact", "Notification")
+KIMIWORK_HOOKS = [
+    ("SessionStart", None, "session_start", 25),
+    ("UserPromptSubmit", None, "freshness", 10),
+    ("PreToolUse", r"Bash|.*PowerShell.*", "nul_guard", 5),
+    ("PreToolUse", r"mcp__plugin-(mikrotik|ssh|synology|1c|ftp-zarina)_.*__.*", "gate", 10),
+    ("PreToolUse", r"mcp__plugin-memory-compiler_memory-compiler__.*", "session_arg", 5),
+    ("Stop", None, "stop", 10),
+    ("PostToolUse", r"mcp__plugin-memory-compiler_memory-compiler__.*", "mark", 5),
+]
+
+
+def resolve_hook_python():
+    """Абсолютный путь интерпретатора для hook-команды плагина.
+
+    PATH процесса daimon не гарантирует python; к тому же команда манифеста
+    должна быть самодостаточной (runtime исполняет её без нашего окружения).
+    """
+    exe = shutil.which("python") or sys.executable
+    try:
+        return str(Path(exe).resolve())
+    except Exception:
+        return exe
+
+
+def build_kimiwork_hooks(python_exe, script_rel="./hooks/mc_guard.py"):
+    """Массив hooks для kimi.plugin.json из KIMIWORK_HOOKS."""
+    out = []
+    for event, matcher, sub, timeout in KIMIWORK_HOOKS:
+        entry = {
+            "event": event,
+            "command": '"%s" %s %s --client=kimi' % (python_exe, script_rel, sub),
+            "timeout": timeout,
+        }
+        if matcher:
+            entry["matcher"] = matcher
+        out.append(entry)
+    return out
+
+
+def update_plugin_manifest(manifest_path, hooks):
+    """Переписать ключ hooks в kimi.plugin_json-подобном манифесте + бамп версии.
+
+    Возвращает report-dict; бэкап .bak-<ts> рядом. Повторный вызов идемпотентен
+    по содержимому hooks (версия бампится каждый раз — это наша cachebuster-конвенция).
+    """
+    path = Path(manifest_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["hooks"] = hooks
+    ver = str(data.get("version") or "0.1.0")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    data["version"] = ver.split("+local.")[0] + "+local." + stamp
+    backup = path.with_name("%s.bak-%s" % (path.name, stamp))
+    shutil.copyfile(path, backup)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"backup": backup.name, "version": data["version"]}
+
+
+def resolve_kimiwork_plugin_dir(share_dir=None):
+    """Каталог исходников плагина в daimon-share.
+
+    share_dir: параметр/тесты → env KIMI_SHARE_DIR → %APPDATA%/kimi-desktop/daimon-share
+    (конвенция register_personal.sh). Публичных литералов с именем пользователя
+    нет: APPDATA резолвится в рантайме.
+    """
+    share = Path(share_dir) if share_dir else None
+    if share is None:
+        env = os.environ.get("KIMI_SHARE_DIR")
+        share = Path(env) if env else Path(os.environ.get("APPDATA", "")) / "kimi-desktop" / "daimon-share"
+    return share / "plugin-sources" / "personal" / "memory-compiler"
+
+
 def _matcher(matcher, client):
     if isinstance(matcher, dict):
         return matcher[client]
@@ -268,6 +352,57 @@ def install_client(client, guard_src=None, hooks_dir=None, config_path=None,
                    env_values=None, dry_run=False, force_env=False, report=None):
     """Установка одного клиента. Пути — параметрами (тесты подставляют фикстуры)."""
     report = report if report is not None else []
+
+    if client == "kimiwork":
+        # Плагин Kimi Work (desktop, daimon): копия скрипта + env в <plugin>/hooks,
+        # а хуки — в манифест плагина (рантайм daimon исполняет их сам).
+        hdir = Path(hooks_dir) if hooks_dir else resolve_kimiwork_plugin_dir() / "hooks"
+        dst = hdir / "mc_guard.py"
+        if env_values is None:
+            env_values, missing = default_env_values()
+            if "MC_API_URL" in missing:
+                inherited = _inherit_api_url(dst)
+                if inherited:
+                    env_values["MC_API_URL"] = inherited
+                    missing.remove("MC_API_URL")
+                    report.append("%s: MC_API_URL унаследован из установленной копии" % client)
+            for key in missing:
+                report.append("%s: ⚠ в .env репозитория нет %s — проверь %s"
+                              % (client, key, hdir / "mc_guard.env"))
+        new_bytes = src.read_bytes() if (src := Path(guard_src) if guard_src else GUARD_SRC) else None
+        old_bytes = dst.read_bytes() if dst.exists() else None
+        if old_bytes == new_bytes:
+            report.append("%s: mc_guard.py совпадает" % client)
+        elif dry_run:
+            report.append("%s: mc_guard.py БУДЕТ обновлён (%s)" % (client, dst))
+        else:
+            hdir.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(new_bytes)
+            report.append("%s: mc_guard.py скопирован (%s)" % (client, dst))
+        env_path = hdir / "mc_guard.env"
+        if env_path.exists() and not force_env:
+            report.append("%s: mc_guard.env уже есть, пропущено (--force-env для перезаписи)"
+                          % client)
+        else:
+            changed = _write_if_changed(env_path, render_env_file(env_values, mask=dry_run),
+                                        dry_run, report, "%s: mc_guard.env" % client,
+                                        make_backup=False, show_diff=False)
+            if changed and dry_run:
+                report.extend("    " + line
+                              for line in render_env_file(env_values, mask=True).splitlines())
+        manifest = hdir.parent / "kimi.plugin.json"
+        if not manifest.exists():
+            report.append("%s: ⚠ манифест не найден: %s — hooks не обновлены" % (client, manifest))
+            return report
+        hooks = build_kimiwork_hooks(resolve_hook_python())
+        if dry_run:
+            report.append("%s: dry-run, манифест не тронут (hooks=%d)" % (client, len(hooks)))
+        else:
+            rep = update_plugin_manifest(manifest, hooks)
+            report.append("%s: манифест обновлён (hooks=%d, backup=%s, version=%s)"
+                          % (client, len(hooks), rep["backup"], rep["version"]))
+        return report
+
     src = Path(guard_src) if guard_src else GUARD_SRC
     hdir = Path(hooks_dir) if hooks_dir else CLIENTS[client]["dir"]
     cfg = Path(config_path) if config_path else CLIENTS[client]["config"]
@@ -332,8 +467,8 @@ def main(argv=None):
     for arg in args:
         if arg.startswith("--client="):
             client = arg.split("=", 1)[1].strip().lower()
-    if client not in ("both", "claude", "kimi"):
-        print("Неизвестный --client=%r (ожидается both|claude|kimi)" % client)
+    if client not in ("both", "claude", "kimi", "kimiwork"):
+        print("Неизвестный --client=%r (ожидается both|claude|kimi|kimiwork)" % client)
         return 2
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
