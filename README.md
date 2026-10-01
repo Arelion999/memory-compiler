@@ -71,6 +71,10 @@ The legacy `/sse` endpoint still serves older configs, but Streamable HTTP is th
 
 Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en.md) — MCP, the memory-autopilot skill, hooks, dependency setup.
 
+### Connecting to Kimi Work
+
+Full walkthrough: [docs/kimi-work-setup.en.md](docs/kimi-work-setup.en.md) — everything lives in one plugin: MCP, the memory-autopilot skill and the memory gate hooks the daimon runtime executes natively.
+
 ## Features
 
 ### 50 MCP tools

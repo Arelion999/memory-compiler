@@ -27,6 +27,7 @@ REPO = Path(__file__).resolve().parent.parent
 PAIRS = [
     ("README.ru.md", "README.md"),
     ("docs/claude-desktop-setup.md", "docs/claude-desktop-setup.en.md"),
+    ("docs/kimi-work-setup.md", "docs/kimi-work-setup.en.md"),
     ("docs/security.ru.md", "docs/security.md"),
 ]
 

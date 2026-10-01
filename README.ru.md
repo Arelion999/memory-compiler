@@ -71,6 +71,10 @@ curl -s http://localhost:8765/api/health
 
 Полная инструкция: [docs/claude-desktop-setup.md](docs/claude-desktop-setup.md) — MCP, скил memory-autopilot, hooks, настройка зависимостей.
 
+### Подключение к Kimi Work
+
+Полная инструкция: [docs/kimi-work-setup.md](docs/kimi-work-setup.md) — всё живёт в одном плагине: MCP, скил memory-autopilot и хуки гейта памяти, которые рантайм daimon исполняет нативно.
+
 ## Возможности
 
 ### 50 MCP-инструментов

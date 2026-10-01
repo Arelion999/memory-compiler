@@ -1,6 +1,6 @@
-# hooks/ — сторож памяти memory-compiler для Claude Code и Kimi Code
+# hooks/ — сторож памяти memory-compiler для Claude Code, Kimi Code и Kimi Work
 
-`mc_guard.py` — единый хук-скрипт памяти для обоих клиентов: напоминает про
+`mc_guard.py` — единый хук-скрипт памяти для всех клиентов: напоминает про
 базу знаний (SessionStart, UserPromptSubmit), не пускает на живую
 инфраструктуру без чтения базы (gate), следит, чтобы записи в базу не терялись
 (очередь intent/fail/mark/stop + REST-досыл), доставляет рефлексы-памятки по
@@ -11,8 +11,9 @@
 ## Установка
 
 ```
-python hooks/install.py                # оба клиента
+python hooks/install.py                # оба CLI-клиента (claude + kimi)
 python hooks/install.py --client kimi  # только Kimi Code
+python hooks/install.py --client kimiwork  # Kimi Work (desktop) — см. ниже
 python hooks/install.py --dry-run      # показать изменения, ничего не писать
 python hooks/install.py --force-env    # перезаписать существующий mc_guard.env
 ```
@@ -23,6 +24,24 @@ python hooks/install.py --force-env    # перезаписать существ
 (только маркированный блок; чужие секции не трогаются), пишет `mc_guard.env`
 рядом с каждой копией. Перед правкой конфига создаётся бэкап `*.bak-<дата-время>`.
 Идемпотентно: повторный прогон без изменений источника ничего не пишет.
+
+## Kimi Work (desktop, daimon)
+
+Kimi Work не читает `[[hooks]]` из конфигов — зато исполняет `hooks`,
+объявленные в манифесте плагина (`kimi.plugin.json`: поле
+`[{event, command, matcher?, timeout?}]`, 16 событий; `PreToolUse` умеет
+блокировать вызов с причиной). `--client kimiwork` копирует `mc_guard.py` и
+`mc_guard.env` в `hooks/` каталога исходников плагина и рендерит 7 записей
+хуков в его манифест (session_start, freshness, nul_guard, gate, session_arg,
+stop, mark) с бампом `+local`-версии и бэкапом. После синка плагин нужно
+перерегистрировать в личном рынке и обновить в клиенте — хуки читает
+установленная копия. Подробности: см. docs/kimi-work-setup.md.
+
+Имена инструментов в Kimi Work выглядят как
+`mcp__plugin-<плагин>_<сервер>__<tool>`; `normalize_tool_name()` на границе
+`read_event()` сводит их к каноническому `mcp__<сервер>__<tool>`, после чего
+матчеры и логика работают без правок. `normalize_event()` сводит
+camelCase-поля payload к snake_case — оба мира понимаются из коробки.
 
 ## Профили клиентов
 
