@@ -311,6 +311,56 @@ MANUAL_ONLY = {"edit_article", "save_tracking", "save_contexts", "save_secret"}
 NO_PAYLOAD = {"save_secret"}
 
 
+# Kimi Work (desktop, daimon) называет инструменты плагинов
+# mcp__plugin-<plugin>_<server>__<tool>. Сводим к каноническому
+# mcp__<server>__<tool> — вся остальная логика (INFRA_TOOL_RE, startswith
+# на mcp__memory-compiler__, short_tool) после этого работает без правок.
+# Сервер опознаётся ПОСЛЕДНИМ сегментом перед «__»: у плагинов id может
+# содержать дефисы и подчёркивания (plugin-kimi-cu-win_win,
+# plugin-task-master-ai_task-master-ai), а server id — нет.
+PLUGIN_TOOL_RE = re.compile(
+    r"^mcp__plugin-(?P<plugin>.+)_(?P<server>[^_]+)__(?P<tool>.+)$")
+
+
+def normalize_tool_name(name):
+    """mcp__plugin-<plugin>_<server>__<tool> -> mcp__<server>__<tool>."""
+    if not isinstance(name, str) or not name:
+        return name if isinstance(name, str) else ""
+    m = PLUGIN_TOOL_RE.match(name)
+    if not m:
+        return name
+    return "mcp__%s__%s" % (m.group("server"), m.group("tool"))
+
+
+# Алиасы полей события у разных клиентов. Claude Code / Kimi Code шлют
+# snake_case; ядро daimon внутри живёт в camelCase — хук плагина может
+# получить и такой вариант. Сводим ОДИН раз на границе; при коллизии
+# snake_case в приоритете (проверенный формат).
+_EVENT_FIELD_ALIASES = {
+    "toolName": "tool_name",
+    "toolInput": "tool_input",
+    "sessionId": "session_id",
+    "hookEventName": "hook_event_name",
+    "toolResponse": "tool_response",
+    "toolOutput": "tool_output",
+    "transcriptPath": "transcript_path",
+}
+
+
+def normalize_event(event):
+    """Свести payload хука к канонической snake_case-схеме + нормализовать
+    имя инструмента. Чистая функция: неизвестные ключи не трогает,
+    не-dict возвращает как есть. Fail-open по построению."""
+    if not isinstance(event, dict):
+        return event
+    for alias, canonical in _EVENT_FIELD_ALIASES.items():
+        if alias in event and canonical not in event:
+            event[canonical] = event[alias]
+    if "tool_name" in event:
+        event["tool_name"] = normalize_tool_name(event.get("tool_name"))
+    return event
+
+
 def read_event():
     """stdin хука — UTF-8 от Claude Code / Kimi Code, кодировку консоли не спрашиваем.
 
@@ -326,6 +376,7 @@ def read_event():
         return {}
     if not isinstance(event, dict):
         return {}
+    event = normalize_event(event)
     # Kimi Code шлёт UserPromptSubmit.prompt списком ContentPart, Claude Code —
     # строкой. Сводим к тексту, чтобы подкоманды работали в обоих мирах.
     prompt = event.get("prompt")

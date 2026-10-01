@@ -2475,6 +2475,53 @@ check(_lines and _lines[0] == "http://127.0.0.1:7777",
 shutil.rmtree(_env2, ignore_errors=True)
 
 
+# ── нормализация Kimi Work (mcp__plugin-*, camelCase payload) ───────────────
+# Kimi Work (desktop, daimon) называет инструменты плагинов
+# mcp__plugin-<plugin>_<server>__<tool> и может слать payload в camelCase.
+# Сведение к каноническому mcp__<server>__<tool> + snake_case — на границе
+# read_event; здесь проверяем чистые функции.
+_nn_cases = [
+    ("mcp__plugin-1c_1c__list_bases", "mcp__1c__list_bases"),
+    ("mcp__plugin-memory-compiler_memory-compiler__search", "mcp__memory-compiler__search"),
+    ("mcp__plugin-kimi-cu-win_win__js", "mcp__win__js"),
+    ("mcp__plugin-ftp-zarina_ftp-zarina__list", "mcp__ftp-zarina__list"),
+    ("mcp__plugin-task-master-ai_task-master-ai__add_task", "mcp__task-master-ai__add_task"),
+    # канонические и чужие имена не трогаем:
+    ("mcp__ssh__execute-command", "mcp__ssh__execute-command"),
+    ("Bash", "Bash"),
+    ("Read", "Read"),
+    ("", ""),
+    # без __tool — не трогаем (защита от ложных срабатываний):
+    ("mcp__plugin-weird", "mcp__plugin-weird"),
+]
+for _raw, _want in _nn_cases:
+    _got = mg.normalize_tool_name(_raw)
+    check(_got == _want, "normalize_tool_name(%r) = %r, ждали %r" % (_raw, _got, _want))
+check(mg.short_tool(mg.normalize_tool_name(
+    "mcp__plugin-memory-compiler_memory-compiler__search")) == "search",
+    "short_tool после нормализации != 'search'")
+check(mg.INFRA_TOOL_RE.match(mg.normalize_tool_name(
+    "mcp__plugin-ssh_ssh__execute-command")) is not None,
+    "INFRA_TOOL_RE не матчит нормализованный mcp__plugin-ssh_ssh__*")
+
+_ev_n = mg.normalize_event({
+    "toolName": "mcp__plugin-ssh_ssh__execute-command",
+    "toolInput": {"command": "ssh gw uptime"},
+    "sessionId": "conv-abc",
+    "hookEventName": "PreToolUse",
+})
+check(_ev_n.get("tool_name") == "mcp__ssh__execute-command",
+      "normalize_event: tool_name не сведён: %r" % _ev_n.get("tool_name"))
+check((_ev_n.get("tool_input") or {}).get("command") == "ssh gw uptime",
+      "normalize_event: tool_input не сведён")
+check(_ev_n.get("session_id") == "conv-abc", "normalize_event: session_id не сведён")
+check(_ev_n.get("hook_event_name") == "PreToolUse", "normalize_event: hook_event_name не сведён")
+_ev_s = mg.normalize_event({"tool_name": "Bash", "toolName": "Ignored"})
+check(_ev_s.get("tool_name") == "Bash", "normalize_event: snake_case затёрт camelCase")
+check(mg.normalize_event({"foo": 1}).get("foo") == 1, "normalize_event: чужой ключ потерян")
+check(mg.normalize_event(["not-a-dict"]) == ["not-a-dict"], "normalize_event: не-dict вход")
+
+
 # ── install.py: генератор конфигов и установщик ─────────────────────────────
 # Фикстурные settings.json/config.toml во временных каталогах; install.py
 # импортируется модулем (main под __main__), пути передаются параметрами.
