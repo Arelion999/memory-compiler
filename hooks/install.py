@@ -156,6 +156,22 @@ def resolve_kimiwork_plugin_dir(share_dir=None):
     return share / "plugin-sources" / "personal" / "memory-compiler"
 
 
+def resolve_managed_plugin_dir(name="memory-compiler", share_dir=None):
+    """Каталог ЗАГРУЖЕННОЙ копии плагина в рантайме daimon.
+
+    Именно отсюда daimon читает манифест и исполняет команды хуков — НЕ из
+    plugin-sources. Отдельная копия: клиент создаёт её при регистрации
+    плагина, install.py синхронизирует (02.10.2026: гейт первого вызова не
+    сработал в сессии, пока managed-копия была вчерашней — синхронизации
+    plugin-sources недостаточно).
+    """
+    share = Path(share_dir) if share_dir else None
+    if share is None:
+        env = os.environ.get("KIMI_SHARE_DIR")
+        share = Path(env) if env else Path(os.environ.get("APPDATA", "")) / "kimi-desktop" / "daimon-share"
+    return share / "daimon" / "runtime" / "kimi-code" / "home" / "plugins" / "managed" / name
+
+
 def _matcher(matcher, client):
     if isinstance(matcher, dict):
         return matcher[client]
@@ -356,7 +372,8 @@ def _write_if_changed(path, new_text, dry_run, report, label, make_backup=True,
 
 
 def install_client(client, guard_src=None, hooks_dir=None, config_path=None,
-                   env_values=None, dry_run=False, force_env=False, report=None):
+                   env_values=None, dry_run=False, force_env=False, report=None,
+                   managed_dir=None):
     """Установка одного клиента. Пути — параметрами (тесты подставляют фикстуры)."""
     report = report if report is not None else []
 
@@ -408,6 +425,42 @@ def install_client(client, guard_src=None, hooks_dir=None, config_path=None,
             rep = update_plugin_manifest(manifest, hooks)
             report.append("%s: манифест обновлён (hooks=%d, backup=%s, version=%s)"
                           % (client, len(hooks), rep["backup"], rep["version"]))
+        # managed-копия: рантайм daimon читает манифест и скрипт из
+        # plugins/managed, а НЕ из plugin-sources. Без синхронизации правки
+        # подхватываются только перерегистрацией плагина / рестартом клиента
+        # (02.10.2026: гейт первого вызова не сработал в сессии, пока
+        # managed-копия была вчерашней). Отсутствующую копию не создаём —
+        # её делает клиент при регистрации плагина.
+        try:
+            plugin_name = str(json.loads(Path(manifest).read_text(encoding="utf-8"))
+                              .get("name") or "memory-compiler")
+        except Exception:
+            plugin_name = "memory-compiler"
+        managed = Path(managed_dir) if managed_dir is not None \
+            else resolve_managed_plugin_dir(name=plugin_name)
+        if not managed.exists():
+            report.append("%s: managed-копия не найдена (%s) — подхватится после "
+                          "регистрации плагина / рестарта клиента" % (client, managed))
+        elif dry_run:
+            stale = [rel for rel in ("kimi.plugin.json", "hooks/mc_guard.py", "hooks/mc_guard.env")
+                     if (hdir.parent / rel).exists()
+                     and (managed / rel).read_bytes() != (hdir.parent / rel).read_bytes()]
+            report.append("%s: managed-копия %s (%s)" % (client, "БУДЕТ синхронизирована" if stale
+                          else "совпадает", managed))
+        else:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            synced = []
+            for rel in ("kimi.plugin.json", "hooks/mc_guard.py", "hooks/mc_guard.env"):
+                s, d = hdir.parent / rel, managed / rel
+                if not s.exists() or (d.exists() and d.read_bytes() == s.read_bytes()):
+                    continue
+                if d.exists():
+                    shutil.copyfile(d, d.with_name(d.name + ".bak-" + stamp))
+                d.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(s, d)
+                synced.append(rel)
+            report.append("%s: managed-копия синхронизирована (%s): %s"
+                          % (client, ", ".join(synced) if synced else "без изменений", managed))
         return report
 
     src = Path(guard_src) if guard_src else GUARD_SRC

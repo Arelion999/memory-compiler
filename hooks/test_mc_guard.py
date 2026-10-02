@@ -2860,7 +2860,8 @@ check(_kw_arg and any("session_arg" in _h["command"] for _h in _kw_arg),
       "kimiwork: session_arg на инструментах плагина не найден")
 
 inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
-                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals), report=[])
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals),
+                    managed_dir=_kw_tmp / "managed-none" / "memory-compiler", report=[])
 _kw_want = inst.build_kimiwork_hooks(inst.resolve_hook_python())
 _kw_data = json.loads(_kw_manifest.read_text(encoding="utf-8"))
 check(_kw_data.get("hooks") == _kw_want, "kimiwork: hooks манифеста не совпали с отданными")
@@ -2872,9 +2873,37 @@ check(len(list(_kw_plugin.glob("kimi.plugin.json.bak-*"))) >= 1,
       "kimiwork: бэкап манифеста не создан")
 # повторный прогон не падает и не ломает hooks:
 inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
-                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals), report=[])
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals),
+                    managed_dir=_kw_tmp / "managed-none" / "memory-compiler", report=[])
 _kw_data2 = json.loads(_kw_manifest.read_text(encoding="utf-8"))
 check(_kw_data2.get("hooks") == _kw_want, "kimiwork: повторный прогон испортил hooks")
+
+# ── managed-копия (02.10.2026): рантайм daimon читает манифест и скрипт из
+# plugins/managed, а не из plugin-sources. Гейт первого вызова НЕ сработал
+# в новой сессии, пока managed-копия была вчерашней: install обязан её синхронизировать.
+_kw_managed = _kw_tmp / "managed" / "memory-compiler"
+(_kw_managed / "hooks").mkdir(parents=True)
+(_kw_managed / "kimi.plugin.json").write_text(
+    json.dumps({"name": "memory-compiler", "version": "0.1.0+local.OLD",
+                "hooks": [{"event": "PreToolUse", "command": "stale"}]}),
+    encoding="utf-8")
+(_kw_managed / "hooks" / "mc_guard.py").write_text("# stale\n", encoding="utf-8")
+inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals),
+                    managed_dir=_kw_managed, report=[])
+check((_kw_managed / "kimi.plugin.json").read_bytes() == _kw_manifest.read_bytes(),
+      "kimiwork: managed-манифест не синхронизирован")
+check((_kw_managed / "hooks" / "mc_guard.py").read_bytes() == inst.GUARD_SRC.read_bytes(),
+      "kimiwork: managed-копия mc_guard.py не синхронизирована")
+check(len(list(_kw_managed.glob("kimi.plugin.json.bak-*"))) >= 1,
+      "kimiwork: бэкап managed-манифеста не создан")
+# отсутствующая managed-копия не создаётся и не падает
+_kw_managed2 = _kw_tmp / "managed2" / "memory-compiler"
+inst.install_client("kimiwork", guard_src=inst.GUARD_SRC,
+                    hooks_dir=_kw_plugin / "hooks", env_values=dict(_env_vals),
+                    managed_dir=_kw_managed2, report=[])
+check(not _kw_managed2.exists(),
+      "kimiwork: отсутствующая managed-копия не должна создаваться")
 shutil.rmtree(_kw_tmp, ignore_errors=True)
 
 shutil.rmtree(inst_dir, ignore_errors=True)
