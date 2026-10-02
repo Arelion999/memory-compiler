@@ -317,20 +317,95 @@ check(pl and "SS" in pl["content"] and "OQ" in pl["content"],
       "досыл finish_task теряет session_summary/open_questions")
 check(pl and pl["project"] == "p" and pl["tags"] == ["a"], "досыл теряет проект/теги")
 
-# 8b. гейт не трогает посторонние инструменты, даже если матчер клиента их пропустил
+# 8b. гейт не трогает посторонние инструменты, даже если матчер клиента их пропустил.
+# В профиле kimi — широкий гейт первого вызова (Kimi Work): Read/Glob БЛОКИРУЮТСЯ.
 mg.HOOK_LOG = tmp / "hooks.log"
 gate_out = []
 mg.emit = lambda payload: gate_out.append(payload)
+# Пять блоков подряд на одной сессии — клапан (MAX_BLOCKS=2) приподнять на время цикла.
+_saved_gate_max_blocks = mg.MAX_BLOCKS
+mg.MAX_BLOCKS = 100
 for name in ("TaskOutput", "Read", "Glob", "mcp__okdesk__issue_list", "WebFetch"):
     gate_out.clear()
     mg.cmd_gate({"session_id": "gate-x", "tool_name": name, "tool_input": {}})
-    check(not gate_out, "гейт вмешался в посторонний инструмент %s" % name)
+    if PROFILE == "kimi":
+        check(gate_out and gate_out[0]["hookSpecificOutput"].get("permissionDecision") == "deny",
+              "kimiwork-гейт: первый вызов %s не заблокирован" % name)
+    else:
+        check(not gate_out, "гейт вмешался в посторонний инструмент %s" % name)
+mg.MAX_BLOCKS = _saved_gate_max_blocks
 for name in ("mcp__mikrotik__mikrotik_get_interfaces", "mcp__ssh__execute-command",
              "mcp__synology__list_shares", "mcp__1c__query", "mcp__ftp-zarina__list-directory"):
     gate_out.clear()
     mg.cmd_gate({"session_id": "gate-y-%s" % name, "tool_name": name, "tool_input": {}})
     check(gate_out and gate_out[0]["hookSpecificOutput"]["permissionDecision"] == "deny",
           "гейт пропустил живую инфраструктуру без чтения базы: %s" % name)
+
+# ─── широкий гейт первого вызова (Kimi Work, 02.10.2026) ────────────────────
+# Профиль kimi блокирует первый вызов ЛЮБОГО инструмента, пока нет свежего
+# обращения к memory-compiler. Не блокируются: сам memory-compiler, Skill,
+# select_tools (загрузчики: без них в Kimi Work недозагрузить инструменты).
+_saved_client = mg._CLIENT_CACHE
+_saved_dirs = (mg.STATE_DIR, mg.HOOK_LOG, mg.emit)
+mg._set_client("kimi")
+_wide_tmp = pathlib.Path(tempfile.mkdtemp(prefix="mcgw_"))
+mg.STATE_DIR = _wide_tmp / "state"
+mg.STATE_DIR.mkdir(parents=True, exist_ok=True)
+mg.HOOK_LOG = _wide_tmp / "hooks.log"
+_wide_out = []
+mg.emit = lambda p: _wide_out.append(p)
+# Клапан в боевом коде — MAX_BLOCKS=2, а первый цикл ждёт 6 подряд блоков:
+# на время цикла клапан приподнимаем, перед проверкой клапана возвращаем.
+_saved_max_blocks = mg.MAX_BLOCKS
+mg.MAX_BLOCKS = 100
+
+
+def _wide_gate(name, sid, ti=None):
+    _wide_out.clear()
+    mg.cmd_gate({"session_id": sid, "tool_name": name, "tool_input": ti or {}})
+    return _wide_out[0]["hookSpecificOutput"] if _wide_out else {}
+
+
+# первый вызов любого инструмента блокируется, включая Bash без удалённой команды
+for _name in ("Bash", "Read", "TodoList", "Edit", "WebSearch"):
+    _hso = _wide_gate(_name, "wide-1")
+    check(_hso.get("permissionDecision") == "deny",
+          "kimiwork-гейт: первый вызов %s не заблокирован" % _name)
+_hso = _wide_gate("Bash", "wide-1", {"command": "git status"})
+check(_hso.get("permissionDecision") == "deny",
+      "kimiwork-гейт: git status первым вызовом не заблокирован")
+check("start_task" in _hso.get("permissionDecisionReason", ""),
+      "kimiwork-гейт: отказ не ведёт к start_task")
+
+# исключения не блокируются
+for _name in ("Skill", "select_tools",
+              "mcp__memory-compiler__start_task", "mcp__memory-compiler__search"):
+    _hso = _wide_gate(_name, "wide-1")
+    check(not _hso, "kimiwork-гейт: %s заблокирован" % _name)
+
+# после mark (свежий last_read_ts) — пропуск
+(mg.STATE_DIR / "wide-1.json").write_text(
+    json.dumps({"last_read_ts": time.time()}), encoding="utf-8")
+_hso = _wide_gate("Bash", "wide-1", {"command": "git status"})
+check(not _hso.get("permissionDecision"),
+      "kimiwork-гейт: после start_task вызов не прошёл")
+
+# клапан: два блока подряд — третий пропуск
+mg.MAX_BLOCKS = _saved_max_blocks
+(mg.STATE_DIR / "wide-2.json").write_text(json.dumps({}), encoding="utf-8")
+_wide_gate("Read", "wide-2")
+_wide_gate("Read", "wide-2")
+_hso = _wide_gate("Read", "wide-2")
+check(_hso.get("permissionDecision") == "allow",
+      "kimiwork-гейт: клапан после двух блоков не сработал")
+
+# claude-профиль: широкий режим не активен (Read не трогаем)
+mg._set_client("claude")
+_hso = _wide_gate("Read", "wide-3")
+check(not _hso, "claude-профиль: Read вмешательства гейта не должно быть")
+mg._set_client(_saved_client)
+mg.STATE_DIR, mg.HOOK_LOG, mg.emit = _saved_dirs
+shutil.rmtree(_wide_tmp, ignore_errors=True)
 
 # 9. статусная строка не падает и укладывается в одну строку
 _sl = []

@@ -19,8 +19,11 @@ kimi — причина в stderr + exit 2, claude — JSON decision). Всё о
 
   mark       PostToolUse на mcp__memory-compiler__*  — отмечает, что сессия
              обращалась к базе: время, проект, точка синхронизации с аудит-логом.
-  gate       PreToolUse на инструментах живой инфраструктуры — не пускает на
-             железо, пока в сессии не было ЧТЕНИЯ базы за последние FRESH_SEC.
+  gate       PreToolUse — не пускает дальше, пока в сессии не было ЧТЕНИЯ базы
+             за последние FRESH_SEC. Профиль claude: выход на живую инфру
+             (shell с удалённой командой, mikrotik/ssh/synology/1c/ftp).
+             Профиль kimi: широкий гейт первого вызова — любой инструмент,
+             кроме memory-compiler и загрузчиков Skill/select_tools.
   freshness  UserPromptSubmit — правило порядка + предупреждение, если ДРУГАЯ
              сессия писала в базу после того, как эта загрузила контекст.
   stop       Stop — блок только по делу: фраза «нет доступа» без похода в базу,
@@ -1239,6 +1242,23 @@ def _target_hint(event):
 INFRA_TOOL_RE = re.compile(r"^mcp__(mikrotik|ssh|synology|1c|ftp-[\w-]+)__", re.IGNORECASE)
 
 
+# Инструменты, которые широкий гейт (профиль kimi) НЕ блокирует:
+# сам memory-compiler — он и есть цель ритуала; Skill и select_tools —
+# загрузчики скиллов/инструментов: без исключения гейт запер бы в Kimi Work
+# сам механизм дозагрузки инструментов memory-compiler.
+GATE_EXEMPT_TOOLS = ("Skill", "select_tools")
+
+
+def _gate_wide():
+    """Широкий режим гейта — профиль kimi.
+
+    Kimi Work (манифест плагина) вешает гейт широким матчером на все
+    инструменты; Kimi Code CLI (config.toml) держит матчер узким, поэтому
+    широкая логика там просто не вызывается. Возвращает актуальный профиль."""
+    _ensure_client()
+    return _CLIENT_CACHE == "kimi"
+
+
 def cmd_nul_guard(event):
     """PreToolUse на Bash/PowerShell: блок редиректа в зарезервированное имя Windows.
 
@@ -1286,20 +1306,25 @@ def cmd_gate(event):
     ti = event.get("tool_input") or {}
 
     # ⚠️ Матчер клиента ловит лишнее: в журнале обнаружился вызов гейта на
-    # TaskOutput, которого нет ни в одном матчере settings.json. Инструмент, не
-    # относящийся к живой инфраструктуре, был бы заблокирован ни за что —
-    # поэтому право блокировать проверяем ЗДЕСЬ, у себя.
-    is_shell = tool in ("Bash", "PowerShell") or tool.endswith("PowerShell")
-    if not is_shell and not INFRA_TOOL_RE.match(tool):
+    # TaskOutput, которого нет ни в одном матчере. Инструмент, не относящийся
+    # к живой инфраструктуре, был бы заблокирован ни за что — поэтому право
+    # блокировать проверяем ЗДЕСЬ, у себя.
+    if tool.startswith("mcp__memory-compiler__") or tool in GATE_EXEMPT_TOOLS:
         return 0
-
+    wide = _gate_wide()
+    is_shell = tool in ("Bash", "PowerShell") or tool.endswith("PowerShell")
+    is_infra = bool(INFRA_TOOL_RE.match(tool))
+    has_target = is_infra
     if is_shell:
         cmd = ti.get("command") or ""
         m = HEREDOC_RE.search(cmd)
         if m:
             cmd = cmd[:m.start()]
-        if not REMOTE_CMD_RE.search(cmd):
-            return 0
+        has_target = bool(REMOTE_CMD_RE.search(cmd))
+    if not wide and not has_target:
+        # Узкий режим (claude): гейтим только выход на живую инфру.
+        return 0
+    # Широкий режим (kimi): любой инструмент ниже идёт через свежесть/клапан/блок.
 
     st = load_state(event)
     last_read = float(st.get("last_read_ts") or 0)
@@ -1309,30 +1334,26 @@ def cmd_gate(event):
             st["did_infra"] = True
             save_state(event, st)
         journal(event, "gate.pass")
-        memo, _known = _target_memo(event)
-        if memo:
-            emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                         "additionalContext": memo}})
+        if has_target:
+            memo, _known = _target_memo(event)
+            if memo:
+                emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "additionalContext": memo}})
         return 0
 
-    # Карточка по цели = знание об узле уже доставлено, блокировать незачем: гейт стоит
-    # ровно ради этого. Замер 13.09.2026: карточка готова для 70% целей (по IP 91%), а
-    # каждый блок стоит лишний круг (медиана 2 вызова, 15 с, 5.1k токенов). Цель, о
-    # которой база молчит, — настоящий пробел знаний, там блокировка остаётся.
-    # ⚠️ Отметка last_read_ts обязательна: без неё следующая команда к тому же узлу
-    # упрётся в гейт снова, и пропуск превратится в одноразовый.
-    memo, known = _target_memo(event)
-    if known:
-        st["last_read_ts"] = time.time()
-        st["did_infra"] = True
-        save_state(event, st)
-        journal(event, "gate.card", detail=_target_hint(event))
-        # Текст пуст, когда памятку по этой цели уже показывали в сессии: повторять её
-        # незачем, но знание доставлено — пропускаем молча.
-        if memo:
-            emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                         "additionalContext": memo}})
-        return 0
+    # Карточка по цели = знание об узле уже доставлено, блокировать незачем.
+    # Только для выхода на цель: у Read/Grep/WebSearch цели нет, там сразу блок.
+    if has_target:
+        memo, known = _target_memo(event)
+        if known:
+            st["last_read_ts"] = time.time()
+            st["did_infra"] = True
+            save_state(event, st)
+            journal(event, "gate.card", detail=_target_hint(event))
+            if memo:
+                emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "additionalContext": memo}})
+            return 0
 
     blocks = int(st.get("blocks") or 0)
     if blocks >= MAX_BLOCKS:
@@ -1354,16 +1375,13 @@ def cmd_gate(event):
     st["blocks"] = blocks + 1
     save_state(event, st)
 
-    hint = _target_hint(event)
+    hint = _target_hint(event) if has_target else ""
     journal(event, "gate.block", detail=hint)
-    # ⚠️ Памятку здесь НЕ запрашиваем: до этой строки доходит только цель, по которой
-    # карточки нет (иначе ветка выше уже пропустила бы вызов). Прежний повторный запрос
-    # стал мёртвым кодом и стоил лишнего похода на сервер в каждой блокировке.
-    hint_line = ("Ищи по сущности: %s" % hint) if hint else ""
-    emit({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": (
+    if has_target:
+        # ⚠️ Памятку здесь НЕ запрашиваем: до этой строки доходит только цель,
+        # по которой карточки нет (иначе ветка выше уже пропустила бы вызов).
+        hint_line = ("Ищи по сущности: %s" % hint) if hint else ""
+        reason = (
             "СТОП: за последние 15 минут ты ни разу не читал базу знаний, а сейчас "
             "лезешь на живую инфраструктуру (%s). Всё про эту инфраструктуру — "
             "адреса, доступы, пароли, что и почему было настроено, чем кончились "
@@ -1374,7 +1392,19 @@ def cmd_gate(event):
             "После этого повтори вызов — гейт пропустит. Не заявляй «нет доступа» "
             "и не проси владельца сделать это руками, не заглянув в базу."
             % (tool, hint_line)
-        ),
+        )
+    else:
+        # Широкий гейт первого вызова (Kimi Work): цели нет, короткий отказ.
+        reason = (
+            "СТОП: это первый вызов инструмента в сессии, а контекст базы знаний "
+            "еще не загружен. Сначала вызови start_task плагина memory-compiler "
+            "(project=…, topic=… — для тривиального вопроса достаточно search), "
+            "затем повтори вызов."
+        )
+    emit({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
     }})
     return 0
 
