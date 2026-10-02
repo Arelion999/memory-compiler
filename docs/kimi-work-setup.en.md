@@ -156,14 +156,33 @@ What the plugin hooks include:
 | `SessionStart` | `session_start` | starting context from the base |
 | `UserPromptSubmit` | `freshness` | other sessions' writes + the memory reminder |
 | `PreToolUse` | `nul_guard` | blocks redirects into `nul`/`con` (Windows) |
-| `PreToolUse` | `gate` | **no infrastructure call without a base read within 15 min** |
+| `PreToolUse` | `gate` | **first call of ANY tool is blocked until the session has read the base within 15 min** |
 | `PreToolUse` | `session_arg` | passes the chat id to the server (context freshness) |
 | `Stop` | `stop` | backstop: don't let the session close without finish_task |
 | `PostToolUse` | `mark` | marks "base read" (clears the gate) |
 
+The gate's wide matcher covers everything except the memory-compiler tools
+themselves and the `Skill`/`select_tools` loaders (without them the
+memory-compiler tools could not even be loaded). Any other first call —
+`Bash`, `Read`, `TodoList`, an infra MCP tool — is denied with an
+instruction to run `start_task` (or `search` for a trivial question); the
+repeat then goes through. Infrastructure targets keep the card shortcut:
+if the base already has a knowledge card for the target, the call passes
+with the card instead of a block.
+
 Tool names in Kimi Work look like `mcp__plugin-<plugin>_<server>__<tool>` —
 mc_guard normalises them back to the usual `mcp__<server>__<tool>` form by
 itself; no matchers to maintain. Tests: `MC_GUARD_CLIENT=kimi python hooks/test_mc_guard.py`.
+
+**Managed copy.** The daimon runtime reads the manifest and the script not
+from `plugin-sources` but from the loaded copy at
+`daimon/runtime/kimi-code/home/plugins/managed/<plugin>/`, and it
+re-reads the manifest only at app start. `install.py --client=kimiwork`
+syncs that copy itself (with `.bak-<timestamp>` backups), but **after
+installing hook changes a Kimi Work restart is required** — new chats in a
+running client still use the hooks loaded at startup. Symptom of a stale
+copy: the gate stays silent in a fresh chat and no entries appear in
+`mc_hooks.log` after the install.
 
 ---
 
@@ -175,11 +194,13 @@ In a **fresh** Kimi Work chat:
    `memory-autopilot`.
 2. **MCP available:** "check the knowledge base availability" → a
    `list_projects` call.
-3. **Gate (after step 5):** ask the assistant to call any infrastructure
-   tool without reading the base — the call will be blocked with an
-   instruction to run `search` first. After `search` the call goes through.
-   Visible in the `~/.kimi-code/hooks/mc_hooks.log` journal (`gate.block` /
-   `gate.pass` entries).
+3. **Gate (after step 5):** in a fresh chat ask for something trivial like
+   `git status` — the FIRST call of any tool is blocked with an instruction
+   to run `start_task` first; after `search`/`start_task` the call goes
+   through. Visible in the `~/.kimi-code/hooks/mc_hooks.log` journal
+   (`gate.block` / `gate.pass` entries). If a fresh chat shows no reaction
+   and the journal has no new entries — the manifest was not re-read:
+   restart Kimi Work (see "Managed copy" above).
 4. **Trial cycle:** state a fact ("server X at site Y") — the skill saves it
    via `save_lesson`; give it a task — the skill calls `start_task` and
    `finish_task` at the end.
