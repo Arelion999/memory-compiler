@@ -82,6 +82,7 @@ KIMIWORK_HOOKS = [
     ("SessionStart", None, "session_start", 25),
     ("UserPromptSubmit", None, "freshness", 10),
     ("PreToolUse", r"Bash|.*PowerShell.*", "nul_guard", 5),
+    ("PreToolUse", r"Bash|.*PowerShell.*", "gate", 10),
     ("PreToolUse", r"mcp__plugin-(mikrotik|ssh|synology|1c|ftp-zarina)_.*__.*", "gate", 10),
     ("PreToolUse", r"mcp__plugin-memory-compiler_memory-compiler__.*", "session_arg", 5),
     ("Stop", None, "stop", 10),

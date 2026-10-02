@@ -2945,10 +2945,16 @@ COMMANDS = {
 
 def main():
     # --client=claude|kimi выписывает генератор конфигов; из разбора убираем,
-    # чтобы argv подкоманды (часы у stats) не съезжали.
+    # чтобы argv подкоманды (часы у stats) не съезжали. Значение при вырезании
+    # запоминаем в env: detect_client() читает argv уже после нашей подмены
+    # sys.argv — без запоминания профиль детектился по эвристике и падал в
+    # fallback claude (багрепорт 02.10.2026: журнал Kimi Work уходил в
+    # ~/.claude/hooks/). Прямое присваивание, не setdefault: argv в приоритете
+    # над env.
     argv = []
     for arg in sys.argv[1:]:
         if arg.startswith("--client="):
+            os.environ["MC_GUARD_CLIENT"] = arg.split("=", 1)[1]
             continue
         argv.append(arg)
     sys.argv = [sys.argv[0]] + argv

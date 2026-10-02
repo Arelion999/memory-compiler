@@ -2285,6 +2285,42 @@ check(mg._EMIT_PLAIN == (PROFILE == "kimi"),
       "профиль: _set_client не выставил режим emit под тестируемый профиль")
 
 
+# ── main(): --client= из команды манифеста не теряется до детекта ─────────────
+# main() вырезает --client= из argv, чтобы аргументы подкоманды не съезжали, —
+# вырезанное значение обязано запоминаться в env, иначе detect_client() (читает
+# sys.argv уже после подмены) ловил эвристику и падал в fallback claude: журнал
+# Kimi Work уходил в ~/.claude/hooks/ (багрепорт 02.10.2026). Подкоманды
+# подменены заглушками: реальный stats ходит в аудит-лог, в тестах он замокан.
+_saved_argv_main = sys.argv[:]
+_saved_mgc_main = os.environ.get("MC_GUARD_CLIENT")
+_saved_stats = mg.cmd_stats
+mg.cmd_stats = lambda event: 0
+mg._reset_client()
+try:
+    sys.argv = ["mc_guard.py", "stats", "--client=kimi"]
+    mg.main()
+    check(mg._CLIENT_CACHE == "kimi",
+          "main: --client=kimi из команды манифеста не применён к профилю")
+    check(os.environ.get("MC_GUARD_CLIENT") == "kimi",
+          "main: вырезанный --client=kimi не запомнен в env")
+    # приоритет argv над env: --client=claude обязан перебить заданный env
+    mg._reset_client()
+    os.environ["MC_GUARD_CLIENT"] = "kimi"
+    sys.argv = ["mc_guard.py", "stats", "--client=claude"]
+    mg.main()
+    check(mg._CLIENT_CACHE == "claude",
+          "main: --client=claude не в приоритете над env MC_GUARD_CLIENT=kimi")
+finally:
+    mg.cmd_stats = _saved_stats
+    sys.argv = _saved_argv_main
+    if _saved_mgc_main is None:
+        os.environ.pop("MC_GUARD_CLIENT", None)
+    else:
+        os.environ["MC_GUARD_CLIENT"] = _saved_mgc_main
+    mg._reset_client()
+    mg._set_client(PROFILE)
+
+
 # ── локальный mc_guard.env: слой между os.environ и дефолтами ───────────────
 _env_dir = pathlib.Path(tempfile.mkdtemp(prefix="mclocalenv_"))
 _env_path = _env_dir / "mc_guard.env"
@@ -2701,8 +2737,8 @@ _kw_manifest.write_text(json.dumps({
 }, ensure_ascii=False) + "\n", encoding="utf-8")
 
 _kw_hooks = inst.build_kimiwork_hooks("C:/Python/python.exe")
-check(isinstance(_kw_hooks, list) and len(_kw_hooks) == 7,
-      "kimiwork: build_kimiwork_hooks должен дать 7 записей, дал %r" % _kw_hooks)
+check(isinstance(_kw_hooks, list) and len(_kw_hooks) == 8,
+      "kimiwork: build_kimiwork_hooks должен дать 8 записей, дал %r" % _kw_hooks)
 for _h in _kw_hooks:
     check(set(_h) <= {"event", "command", "matcher", "timeout"},
           "kimiwork: лишние ключи хука: %s" % sorted(_h))
@@ -2713,6 +2749,11 @@ _kw_gate = [_h for _h in _kw_hooks
             if _h.get("matcher") and "plugin-(mikrotik" in _h["matcher"]]
 check(_kw_gate and _kw_gate[0]["event"] == "PreToolUse" and "gate" in _kw_gate[0]["command"],
       "kimiwork: гейт с матчером инфры не найден")
+_kw_bash = [_h for _h in _kw_hooks
+            if _h.get("matcher") and _h["matcher"] == r"Bash|.*PowerShell.*"]
+check(len(_kw_bash) == 2 and any("nul_guard" in _h["command"] for _h in _kw_bash)
+      and any("gate" in _h["command"] for _h in _kw_bash),
+      "kimiwork: на Bash должны висеть и nul_guard, и gate (как в claude-профиле)")
 _kw_arg = [_h for _h in _kw_hooks
            if _h.get("matcher") and "plugin-memory-compiler" in _h["matcher"]]
 check(_kw_arg and any("session_arg" in _h["command"] for _h in _kw_arg),
