@@ -64,9 +64,14 @@ def test_powershell_script_is_valid_syntax():
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
     if not pwsh:
         pytest.skip("pwsh не найден — проверка синтаксиса release.ps1 пропущена")
+    # ParseFile читает UTF-8 без BOM как ANSI (cp1251): русские строки превращаются
+    # в кракозябры и ломают парсер на Windows PowerShell 5.1. Читаем сами как UTF-8
+    # и парсим строку — синтаксис проверяем, а не угадывание кодировки файла.
     check = (
-        "$e=$null; [System.Management.Automation.Language.Parser]::ParseFile("
-        f"'{(SCRIPTS / 'release.ps1').as_posix()}', [ref]$null, [ref]$e) > $null; "
+        "$t=[System.IO.File]::ReadAllText("
+        f"'{(SCRIPTS / 'release.ps1').as_posix()}', [System.Text.Encoding]::UTF8); "
+        "$e=$null; [System.Management.Automation.Language.Parser]::ParseInput("
+        "$t, [ref]$null, [ref]$e) > $null; "
         "if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }"
     )
     done = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", check],

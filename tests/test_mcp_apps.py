@@ -12,6 +12,7 @@
 MCP Apps отношения не имеющий. Отсюда тест на точную строку.
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -314,12 +315,22 @@ def _run_predicate(diag_js):
     import json
     import shutil
     import subprocess
+    import tempfile
 
     node = shutil.which("node")
     if node is None:
         pytest.skip("node недоступен")
     js = _extract_js_function("hostSpoke") + "\nconsole.log(JSON.stringify(!!hostSpoke(%s)));" % diag_js
-    done = subprocess.run([node, "-e", js], capture_output=True, text=True)
+    # Многострочный -e через .CMD-шим node (shim daimon) теряет переводы строк
+    # при прохождении через cmd.exe — «Expected '}', got '<eof>'». Файл надёжнее.
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(js)
+        script = f.name
+    try:
+        done = subprocess.run([node, script], capture_output=True, text=True)
+    finally:
+        Path(script).unlink(missing_ok=True)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout.strip())
 
