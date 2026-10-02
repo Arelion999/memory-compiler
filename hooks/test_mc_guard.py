@@ -2812,23 +2812,48 @@ _kw_manifest.write_text(json.dumps({
 }, ensure_ascii=False) + "\n", encoding="utf-8")
 
 _kw_hooks = inst.build_kimiwork_hooks("C:/Python/python.exe")
-check(isinstance(_kw_hooks, list) and len(_kw_hooks) == 8,
-      "kimiwork: build_kimiwork_hooks должен дать 8 записей, дал %r" % _kw_hooks)
+check(isinstance(_kw_hooks, list) and len(_kw_hooks) == 7,
+      "kimiwork: build_kimiwork_hooks должен дать 7 записей, дал %r" % _kw_hooks)
 for _h in _kw_hooks:
     check(set(_h) <= {"event", "command", "matcher", "timeout"},
           "kimiwork: лишние ключи хука: %s" % sorted(_h))
     check(_h["event"] in inst.KIMIWORK_EVENTS, "kimiwork: недопустимое событие: %s" % _h["event"])
     check("--client=kimi" in _h["command"], "kimiwork: команда без --client=kimi: %s" % _h["command"])
     check(_h["command"].startswith('"'), "kimiwork: путь python не квотирован: %s" % _h["command"])
-_kw_gate = [_h for _h in _kw_hooks
-            if _h.get("matcher") and "plugin-(mikrotik" in _h["matcher"]]
-check(_kw_gate and _kw_gate[0]["event"] == "PreToolUse" and "gate" in _kw_gate[0]["command"],
-      "kimiwork: гейт с матчером инфры не найден")
-_kw_bash = [_h for _h in _kw_hooks
-            if _h.get("matcher") and _h["matcher"] == r"Bash|.*PowerShell.*"]
-check(len(_kw_bash) == 2 and any("nul_guard" in _h["command"] for _h in _kw_bash)
-      and any("gate" in _h["command"] for _h in _kw_bash),
-      "kimiwork: на Bash должны висеть и nul_guard, и gate (как в claude-профиле)")
+_kw_gate = [_h for _h in _kw_hooks if "gate" in _h["command"]]
+check(len(_kw_gate) == 1 and _kw_gate[0]["event"] == "PreToolUse"
+      and _kw_gate[0].get("matcher") == inst.GATE_MATCHER_KIMIWORK,
+      "kimiwork: широкий матчер гейта не найден или записей не одна")
+check(not any("plugin-(mikrotik" in (_h.get("matcher") or "") for _h in _kw_hooks),
+      "kimiwork: узкий матчер инфры остался — широкий его покрывает")
+check(not any(_h.get("matcher") == r"Bash|.*PowerShell.*" and "gate" in _h["command"]
+              for _h in _kw_hooks),
+      "kimiwork: узкий матчер гейта на Bash остался")
+
+# Матчер исполняется JS RegExp (daimon): проверка на именах реальных
+# инструментов живой сессии. Node может отсутствовать — тогда пропуск.
+import shutil as _shutil
+_node = _shutil.which("node")
+if _node:
+    _names = ["Bash", "Read", "TodoList", "Edit", "Glob", "Grep", "Write",
+              "WebSearch", "FetchURL", "Widget", "AutomationControl",
+              "InAppBrowser", "Skill", "select_tools",
+              "mcp__plugin-1c_1c__execute_code",
+              "mcp__plugin-task-master-ai_task-master-ai__get_tasks",
+              "mcp__plugin-memory-compiler_memory-compiler__start_task",
+              "mcp__plugin-memory-compiler_memory-compiler__search"]
+    # Паттерн передаём через env, не argv: cmd-шимы node (Kimi Desktop) съедают
+    # «^» при разборе командной строки, и lookahead-матчер становится всегда истинным.
+    _env = dict(os.environ, MC_GUARD_TEST_PATTERN=inst.GATE_MATCHER_KIMIWORK)
+    _js = ("const re=new RegExp(process.env.MC_GUARD_TEST_PATTERN);"
+           "console.log(JSON.stringify(JSON.parse(process.argv[1]).map(n=>re.test(n))))")
+    _r = subprocess.run([_node, "-e", _js, json.dumps(_names)],
+                        capture_output=True, text=True, timeout=30, env=_env)
+    _want = [n not in ("Skill", "select_tools")
+             and not n.startswith("mcp__plugin-memory-compiler_memory-compiler__")
+             for n in _names]
+    check(_r.returncode == 0 and json.loads(_r.stdout) == _want,
+          "kimiwork: JS-матчер гейта не совпал с ожиданием: %s" % _r.stdout)
 _kw_arg = [_h for _h in _kw_hooks
            if _h.get("matcher") and "plugin-memory-compiler" in _h["matcher"]]
 check(_kw_arg and any("session_arg" in _h["command"] for _h in _kw_arg),

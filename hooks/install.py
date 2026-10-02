@@ -78,12 +78,18 @@ KIMIWORK_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "Permissio
                    "PermissionResult", "UserPromptSubmit", "Stop", "StopFailure", "Interrupt",
                    "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",
                    "PreCompact", "PostCompact", "Notification")
+# Широкий гейт первого вызова: матчит ВСЁ, кроме инструментов самого
+# memory-compiler и загрузчиков Skill/select_tools. Matcher исполняется
+# JS RegExp (daimon, lookahead поддержан). Узкая проверка «гейтить ли этот
+# конкретный инструмент» — внутри mc_guard (cmd_gate, профиль kimi): там же
+# отсеиваются инструменты, которых матчер клиента коснётся неожиданно.
+GATE_MATCHER_KIMIWORK = (
+    r"^(?!mcp__plugin-memory-compiler_memory-compiler__)(?!Skill$)(?!select_tools$).*")
 KIMIWORK_HOOKS = [
     ("SessionStart", None, "session_start", 25),
     ("UserPromptSubmit", None, "freshness", 10),
     ("PreToolUse", r"Bash|.*PowerShell.*", "nul_guard", 5),
-    ("PreToolUse", r"Bash|.*PowerShell.*", "gate", 10),
-    ("PreToolUse", r"mcp__plugin-(mikrotik|ssh|synology|1c|ftp-zarina)_.*__.*", "gate", 10),
+    ("PreToolUse", GATE_MATCHER_KIMIWORK, "gate", 10),
     ("PreToolUse", r"mcp__plugin-memory-compiler_memory-compiler__.*", "session_arg", 5),
     ("Stop", None, "stop", 10),
     ("PostToolUse", r"mcp__plugin-memory-compiler_memory-compiler__.*", "mark", 5),
