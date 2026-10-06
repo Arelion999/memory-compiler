@@ -1,9 +1,8 @@
-"""Тесты web-endpoints, отвечающих за фасетную фильтрацию (теги + проект).
+"""Тесты web-endpoints: фасетная фильтрация (теги + проект) и сохранение статей.
 
-Регрессии, которые они стерегут (v1.7.22):
-  - клик по тегу-чипу запускал полнотекстовый поиск вместо точной
-    фильтрации по тегу → счётчик "1c (50)" не совпадал с выдачей (0 статей);
-  - выпадающий список проектов не сужал ни статьи, ни облако тегов.
+Секреты через веб (v1.x): форма «Добавить» передаёт secret:true → web_save обязан
+уйти в save_secret (шифрованное тело, префикс secret_), а не в save_lesson. Иначе
+галочка «Секрет» молча кладёт пароли открытым текстом в индекс и git.
 """
 import asyncio
 import json
@@ -17,6 +16,16 @@ class FakeRequest:
     def __init__(self, query=None, path=None):
         self.query_params = query or {}
         self.path_params = path or {}
+
+
+class FakeJsonRequest:
+    """Stand-in для POST-endpoint'ов: отдаёт тело как JSON."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
 
 
 def _json(resp):
@@ -197,3 +206,63 @@ def test_ui_styles_bare_pre_inside_card():
     code = code[:code.index("}")]
     assert "white-space:pre" in code and "pre-wrap" not in code, \
         f"правило задело блоки кода — там перенос ломает форматирование: {code}"
+
+
+# ─── Секреты через веб-форму ─────────────────────────────────────────────────
+
+
+def test_web_save_plain_by_default(knowledge_dir):
+    """Без secret:true запись идёт через save_lesson — тело хранится открытым."""
+    from memory_compiler.api import web_save
+
+    body = _json(asyncio.run(web_save(FakeJsonRequest({
+        "topic": "Обычная заметка",
+        "content": "пароль qwerty открытым текстом",
+        "project": "testproj",
+        "tags": "test",
+    }))))
+    assert "result" in body, body
+    art = knowledge_dir / "testproj" / "обычная_заметка.md"
+    assert art.exists(), "обычная статья не создана"
+    assert "пароль qwerty открытым текстом" in art.read_text(encoding="utf-8")
+
+
+def test_web_save_secret_encrypts_body(knowledge_dir, monkeypatch):
+    """secret:true → save_secret: префикс secret_, флаг в шапке, тело зашифровано."""
+    import memory_compiler.config as cfg
+    from memory_compiler.api import web_save
+
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "test-secret-key-123")
+    body = _json(asyncio.run(web_save(FakeJsonRequest({
+        "topic": "VPN keys",
+        "content": "basetokenccc wg-key",
+        "project": "testproj",
+        "tags": "vpn",
+        "secret": True,
+    }))))
+    assert "result" in body, body
+    files = list((knowledge_dir / "testproj").glob("secret_*.md"))
+    assert len(files) == 1, f"ожидалась одна secret-статья: {files}"
+    text = files[0].read_text(encoding="utf-8")
+    assert "**Секрет:** да" in text
+    assert "basetokenccc" not in text, "секрет попал в файл открытым текстом"
+
+
+def test_web_save_secret_requires_encrypt_key(knowledge_dir, monkeypatch):
+    """secret:true без MC_ENCRYPT_KEY → 400 и НИЧЕГО не записано.
+
+    Тихий фолбэк на открытое сохранение недопустим: галочка «Секрет» обещает
+    шифрование, а пароль ушёл бы в индекс и git открытым текстом."""
+    import memory_compiler.config as cfg
+    from memory_compiler.api import web_save
+
+    monkeypatch.setattr(cfg, "MC_ENCRYPT_KEY", "")
+    resp = asyncio.run(web_save(FakeJsonRequest({
+        "topic": "VPN keys",
+        "content": "basetokenccc",
+        "project": "testproj",
+        "secret": True,
+    })))
+    assert resp.status_code == 400, f"ожидался 400: {resp.status_code} {_json(resp)}"
+    assert not list((knowledge_dir / "testproj").glob("secret_*.md")), \
+        "secret-файл записан несмотря на отказ"

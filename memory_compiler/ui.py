@@ -58,6 +58,9 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .form-group label{display:block;font-size:0.85em;color:var(--text2);margin-bottom:4px}
 .form-group input,.form-group textarea,.form-group select{width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);font-size:14px;font-family:inherit}
 .form-group textarea{min-height:120px;resize:vertical}
+.form-secret .chk{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--text);cursor:pointer}
+.form-secret .chk input{width:auto;margin:0}
+.form-secret .hint{font-size:0.8em;color:var(--text2);margin-top:2px}
 .btn-save{padding:10px 20px;border:none;border-radius:6px;background:var(--green);color:#fff;font-size:14px;cursor:pointer;width:100%}
 .msg{padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:0.9em}
 .msg.ok{background:#1a3a1a;color:#3fb950;border:1px solid var(--green)}
@@ -199,6 +202,7 @@ body.wide{max-width:min(1600px,100%)}
 <div class="form-group"><label data-i18n="lbl.project">Проект</label><select id="f-project"></select></div>
 <div class="form-group"><label data-i18n="lbl.tags">Теги (через запятую)</label><input id="f-tags" placeholder="docker, nas, fix"></div>
 <div class="form-group"><label data-i18n="lbl.content">Содержание</label><textarea id="f-content" data-i18n-ph="ph.content" placeholder="Проблема, решение, ключевые факты..."></textarea></div>
+<div class="form-group form-secret"><label class="chk"><input type="checkbox" id="f-secret"> <span data-i18n="lbl.secret">Секрет</span></label><div class="hint" data-i18n="hint.secret">Тело зашифруется: в индекс и git попадут только название и теги</div></div>
 <button class="btn-save" onclick="doSave()" data-i18n="btn.save">Сохранить</button>
 </div>
 <div id="view-graph" style="display:none">
@@ -278,6 +282,8 @@ var I18N={
     "lbl.topic":"Тема",
     "lbl.content":"Содержание",
     "lbl.tags":"Теги (через запятую)",
+    "lbl.secret":"Секрет",
+    "hint.secret":"Тело зашифруется: в индекс и git попадут только название и теги",
     "lbl.allProjects":"Все проекты",
     "lbl.related":"Похожие",
     "lbl.watching":"следит",
@@ -373,6 +379,8 @@ var I18N={
     "lbl.topic":"Topic",
     "lbl.content":"Content",
     "lbl.tags":"Tags (comma-separated)",
+    "lbl.secret":"Secret",
+    "hint.secret":"Body will be encrypted: only the title and tags go to the index and git",
     "lbl.allProjects":"All projects",
     "lbl.related":"Related",
     "lbl.watching":"watching",
@@ -650,10 +658,12 @@ async function doSave(){
   const content=$("f-content").value.trim();
   const project=$("f-project").value;
   const tags=$("f-tags").value.trim();
+  const secretEl=$("f-secret");
+  const secret=secretEl?secretEl.checked:false;
   if(!topic||!content){$("save-msg").innerHTML='<div class="msg err">'+t("msg.fillRequired")+'</div>';return;}
-  const r=await fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic,content,project,tags})});
+  const r=await fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic,content,project,tags,secret})});
   const d=await r.json();
-  if(d.result){$("save-msg").innerHTML=`<div class="msg ok">${esc(d.result)}</div>`;$("f-topic").value="";$("f-content").value="";$("f-tags").value="";}
+  if(d.result){$("save-msg").innerHTML=`<div class="msg ok">${esc(d.result)}</div>`;$("f-topic").value="";$("f-content").value="";$("f-tags").value="";if(secretEl)secretEl.checked=false;}
   else{$("save-msg").innerHTML=`<div class="msg err">${esc(d.error||t("msg.error"))}</div>`;}
 }
 

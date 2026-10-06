@@ -33,8 +33,8 @@ from memory_compiler.storage import (
     article_title_tags, parse_meta_value, normalize_project,
 )
 from memory_compiler.handlers import (
-    compile as _compile, save_lesson, delete_article, lint as _lint, ask_sources,
-    RERANK_ENABLED,
+    compile as _compile, save_lesson, save_secret, delete_article, lint as _lint,
+    ask_sources, RERANK_ENABLED,
 )
 from memory_compiler.ui import WEB_HTML, LOGIN_HTML
 from memory_compiler.markdown_render import render_markdown, pygments_css
@@ -410,7 +410,7 @@ async def web_article(request: Request):
 
 
 async def web_save(request: Request):
-    """Save a new lesson via web form."""
+    """Save a new lesson via web form. secret:true → шифрованная secret-статья."""
     try:
         data = await request.json()
     except Exception:
@@ -423,7 +423,17 @@ async def web_save(request: Request):
         return JSONResponse({"error": "topic and content required"}, status_code=400)
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
-    result = await save_lesson(topic, content, project, tags)
+    if data.get("secret"):
+        # Fail-closed: без ключа НЕ падаем в открытое сохранение — иначе галочка
+        # «Секрет» молча кладёт пароли открытым текстом в индекс и git.
+        from memory_compiler.config import MC_ENCRYPT_KEY
+        if not MC_ENCRYPT_KEY:
+            return JSONResponse(
+                {"error": "MC_ENCRYPT_KEY не задан на сервере — шифрование невозможно"},
+                status_code=400)
+        result = await save_secret(topic, content, project, tags)
+    else:
+        result = await save_lesson(topic, content, project, tags)
     return JSONResponse({"result": result[0].text})
 
 
