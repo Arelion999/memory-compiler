@@ -5,14 +5,19 @@ import logging
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
+import anyio
 import numpy as np
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http import (
+    MCP_SESSION_ID_HEADER, StreamableHTTPServerTransport,
+)
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route, Mount
 from starlette.requests import Request
+from starlette.datastructures import Headers
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from memory_compiler.config import (
@@ -1095,13 +1100,79 @@ async def web_logs(request: Request):
 MCP_SESSION_IDLE_TIMEOUT = 7200  # секунд (2 часа)
 
 
+class StaleTolerantSessionManager(StreamableHTTPSessionManager):
+    """Streamable HTTP с подстраховкой протухших сессий (багрепорт 07.10.2026).
+
+    Контейнер рестартует по watcher'у до нескольких раз в день (правки *.py/VERSION
+    через Drive), рестарт убивает серверные сессии, а клиенты держат кэшированный
+    Mcp-Session-Id. Строгий ответ SDK — 404 «Session not found» на ЛЮБОЙ запрос со
+    старым id, включая initialize: такой клиент (Kimi Work/daimon) помечает сервер
+    disconnected и сам уже не возвращается — канал восстанавливает только перезапуск
+    приложения (проверено 06–07.10.2026: ~30 повторов за 2 ч не помогли, за ночь
+    само не восстановилось).
+
+    Здесь POST с НЕИЗВЕСТНЫМ id обрабатывается на одноразовом транспорте, ПРИНИМАЮЩЕМ
+    этот id (mcp_session_id=<stale>): валидация сессии транспорта сходится, в ответ
+    уходит тот же id — клиент не замечает потери серверной сессии и остаётся на
+    канале. Обработка stateless (app.run(..., stateless=True)): сессия считается
+    инициализированной сразу, поэтому tools/call без повторного initialize проходит
+    (та же механика, что в handle_sse v1.90.1). Одноразовые транспорты в реестр
+    _server_instances не регистрируются: метрика mcp_sessions и idle-таймаут
+    не затронуты. Валидные id — штатный stateful-путь без изменений.
+    """
+
+    async def handle_request(self, scope, receive, send):
+        if (
+            not self.stateless
+            and scope.get("type") == "http"
+            and scope.get("method") == "POST"
+        ):
+            sid = Headers(scope=scope).get(MCP_SESSION_ID_HEADER)
+            if sid is not None and sid not in self._server_instances:
+                logging.getLogger(__name__).info(
+                    "Stale MCP session %s... served on one-shot transport", sid[:8]
+                )
+                return await self._serve_stale_session(scope, receive, send, sid)
+        await super().handle_request(scope, receive, send)
+
+    async def _serve_stale_session(self, scope, receive, send, sid):
+        http_transport = StreamableHTTPServerTransport(
+            mcp_session_id=sid,  # принимаем ПРОТУХШИЙ id — валидация сходится
+            is_json_response_enabled=self.json_response,
+            event_store=None,
+            security_settings=self.security_settings,
+        )
+
+        async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED):
+            async with http_transport.connect() as streams:
+                read_stream, write_stream = streams
+                task_status.started()
+                try:
+                    await self.app.run(
+                        read_stream,
+                        write_stream,
+                        self.app.create_initialization_options(),
+                        stateless=True,
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception("Stale-session fallback crashed")
+
+        assert self._task_group is not None
+        await self._task_group.start(run_server)
+        await http_transport.handle_request(scope, receive, send)
+        await http_transport.terminate()
+
+
 def create_starlette_app(mcp_server: Server) -> Starlette:
     sse = SseServerTransport("/messages/")
     # Streamable HTTP транспорт (v1.10.0) — ADDITIVE, рядом с /sse (существующие клиенты
     # не затронуты). У него нет длинного GET-стрима и pre-init окна reconnect, из-за
     # которого /sse ловил транзиентный -32602 (гонка: tool-call на новой сессии до
     # завершения initialize). Клиенты переключаются на /mcp по готовности.
-    session_manager = StreamableHTTPSessionManager(
+    # StaleTolerantSessionManager — POST с неизвестным Mcp-Session-Id (клиент пережил
+    # рестарт контейнера) обслуживается на одноразовом транспорте вместо 404, иначе
+    # Kimi Work помечает плагин disconnected навсегда (багрепорт 07.10.2026).
+    session_manager = StaleTolerantSessionManager(
         app=mcp_server, session_idle_timeout=MCP_SESSION_IDLE_TIMEOUT
     )
 
