@@ -252,7 +252,7 @@ async def web_session_hint(request: Request):
     if not freshness.valid_client_session(chat_id):
         return JSONResponse({"error": "chat_id is invalid"}, status_code=400)
     t0 = _time.perf_counter()
-    await asyncio.to_thread(freshness.hint_put, fp, chat_id)
+    await asyncio.to_thread(freshness.hint_put, fp, chat_id, data.get("trace"))
     obs.get_logger("hint").info("session_hint", extra={
         "ms": round((_time.perf_counter() - t0) * 1000)})
     return JSONResponse({"ok": True})

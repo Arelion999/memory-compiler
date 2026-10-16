@@ -119,6 +119,52 @@ def test_call_fingerprint_ignores_key_order():
     assert a == b
 
 
+def test_call_fingerprint_ignores_service_metadata():
+    assert freshness.call_fingerprint("search", {"query": "q"}) == freshness.call_fingerprint(
+        "search", {"query": "q", "_client_session": "chat", "_client_trace": "trace"})
+
+
+@pytest.mark.parametrize("different", ["chat", "device", "family", "call_id"])
+def test_hint_collision_stays_conflicted_until_ttl(different, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(freshness, "time", types.SimpleNamespace(time=lambda: clock[0]))
+    trace = {"v": 1, "device": "123456781234423482341234567890ab", "family": "codex"}
+    other = dict(trace)
+    if different == "device":
+        other["device"] = "223456781234423482341234567890ab"
+    if different == "family":
+        other["family"] = "kimi"
+    if different == "call_id":
+        other["call_id"] = "323456781234423482341234567890ab"
+    fp = "a" * 40
+    freshness.hint_put(fp, "chat-a", json.dumps(trace))
+    freshness.hint_put(fp, "chat-b" if different == "chat" else "chat-a", json.dumps(other))
+    assert freshness.hint_take_trace(fp) == ("", None, True)
+    freshness.hint_put(fp, "chat-a", json.dumps(trace))
+    assert freshness.hint_take_trace(fp) == ("", None, True)
+    assert freshness.hint_take(fp) == ""
+    clock[0] += freshness._HINT_TTL_SEC + 1
+    freshness.hint_put(fp, "chat-a", json.dumps(trace))
+    assert freshness.hint_take_trace(fp) == ("chat-a", trace, False)
+    assert freshness.hint_take_trace(fp) == ("", None, False)
+
+
+def test_identical_hint_retries_are_not_conflict():
+    trace = json.dumps({"v": 1, "device": "123456781234423482341234567890ab", "family": "kimi"})
+    for _ in range(2):
+        freshness.hint_put("a" * 40, "chat-a", trace)
+    assert freshness.hint_take_trace("a" * 40) == ("chat-a", json.loads(trace), False)
+
+
+def test_conflict_survives_cache_pressure(monkeypatch):
+    monkeypatch.setattr(freshness, "_HINT_MAX", 2)
+    freshness.hint_put("a" * 40, "chat-a")
+    freshness.hint_put("a" * 40, "chat-b")
+    freshness.hint_put("b" * 40, "chat-c")
+    freshness.hint_put("c" * 40, "chat-d")
+    assert freshness.hint_take_trace("a" * 40) == ("", None, True)
+
+
 # ── POST /api/session_hint ──────────────────────────────────────────────────
 
 class JsonRequest:

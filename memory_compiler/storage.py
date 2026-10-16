@@ -1813,6 +1813,8 @@ def audit_log(tool_name: str, args: dict, result_size: int, error: str | None = 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     safe_args = {}
     for k, v in args.items():
+        if k in ("_client_session", "_client_trace"):
+            continue
         # ⚠️ triggers/verify — тоже только длина (ревью 14.09.2026): отвергнутая цитата
         # проверки или триггер может нести пароль (`sshpass -p …`, `-u u:p`), а аудит-лог
         # коммитится в git базы. Ни аналитика (analytics.quality), ни отчёты
@@ -1826,6 +1828,10 @@ def audit_log(tool_name: str, args: dict, result_size: int, error: str | None = 
     entry = {"ts": ts, "tool": tool_name, "args": safe_args, "size": result_size}
     if error:
         entry["error"] = error
+    from memory_compiler.telemetry import trace_var
+    trace = trace_var.get()
+    if trace is not None:
+        entry["trace"] = dict(trace)
     line = json.dumps(entry, ensure_ascii=False)
     try:
         with open(_audit_path(), "a", encoding="utf-8") as f:

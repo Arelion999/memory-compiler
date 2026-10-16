@@ -1,4 +1,5 @@
 """MCP tool definitions and dispatch."""
+import asyncio
 import json
 import inspect
 
@@ -21,6 +22,7 @@ from memory_compiler import storage
 from memory_compiler import handlers
 from memory_compiler import obs
 from memory_compiler import freshness
+from memory_compiler import telemetry
 from memory_compiler import i18n
 from memory_compiler.i18n import localize_tools, localize_prompts
 
@@ -126,9 +128,13 @@ def _declare_client_session(tools: list[Tool]) -> list[Tool]:
     MCP-сессии в freshness.key_for, а не валить вызов на валидации схемы.
     """
     desc = _CLIENT_SESSION_DESC_EN if i18n.MC_LANG == "en" else _CLIENT_SESSION_DESC_RU
+    trace_desc = ("Service field: JSON call attribution, set by the client hook. Do not fill."
+                  if i18n.MC_LANG == "en" else
+                  "Служебное: JSON атрибуции вызова, ставит хук клиента. Не заполнять.")
     for tool in tools:
         props = tool.inputSchema.setdefault("properties", {})
         props[freshness.CLIENT_SESSION_ARG] = {"type": "string", "description": desc}
+        props[telemetry.CLIENT_TRACE_ARG] = {"type": "string", "description": trace_desc}
     return tools
 
 
@@ -1300,7 +1306,6 @@ async def _argument_error(name: str, arguments: dict) -> str:
 def _argument_failure(name: str, message: str) -> CallToolResult:
     """Argument rejections are observable errors, with no payload in the audit."""
     obs.record_error(name, "ArgumentValidationError")
-    audit_log(name, {}, 0, error="ArgumentValidationError")
     return CallToolResult(isError=True, content=[
         TextContent(type="text", text="Input validation error: " + message)])
 
@@ -1456,6 +1461,8 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
     """Отрезать утёкший хвост разметки у строковых параметров и вернуть
     восстановленные поля по назначению (явно переданные не перекрываются).
     Возвращает (аргументы, список вылеченного) — список пуст у здоровых вызовов."""
+    props = {k: v for k, v in props.items() if k not in telemetry.SERVICE_ARGS}
+    arguments = {k: v for k, v in arguments.items() if k not in telemetry.SERVICE_ARGS}
     healed: list = []
     out = dict(arguments)
     for key, val in arguments.items():
@@ -1527,7 +1534,7 @@ def heal_arguments(arguments: dict, props: dict) -> tuple[dict, list]:
 # tests/test_client_capabilities.py.
 UI_EXTENSION = "io.modelcontextprotocol/ui"
 
-_seen_clients: set[str] = set()
+_seen_clients: set[tuple[str, bool]] = set()
 
 
 def client_ui_support(params) -> dict:
@@ -1555,36 +1562,105 @@ def _log_client_once() -> None:
     except Exception:
         return                    # вне запроса — молча, зонд не смеет ронять вызов
     info = client_ui_support(params)
-    key = f"{info['client']}/{info['version']}"
+    family = telemetry.client_family(info["client"])
+    ui_supported = info["ui_extension"] is not None
+    key = (family, ui_supported)
     if key in _seen_clients:
         return
     _seen_clients.add(key)
-    obs.get_logger("client").info("client connected", extra=info)
+    obs.get_logger("client").info("client connected", extra={
+        "client_family": family, "ui_supported": ui_supported})
 
 
 @app.call_tool(validate_input=False)
 async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[list[TextContent], dict] | CallToolResult:
-    obs.new_request_id()          # корреляция всех логов этого вызова
-    obs.record_call(name)
-    _log_client_once()
-    _log = obs.get_logger("tool")
-    t0 = time.perf_counter()
-    # Count every tool call (not only predefined keys)
-    stats[name] = stats.get(name, 0) + 1
+    """One terminal audit/log per invocation, including early exits and cancellation."""
+    request_token = obs.request_id_var.set("-")
+    trace = {"request_id": obs.new_request_id(), "dur_ms": 0,
+             "client_family": "unknown", "device_hash": "", "chat_hash": "",
+             "chat_source": "unknown", "correlation_id": "",
+             "outcome": "ok", "reason": "completed"}
+    trace_token = telemetry.trace_var.set(trace)
+    started = time.perf_counter()
+    state = {"args": {}, "size": 0, "error": None, "phase": "handler_exception"}
+    safe_name, tool_use_id = "unknown", False
+    try:
+        obs.record_call(name)
+        stats[name] = stats.get(name, 0) + 1
+        family = "unknown"
+        try:
+            ctx = app.request_context
+            params = ctx.session.client_params
+            family = telemetry.client_family(params.clientInfo.name if params else None)
+            extra = (ctx.meta.model_extra or {}) if ctx.meta is not None else {}
+            tool_use_id = bool(extra.get("claudecode/toolUseId"))
+            _log_client_once()
+        except Exception:
+            pass
+        client_session = None
+        raw_trace = telemetry.MISSING
+        hint = ("", None, False)
+        if isinstance(arguments, dict):
+            arguments = dict(arguments)
+            client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
+            raw_trace = arguments.pop(telemetry.CLIENT_TRACE_ARG, telemetry.MISSING)
+            try:
+                # Always consume: even an explicit call must not leave its hint behind.
+                hint = freshness.hint_take_trace(freshness.call_fingerprint(name, arguments))
+            except Exception:
+                pass
+        # A conflicting hint must never select another chat's project or freshness
+        # state, even if HMAC/telemetry subsequently fails open.
+        if telemetry.hint_conflicts(raw_trace, hint):
+            hint = ("", None, True)
+        try:
+            trace.update(telemetry.attribution(raw_trace, client_session, hint,
+                                               _session_key(None), family))
+        except Exception:
+            pass  # attribution cannot break the actual tool
+        if not freshness.valid_client_session(client_session):
+            client_session = hint[0] or None
+        props = await _tool_props()
+        safe_name = name if name in props else "unknown"
+        result = await _call_tool_body(name, arguments, client_session, state)
+        if isinstance(result, CallToolResult) and result.isError:
+            state.update(args={}, size=0, error="ArgumentValidationError")
+            trace.update(outcome="rejected", reason="argument_validation")
+        return result
+    except asyncio.CancelledError:
+        state["error"] = "CancelledError"
+        obs.record_error(name, state["error"])
+        trace.update(outcome="cancelled", reason="cancelled")
+        raise
+    except Exception as exc:
+        state["error"] = type(exc).__name__
+        obs.record_error(name, state["error"])
+        trace.update(outcome="error", reason=state["phase"])
+        raise
+    finally:
+        try:
+            trace["dur_ms"] = max(0, int((time.perf_counter() - started) * 1000))
+            try:
+                audit_log(name, state["args"], state["size"], error=state["error"])
+            except Exception:
+                pass
+            try:
+                logger = obs.get_logger("tool")
+                emit = logger.error if state["error"] else logger.info
+                emit("tool finished", extra={
+                    "tool": safe_name, "size": state["size"], "tool_use_id": tool_use_id,
+                    "client": trace["client_family"], **trace})
+            except Exception:
+                pass
+        finally:
+            telemetry.trace_var.reset(trace_token)
+            obs.request_id_var.reset(request_token)
 
-    # Id чата от клиента (v1.76.0) — служебный аргумент, а не параметр
-    # инструмента: хендлер упал бы на лишнем kwarg, аудиту он не нужен.
-    # Используется только ключом свежести (_append_freshness).
+
+async def _call_tool_body(name: str, arguments, client_session, state: dict):
     if not isinstance(arguments, dict):
         return _argument_failure(name, "Invalid arguments: expected an object.")
-    client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
-
-    # Подсказка от хука (Kimi Code без updatedInput): вызов с совпавшим
-    # отпечатком получает id чата. Отпечаток считаем по СЫРЫМ args — хук видит
-    # их до серверного heal, после heal они разошлись бы.
-    if not client_session and isinstance(arguments, dict):
-        client_session = freshness.hint_take(freshness.call_fingerprint(name, arguments))
-
+    _log = obs.get_logger("tool")
     healed: list = []
     props = (await _tool_props()).get(name)
     if props:
@@ -1632,6 +1708,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[lis
     error = await _argument_error(name, arguments)
     if error:
         return _argument_failure(name, error)
+    state["args"] = audit_args
 
     # ⚠️ ПРОЕКТА, КОТОРОГО НЕТ, ХЕНДЛЕР НЕ ВИДИТ. 14.09.2026 агент угадал
     # project="memorycompiler" по каталогу клона, start_task молча завёл пустой
@@ -1645,7 +1722,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[lis
     existed = _project_state(project)
     refusal = _project_gate(name, project) if existed is False else ""
     if refusal:
-        _log.info("project not found", extra={"tool": name, "project": project})
+        telemetry.trace_var.get().update(outcome="rejected", reason="project_not_found")
         if name == "search":
             handlers.search_payload_var.set(None)   # выдачу собирать не из чего
 
@@ -1661,18 +1738,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[lis
         # safe_project_dir / safe_article_path raised — handler got an unsafe
         # project/filename parameter. Return graceful error instead of crashing.
         result = [TextContent(type="text", text=f"❌ Небезопасный параметр: {e}")]
-    except Exception as e:
-        # Раньше упавшие вызовы никак не фиксировались — статистика ошибок была слепой.
-        code = type(e).__name__
-        obs.record_error(name, code)
-        _log.error(f"tool {name} failed: {e}", extra={"tool": name, "err_code": code}, exc_info=True)
-        try:
-            audit_log(name, audit_args, 0, error=code)
-        except Exception:
-            pass
-        raise
+        telemetry.trace_var.get().update(outcome="rejected", reason="unsafe_parameter")
     finally:
         freshness.chat_key_var.reset(chat_token)
+    state["phase"] = "postprocess_exception"
     if not refusal:
         # Свежесть контекста между сессиями: сервер знает про все записи, поэтому
         # может сам сказать этой сессии, что под ней изменилось. Считаем ДО audit_log
@@ -1706,21 +1775,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[lis
     # «score: » короткий, но непустой ответ по одной длине выглядит промахом.
     if name == "search" and structured is not None:
         audit_args = {**audit_args, "_count": structured.get("count")}
-    audit_log(name, audit_args, total)
-    # Маршрут вызова (v1.76.1): имя клиента из initialize и признак номера вызова
-    # в _meta. По ним видно, доезжает ли claudecode/toolUseId через мост Claude
-    # Desktop, — на этом стоит боковой канал «вызов → чат».
-    origin = {"client": "", "tool_use_id": False}
-    try:
-        ctx = app.request_context
-        extra = (ctx.meta.model_extra or {}) if ctx.meta is not None else {}
-        origin["tool_use_id"] = bool(extra.get("claudecode/toolUseId"))
-        params = ctx.session.client_params
-        origin["client"] = params.clientInfo.name if params is not None else ""
-    except Exception:
-        pass                              # вне запроса (REST, тесты) — поля по умолчанию
-    _log.info("tool ok", extra={"tool": name, "dur_ms": int((time.perf_counter() - t0) * 1000),
-                                "size": total, **origin})
+    state.update(args=audit_args, size=total)
     # У search объявлен outputSchema — обязаны вернуть structuredContent (SDK валидирует).
     if structured is not None:
         return (result, structured)

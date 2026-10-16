@@ -546,7 +546,7 @@ def _tool_ok_record(monkeypatch, meta_extra, client_name):
 
     class Grab(logging.Handler):
         def emit(self, record):
-            if record.getMessage() == "tool ok":
+            if record.getMessage() == "tool finished":
                 records.append(record)
 
     logger = logging.getLogger("mc.tool")
@@ -564,7 +564,7 @@ def _tool_ok_record(monkeypatch, meta_extra, client_name):
 
 def test_tool_ok_log_marks_tool_use_id_from_meta(monkeypatch):
     rec = _tool_ok_record(monkeypatch, {"claudecode/toolUseId": "toolu_01abc"}, "claude-code")
-    assert rec.client == "claude-code"
+    assert rec.client == "claude"
     assert rec.tool_use_id is True
 
 
@@ -572,7 +572,7 @@ def test_tool_ok_log_without_meta_reports_false(monkeypatch):
     """Позитивный контроль: признак не залипает в True, а клиент берётся из
     initialize, а не подставляется константой."""
     rec = _tool_ok_record(monkeypatch, None, "claude-ai")
-    assert rec.client == "claude-ai"
+    assert rec.client == "claude"
     assert rec.tool_use_id is False
 
 

@@ -29,6 +29,7 @@ spec = importlib.util.spec_from_file_location(
 mg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mg)
 mg._set_client(PROFILE)
+mg.TRACE_CONFIG_PATH = pathlib.Path(tempfile.mkdtemp(prefix="mctrace_")) / "trace.json"
 
 # Хук читает чужие конфиги машины (ssh-mcp.json, конфиг Desktop). Тесты их видеть НЕ должны:
 # реальный адрес роутера поменял бы ожидания, и тесты зависели бы от машины.
@@ -505,12 +506,16 @@ check(EV_READ["tool_input"] == {"project": "infra", "filename": "x.md"},
 for ev, why in (
         (dict(EV_READ, session_id=""), "без session_id"),
         (dict(EV_READ, session_id="a b"), "session_id с пробелом"),
-        (dict(EV_READ, tool_input="строка"), "tool_input не объект"),
-        (dict(EV_READ, tool_input={"project": "infra",
-                                   mg.CLIENT_SESSION_ARG: EV_READ["session_id"]}), "id уже стоит")):
+        (dict(EV_READ, tool_input="строка"), "tool_input не объект")):
     got.clear()
     mg.cmd_session_arg(ev)
     check(not got, "session_arg не должен ничего менять: " + why)
+
+got.clear()
+mg.cmd_session_arg(dict(EV_READ, tool_input={"project": "infra", mg.CLIENT_SESSION_ARG: EV_READ["session_id"]}))
+upd = got[0]["hookSpecificOutput"]["updatedInput"] if got else {}
+check(upd.get("_client_trace") and upd.get(mg.CLIENT_SESSION_ARG) == EV_READ["session_id"],
+      "session_arg: уже заданный session id не должен мешать добавлению trace")
 
 # Сервер v1.77.0 объявил поле в схеме, модель его видит и может заполнить сама —
 # хук ставит поверх id этого чата.
@@ -575,7 +580,6 @@ mg._post_json = _capture_post
 for ev in (dict(EV_READ, session_id=""),
            dict(EV_READ, session_id="a b"),
            dict(EV_READ, tool_input="строка"),
-           dict(EV_READ, tool_input={"project": "infra", mg.CLIENT_SESSION_ARG: EV_READ["session_id"]}),
            dict(EV_READ, tool_input={"project": "infra", "note": "битое �"})):
     sent.clear()
     mg.cmd_session_arg(ev)
@@ -1148,7 +1152,8 @@ for line in log_tail.splitlines():
         log_recs.append(json.loads(line))
     except ValueError:
         pass
-check(any(r.get("action") == "probe.error" and r.get("session") == "vm-12" for r in log_recs),
+check(any(r.get("action") == "probe.error" and len(r.get("session", "")) == 64
+          and r.get("session") != "vm-12" for r in log_recs),
       "probe: вердикт, который не дошёл до сервера, не отмечен в журнале")
 mg._reflex_down_clear()
 
@@ -1577,6 +1582,7 @@ spec = importlib.util.spec_from_file_location("mc_guard_race", sys.argv[1])
 mg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mg)
 state = pathlib.Path(sys.argv[2])
+mg.TRACE_CONFIG_PATH = state / "trace.json"
 mg.STATE_DIR = state
 mg.HOOK_LOG = state / "race.log"
 mg.PENDING_DIR = state / "pending"

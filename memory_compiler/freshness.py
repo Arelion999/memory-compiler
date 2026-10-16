@@ -124,7 +124,7 @@ _CLIENT_SESSION_MAX = 128
 _HINT_TTL_SEC = 120
 _HINT_MAX = 1000
 _HINT_FP_RE = re.compile(r"[0-9a-f]{40}")
-_hints: dict[str, tuple[str, float]] = {}
+_hints: dict[str, tuple[str, float, dict | None, bool]] = {}
 _hints_lock = threading.Lock()
 
 
@@ -167,48 +167,64 @@ def call_fingerprint(tool: str, args: dict) -> str:
     хардкодным вектором. Ключи сортируются, юникод не экранируется, разделители
     компактные: одинаковые аргументы дают одинаковый отпечаток на любой машине.
     """
+    args = {k: v for k, v in args.items() if k not in (CLIENT_SESSION_ARG, "_client_trace")}
     raw = tool + "\0" + json.dumps(args, sort_keys=True, ensure_ascii=False,
                                    separators=(",", ":"), default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _hint_sweep(now: float) -> None:
-    """Ленивая чистка протухших; зовётся под _hints_lock из put/take."""
-    stale = [fp for fp, (_cid, ts) in _hints.items() if now - ts > _HINT_TTL_SEC]
+    """Lazy TTL cleanup, called under _hints_lock."""
+    stale = [fp for fp, item in _hints.items() if now - item[1] > _HINT_TTL_SEC]
     for fp in stale:
         _hints.pop(fp, None)
 
 
-def hint_put(fp: str, chat_id: str) -> None:
-    """Записать подсказку (отпечаток вызова → id чата). Кривой ввод молча
-    игнорируется — ручка уже отфильтровала, здесь страховка на прямой вызов."""
+def hint_put(fp: str, chat_id: str, trace=None) -> None:
+    """Identical retries are harmless; ambiguous fingerprints remain tombstones."""
+    from memory_compiler.telemetry import parse_trace
     if not (isinstance(fp, str) and _HINT_FP_RE.fullmatch(fp)):
         return
     if not valid_client_session(chat_id):
         return
+    parsed = parse_trace(trace)
+    with _hints_lock:
+        now = time.time()
+        _hint_sweep(now)
+        existing = _hints.get(fp)
+        if existing is not None:
+            cid, ts, old_trace, conflict = existing
+            if conflict or cid != chat_id or old_trace != parsed:
+                _hints[fp] = ("", ts, None, True)
+            return
+        if len(_hints) >= _HINT_MAX:
+            candidates = [k for k, item in _hints.items() if not item[3]]
+            if not candidates:
+                return  # Do not forget known ambiguity before its TTL.
+            oldest = min(candidates, key=lambda k: _hints[k][1])
+            _hints.pop(oldest, None)
+        _hints[fp] = (chat_id, now, parsed, False)
+
+
+def hint_take_trace(fp: str) -> tuple[str, dict | None, bool]:
+    """Consume one hint, but preserve a conflict until TTL to prevent false matches."""
+    if not (isinstance(fp, str) and _HINT_FP_RE.fullmatch(fp)):
+        return "", None, False
     with _hints_lock:
         _hint_sweep(time.time())
-        if len(_hints) >= _HINT_MAX:
-            oldest = min(_hints, key=lambda k: _hints[k][1])
-            _hints.pop(oldest, None)
-        _hints[fp] = (chat_id, time.time())
+        item = _hints.get(fp)
+        if item is None:
+            return "", None, False
+        chat_id, _, trace, conflict = item
+        if conflict:
+            return "", None, True
+        del _hints[fp]
+        return chat_id, trace, False
 
 
 def hint_take(fp: str) -> str:
-    """Consume-on-use: отдать id чата и удалить запись. Повторный вызов с тем
-    же отпечатком (перезапрос модели) подсказки уже не видит — иначе один чат
-    навсегда привязал бы к себе чужой вызов. Протухшая/отсутствующая → ""."""
-    if not (isinstance(fp, str) and _HINT_FP_RE.fullmatch(fp)):
-        return ""
-    with _hints_lock:
-        item = _hints.get(fp)
-        if item is None:
-            return ""
-        chat_id, ts = item
-        del _hints[fp]
-        if time.time() - ts > _HINT_TTL_SEC:
-            return ""
-        return chat_id
+    """Legacy consume-on-use interface: no attribution for ambiguous fingerprints."""
+    return hint_take_trace(fp)[0]
 
 
 def note_write(project: str, tool: str, topic: str, key: str) -> None:

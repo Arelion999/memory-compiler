@@ -52,6 +52,7 @@ mtime там проставляет mc-drive-nudge.sh пачками — то е
 """
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -59,10 +60,130 @@ import re
 import shlex
 import sys
 import time
+import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 HOME = Path(os.environ.get("USERPROFILE") or Path.home())
+TRACE_CONFIG_PATH = HOME / ".cache" / "memory-compiler" / "trace.json"
+# Adapter attribution is independent of the legacy gate/output profile.
+TRACE_CLIENT_FAMILY = None
+TRACE_FAMILIES = frozenset({"codex", "claude", "kimi", "kimiwork", "unknown"})
+TRACE_UUID_RE = re.compile(r"[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}")
+TRACE_REASONS = frozenset({"memory_tool", "loader", "outside_scope", "fresh_read",
+                          "target_card", "block_limit", "missing_or_stale_read",
+                          "hint_failed", "invalid_encoding"})
+TRACE_SERVICE_ARGS = frozenset({"_client_session", "_client_trace"})
+
+
+def _trace_device():
+    """Read bounded config, or atomically publish it once. Never repair corruption."""
+    path = TRACE_CONFIG_PATH
+    temporary = None
+    try:
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(513)
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".trace-", dir=path.parent)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(json.dumps({"v": 1, "device": uuid.uuid4().hex}).encode("ascii"))
+            try:
+                # A hard link publishes a complete file and cannot replace the winner.
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+            with path.open("rb") as stream:
+                raw = stream.read(513)
+        if len(raw) > 512:
+            return ""
+        data = json.loads(raw)
+        if (not isinstance(data, dict) or set(data) != {"v", "device"}
+                or type(data.get("v")) is not int or data["v"] != 1
+                or not isinstance(data.get("device"), str)
+                or not TRACE_UUID_RE.fullmatch(data["device"])):
+            return ""
+        return data["device"]
+    except Exception:
+        return ""
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _trace_family(event=None, family=None):
+    explicit = family if family is not None else TRACE_CLIENT_FAMILY
+    if explicit is not None:
+        return explicit if isinstance(explicit, str) and explicit in TRACE_FAMILIES else "unknown"
+    if isinstance(event, dict):
+        name = event.get("tool_name") or event.get("toolName") or ""
+        if event.get("_trace_kimiwork") is True or (
+                isinstance(name, str) and name.startswith("mcp__plugin-memory-compiler_memory-compiler__")):
+            return "kimiwork"
+    client, source = detect_client(event)
+    return client if source != "fallback" and client in TRACE_FAMILIES else "unknown"
+
+
+def trace_metadata(event=None, family=None):
+    """Optional JSON service argument. New call id per invocation; failures omit it."""
+    try:
+        device = _trace_device()
+        if not device:
+            return ""
+        return json.dumps({"v": 1, "device": device, "family": _trace_family(event, family),
+                           "call_id": uuid.uuid4().hex}, separators=(",", ":"))
+    except Exception:
+        return ""
+
+
+def with_trace_arguments(args, event=None, family=None):
+    """Copy arguments for one outbound MC call; preserve session, replace old trace."""
+    result = dict(args)
+    result.pop("_client_trace", None)
+    try:
+        trace = trace_metadata(event=event, family=family)
+        if trace:
+            result["_client_trace"] = trace
+    except Exception:
+        pass
+    return result
+
+
+def _trace_log_fields(event, trace=""):
+    """Local pseudonyms use a separate domain from server audit HMACs."""
+    fields = {"session": "unknown", "device_hash": "unknown",
+              "client_family": _trace_family(event)}
+    device = _trace_device()
+    if device:
+        def digest(domain, value):
+            return hmac.new(bytes.fromhex(device),
+                            ("mc-hook-local-v1:" + domain + "\0" + value).encode("utf-8"),
+                            hashlib.sha256).hexdigest()
+        fields["device_hash"] = digest("device", device)
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            # Family can differ between infra and plugin events of the same chat.
+            fields["session"] = digest("chat", sid)
+    if isinstance(trace, str) and len(trace) <= 320:
+        try:
+            value = json.loads(trace)
+            call_id = value.get("call_id")
+            if (type(value.get("v")) is int and value["v"] == 1
+                    and not set(value) - {"v", "device", "family", "call_id"}
+                    and isinstance(value.get("device"), str)
+                    and TRACE_UUID_RE.fullmatch(value["device"])
+                    and isinstance(call_id, str) and TRACE_UUID_RE.fullmatch(call_id)
+                    and value.get("family") in TRACE_FAMILIES):
+                fields["correlation_id"] = call_id
+                fields["client_family"] = value["family"]
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return fields
 
 # ------------------------------------------------------- локальный env-файл
 # mc_guard.env рядом с установленной копией скрипта (машинно-локальный, в репо
@@ -360,6 +481,9 @@ def normalize_event(event):
         if alias in event and canonical not in event:
             event[canonical] = event[alias]
     if "tool_name" in event:
+        if isinstance(event["tool_name"], str) and event["tool_name"].startswith(
+                "mcp__plugin-memory-compiler_memory-compiler__"):
+            event["_trace_kimiwork"] = True
         event["tool_name"] = normalize_tool_name(event.get("tool_name"))
     return event
 
@@ -509,7 +633,23 @@ def _rotate_hook_log():
     HOOK_LOG.rename(first)
 
 
-def journal(event, action, tool="", detail=""):
+def _trace_tool(name):
+    name = normalize_tool_name(name)
+    short = short_tool(name)
+    allowed = READ_TOOLS | WRITE_TOOLS | {"session_note", "report_issue", "check_conflicts",
+                                         "lint", "quality", "list_articles", "help", "ping"}
+    if short in allowed and (name == short or name.startswith("mcp__memory-compiler__")):
+        return short
+    if name in {"Bash", "PowerShell", "Shell", "exec_command"}:
+        return "shell"
+    if name in GATE_EXEMPT_TOOLS:
+        return "loader"
+    if INFRA_TOOL_RE.match(name):
+        return "infra"
+    return "other"
+
+
+def journal(event, action, tool="", detail="", reason="", trace=""):
     """Одна строка на срабатывание — на этом стоит вся статистика.
 
     Пишем ВСЕГДА, в том числе про пропуски (gate/pass): без знаменателя нельзя
@@ -521,12 +661,12 @@ def journal(event, action, tool="", detail=""):
             _rotate_hook_log()
         rec = {
             "ts": datetime.now().strftime(AUDIT_TS_FMT),
-            "session": str(event.get("session_id") or "")[:8],
             "action": action,
-            "tool": tool or short_tool(event.get("tool_name", "")),
+            "tool": _trace_tool(tool or event.get("tool_name", "")),
         }
-        if detail:
-            rec["detail"] = str(detail)[:200]
+        rec.update(_trace_log_fields(event, trace))
+        if reason in TRACE_REASONS:
+            rec["reason"] = reason
         with HOOK_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
@@ -542,7 +682,10 @@ def _pending_key(event):
     if tid:
         return re.sub(r"[^A-Za-z0-9_.-]", "_", str(tid))[:120]
     import hashlib
-    raw = json.dumps([event.get("tool_name"), event.get("tool_input")],
+    args = event.get("tool_input")
+    if isinstance(args, dict):
+        args = {k: v for k, v in args.items() if k not in TRACE_SERVICE_ARGS}
+    raw = json.dumps([event.get("tool_name"), args],
                      ensure_ascii=False, sort_keys=True)
     return "h" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
@@ -593,10 +736,9 @@ def _pending_split(event, paths=None):
 
 
 def _call_signature(tool, args):
-    """Вызов строкой для сравнения попыток. Без _client_session: его дописывает хук
-    session_arg, и у записи упавшей попытки этого поля может не быть."""
+    """Вызов для сравнения попыток, без служебных аргументов сессии и трассировки."""
     if isinstance(args, dict):
-        args = {k: v for k, v in args.items() if k != "_client_session"}
+        args = {k: v for k, v in args.items() if k not in TRACE_SERVICE_ARGS}
     return json.dumps([short_tool(tool or ""), args], ensure_ascii=False, sort_keys=True)
 
 
@@ -1309,7 +1451,11 @@ def cmd_gate(event):
     # TaskOutput, которого нет ни в одном матчере. Инструмент, не относящийся
     # к живой инфраструктуре, был бы заблокирован ни за что — поэтому право
     # блокировать проверяем ЗДЕСЬ, у себя.
-    if tool.startswith("mcp__memory-compiler__") or tool in GATE_EXEMPT_TOOLS:
+    if tool.startswith("mcp__memory-compiler__"):
+        journal(event, "gate.skip", reason="memory_tool")
+        return 0
+    if tool in GATE_EXEMPT_TOOLS:
+        journal(event, "gate.skip", reason="loader")
         return 0
     wide = _gate_wide()
     is_shell = tool in ("Bash", "PowerShell") or tool.endswith("PowerShell")
@@ -1323,6 +1469,7 @@ def cmd_gate(event):
         has_target = bool(REMOTE_CMD_RE.search(cmd))
     if not wide and not has_target:
         # Узкий режим (claude): гейтим только выход на живую инфру.
+        journal(event, "gate.skip", reason="outside_scope")
         return 0
     # Широкий режим (kimi): любой инструмент ниже идёт через свежесть/клапан/блок.
 
@@ -1333,7 +1480,7 @@ def cmd_gate(event):
         if not st.get("did_infra"):
             st["did_infra"] = True
             save_state(event, st)
-        journal(event, "gate.pass")
+        journal(event, "gate.pass", reason="fresh_read")
         if has_target:
             memo, _known = _target_memo(event)
             if memo:
@@ -1349,7 +1496,7 @@ def cmd_gate(event):
             st["last_read_ts"] = time.time()
             st["did_infra"] = True
             save_state(event, st)
-            journal(event, "gate.card", detail=_target_hint(event))
+            journal(event, "gate.card", reason="target_card")
             if memo:
                 emit({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                              "additionalContext": memo}})
@@ -1360,7 +1507,7 @@ def cmd_gate(event):
         # Клапан: база могла быть недоступна. Пропускаем, но говорим об этом.
         st["blocks"] = 0
         save_state(event, st)
-        journal(event, "gate.valve", detail="пропуск после %d блокировок" % blocks)
+        journal(event, "gate.valve", reason="block_limit")
         emit({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
@@ -1376,7 +1523,7 @@ def cmd_gate(event):
     save_state(event, st)
 
     hint = _target_hint(event) if has_target else ""
-    journal(event, "gate.block", detail=hint)
+    journal(event, "gate.block", reason="missing_or_stale_read")
     if has_target:
         # ⚠️ Памятку здесь НЕ запрашиваем: до этой строки доходит только цель,
         # по которой карточки нет (иначе ветка выше уже пропустила бы вызов).
@@ -1757,7 +1904,8 @@ def _gate_effect(recs):
     если в ТОЙ ЖЕ сессии в пределах 10 минут после неё было чтение базы."""
     reads = {}
     for r in recs:
-        if r.get("action") == "mc.ok" and r.get("tool") in READ_TOOLS:
+        if (r.get("action") == "mc.ok" and r.get("tool") in READ_TOOLS
+                and r.get("session") not in (None, "", "unknown")):
             reads.setdefault(r.get("session"), []).append(r["_ts"])
     worked = total = 0
     for r in recs:
@@ -2799,13 +2947,13 @@ def cmd_session_arg(event):
     args = event.get("tool_input")
     if not isinstance(sid, str) or not SESSION_ID_RE.fullmatch(sid) or not isinstance(args, dict):
         return 0
-    if args.get(CLIENT_SESSION_ARG) == sid:
-        return 0
     # U+FFFD в аргументах — след порчи кодировки при чтении stdin. Такой ввод не
     # возвращаем: без хука вызов уйдёт как есть, а с хуком уехал бы испорченным.
     if "�" in json.dumps(args, ensure_ascii=False):
-        journal(event, "session_arg.skip", detail="U+FFFD во вводе")
+        journal(event, "session_arg.skip", reason="invalid_encoding")
         return 0
+    updated = with_trace_arguments(dict(args, **{CLIENT_SESSION_ARG: sid}), event=event)
+    trace = updated.get("_client_trace", "")
     # Подсказка серверу (Kimi Code без updatedInput, аудит 28.09.2026): kimi
     # updatedInput не применяет — аргумент _client_session до сервера не доезжает,
     # и чаты склеиваются в одну MCP-сессию. Боковой канал: отпечаток вызова → id
@@ -2815,22 +2963,23 @@ def cmd_session_arg(event):
     # _client_session, если модель успела его заполнить. Сбой отправки не меняет
     # поведение хука: updatedInput отдаём в любом случае.
     try:
-        raw_args = dict(args)
-        raw_args.pop(CLIENT_SESSION_ARG, None)
+        raw_args = {k: v for k, v in args.items() if k not in TRACE_SERVICE_ARGS}
         fp = hashlib.sha1((short_tool(event.get("tool_name", "")) + "\0" + json.dumps(
             raw_args, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
             default=str)).encode("utf-8")).hexdigest()
-        _post_json("/api/session_hint", {"fp": fp, "chat_id": sid}, timeout=2)
-        journal(event, "session_arg.hint")
+        response = _post_json("/api/session_hint", {"fp": fp, "chat_id": sid, "trace": trace}, timeout=2)
+        confirmed = isinstance(response, dict) and response.get("ok") is True
     except Exception:
-        pass
+        confirmed = False
+    journal(event, "session_arg.hint" if confirmed else "session_arg.hint_failed",
+            reason="" if confirmed else "hint_failed", trace=trace)
     emit({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
-        "updatedInput": dict(args, **{CLIENT_SESSION_ARG: sid}),
+        "updatedInput": updated,
     }})
     # Журнал — единственный след, что хук отработал: сервер аргумент вынимает
     # и в аудит не пишет, а в выдаче его не видно.
-    journal(event, "session_arg.add")
+    journal(event, "session_arg.add", trace=trace)
     return 0
 
 

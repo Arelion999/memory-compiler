@@ -149,6 +149,19 @@ login while the password stays out of the index.
 
 An automatic log of every call to the MCP tools.
 
+Each MCP call also has a separate `trace` object: a server-generated request ID,
+duration, client family, outcome/reason codes and HMAC pseudonyms for the device
+and chat. New client hooks can supply a random device token and a per-call
+correlation ID; these are diagnostic hints, not authentication. Raw device tokens,
+chat IDs, hostnames, addresses, paths and argument text are excluded from this
+metadata. Existing argument masking below still applies separately.
+
+Pseudonyms use `MC_TRACE_KEY`, fall back to `MC_API_KEY`, or use a process-local
+random key when neither is configured. Key rotation changes pseudonyms; with
+the process-local fallback they change after a server restart. Older clients
+continue to work with missing device attribution. Malformed metadata is ignored,
+and ambiguous session hints remain unattributed.
+
 ### Record format
 
 ```json
