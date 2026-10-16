@@ -1122,18 +1122,30 @@ class StaleTolerantSessionManager(StreamableHTTPSessionManager):
     """
 
     async def handle_request(self, scope, receive, send):
+        sid = (Headers(scope=scope).get(MCP_SESSION_ID_HEADER)
+               if not self.stateless and scope.get("type") == "http" else None)
+        transport = self._server_instances.get(sid) if sid is not None else None
         if (
             not self.stateless
             and scope.get("type") == "http"
             and scope.get("method") == "POST"
         ):
-            sid = Headers(scope=scope).get(MCP_SESSION_ID_HEADER)
             if sid is not None and sid not in self._server_instances:
                 logging.getLogger(__name__).info(
                     "Stale MCP session %s... served on one-shot transport", sid[:8]
                 )
                 return await self._serve_stale_session(scope, receive, send, sid)
-        await super().handle_request(scope, receive, send)
+        try:
+            await super().handle_request(scope, receive, send)
+        finally:
+            # SDK 1.29.1 skips terminated transports in the runner's finally:
+            # https://github.com/modelcontextprotocol/python-sdk/issues/3300
+            # No await between identity check and removal: concurrent requests
+            # cannot remove a replacement transport or its owner.
+            if (transport is not None and transport.is_terminated
+                    and self._server_instances.get(sid) is transport):
+                self._server_instances.pop(sid, None)
+                self._session_owners.pop(sid, None)
 
     async def _serve_stale_session(self, scope, receive, send, sid):
         http_transport = StreamableHTTPServerTransport(

@@ -351,6 +351,8 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 MCP tools reject undeclared fields, missing required arguments, and incorrect types with `isError: true` and an `Input validation error` message that names the field or expected type without echoing argument values. Validation runs after argument recovery and project fallback, before the handler; an invalid call does not save an article. For example, remove `limit` from `search` and `verified` from `finish_task`: these tools do not support those fields.
 
+The `/api/health` field `mcp_sessions` counts registered `/mcp` transports. Sessions expire after 7200 seconds of inactivity; a successful DELETE immediately removes the terminated transport and its owner. GET and DELETE with an unknown session id return 404. POST with an unknown id (including one already closed) uses a one-shot stateless transport for restart compatibility and does not add a registry entry.
+
 ### Automation
 
 - Daily logs auto-compiled at 02:00
