@@ -81,19 +81,19 @@ The skill automates the entire memory workflow: it looks up context, determines 
 ```bash
 # From the memory-compiler repo
 mkdir -p ~/.claude/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md ~/.claude/skills/memory-autopilot/SKILL.md
+cp -R skills/memory-autopilot/. ~/.claude/skills/memory-autopilot/
 ```
 
 **What the skill does:**
 - Triggers automatically on tasks, facts, questions and errors
-- Determines the project from context (mapping table inside)
+- Determines the project through `route_project(text, cwd)` and the server project list
 - Picks the right tool from a decision tree (save_lesson / save_decision / save_runbook / save_from_template / save_secret)
 - Calls start_task at the beginning and finish_task at the end
 - Looks up credentials and context in the base without asking the user
 
 ⚠️ **SKILL.md is currently Russian-only.** The skill still works with an English-speaking user — the model reads the instructions and answers in the user's language — but its internal wording, its examples and the trigger phrases it lists are Russian.
 
-**Configuring projects:** edit the "Определение проекта" (project routing) table in SKILL.md to match your own projects.
+**Configuring projects:** create projects through `add_project` or a first write, and pass the working directory to `route_project`. The skill has no mapping table to customise.
 
 ---
 
@@ -119,31 +119,24 @@ For ALL memory operations use ONLY memory-compiler tools (mcp__memory-compiler__
 
 ## 5. Hooks (a safety net)
 
-The memory-autopilot skill replaces most hooks. Keep only two:
+Install the guard from the repository root:
 
-```json
-{
-  "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"decision\":\"block\",\"reason\":\"STOP. Was a non-trivial task solved? If YES and you did NOT call memory-compiler:finish_task — CALL IT NOW.\"}}'",
-        "timeout": 5
-      }]
-    }],
-    "PostCompact": [{
-      "hooks": [{
-        "type": "command",
-        "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostCompact\",\"additionalContext\":\"CONTEXT WAS COMPACTED. If there were non-trivial decisions that are not recorded — call memory-compiler:finish_task now.\"}}'",
-        "timeout": 5
-      }]
-    }]
-  }
-}
+```bash
+python hooks/install.py --client=claude --dry-run
+python hooks/install.py --client=claude
 ```
 
-- **Stop** — a safety net: blocks the end of a session if finish_task was never called
-- **PostCompact** — a reminder when the context is compacted
+The installer copies `mc_guard.py` to `~/.claude/hooks/`, backs up
+`~/.claude/settings.json` and replaces its `hooks` section. If you have
+custom hooks, preserve them and merge them with the generated settings.
+Check `~/.claude/hooks/mc_guard.env`: `MC_API_URL`, `MC_API_KEY`, and
+`MC_KNOWLEDGE_DIR` if needed. These machine-specific values are not committed.
+
+The guard loads starting context, supplies the chat id, reports other
+sessions' writes, requires a knowledge-base read before infrastructure
+calls, maintains the write queue and delivers reflex notes. `Stop` checks
+write state; `PostCompact` reminds the assistant to save context through
+`save_compact`. The source and installer live in [hooks/](../hooks/).
 
 ---
 
@@ -178,9 +171,9 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 
 | Feature | Status | Comment |
 |---------|--------|---------|
-| MCP tools (all 46) | ✅ | Fully supported |
+| MCP tools (all 50) | ✅ | Fully supported |
 | memory-autopilot skill | ✅ | Auto-triggered by its description |
-| Stop/PostCompact hooks | ✅ | Safety net |
+| mc_guard hooks | ✅ | Gate, queue, freshness, reflexes, compact |
 | Auto search_error on a traceback | ✅ | Through the skill (Phase 0) |
 | Auto git_capture after a commit | ❌ | No FileChanged event in Desktop |
 
@@ -199,5 +192,5 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 - Desktop logs: `%APPDATA%\Claude\logs\`
 
 **The Stop hook is blocking?**
-- Claude has to call finish_task to unblock
-- If it gets stuck, comment out the Stop hook temporarily
+- Inspect `~/.claude/hooks/mc_hooks.log` and `~/.claude/hooks/pending`; retry or correct the failed write.
+- Call `finish_task` when the task is solved; an error response does not count as a saved result.

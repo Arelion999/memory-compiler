@@ -30,6 +30,8 @@ an advisory is published from it.
 │                    AuthMiddleware (ASGI)                   │
 │                                                            │
 │  /api/health          → allow through (public)             │
+│  /api/version         → public                            │
+│  /api/auth/login      → public login endpoint             │
 │  /login               → allow through (login page)         │
 │  /.well-known/*       → 404 (OAuth discovery)              │
 │  /mcp                 → Bearer or X-Api-Key header         │
@@ -105,7 +107,7 @@ Configured through `MC_ENCRYPT_KEY`. Used to encrypt sensitive articles (passwor
 save_secret("Server password", "root:P@ss123", project="infra")
                     │
                     ▼
-        PBKDF2 (100000 iterations) → Fernet (AES-256)
+        PBKDF2-HMAC-SHA256 (100000 iterations) → Fernet (AES-128-CBC + HMAC-SHA256)
                     │
                     ▼
         File on disk:   ENC:gAAAAABn...  (unreadable)
@@ -113,11 +115,11 @@ save_secret("Server password", "root:P@ss123", project="infra")
                     │
                     ▼
 read_article() → decryption → "root:P@ss123"
-search()       → "[зашифровано — используй read_article для просмотра]"
+search()       → JSON: metadata + secret:true, no body
 ```
 
-The placeholder above is emitted verbatim by the server and is currently Russian-only
-("encrypted — use read_article to view"); it is a runtime string, not documentation.
+The `search` tool returns article metadata, including `secret: true`, without the secret body.
+The encryption primitives are described in the [Fernet documentation](https://cryptography.io/en/latest/fernet/#implementation).
 
 ### What gets encrypted
 
@@ -177,7 +179,9 @@ Sensitive fields are masked in the log automatically:
 | MCP (`/mcp`) | Bearer / `X-Api-Key` header | Configured once in the config file |
 | MCP legacy (`/sse`) | Bearer / `?key=` in the URL | Kept for old configs |
 | /api/health | Public | For the Docker healthcheck |
-| Secret articles | AES-256 on disk | Only via save_secret |
+| /api/version | Public | Server version |
+| /api/auth/login | Public | Checks the key and issues a cookie |
+| Secret articles | Fernet on disk | Only via save_secret |
 | Ordinary articles | Plain text | Not encrypted |
 | Git history | Secrets encrypted | Ordinary articles in plain text |
 | Audit | Automatic | `content` is masked |

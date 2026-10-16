@@ -12,8 +12,8 @@
 
 ```
 python hooks/install.py                # оба CLI-клиента (claude + kimi)
-python hooks/install.py --client kimi  # только Kimi Code
-python hooks/install.py --client kimiwork  # Kimi Work (desktop) — см. ниже
+python hooks/install.py --client=kimi  # только Kimi Code
+python hooks/install.py --client=kimiwork  # Kimi Work (desktop) — см. ниже
 python hooks/install.py --dry-run      # показать изменения, ничего не писать
 python hooks/install.py --force-env    # перезаписать существующий mc_guard.env
 ```
@@ -30,12 +30,15 @@ python hooks/install.py --force-env    # перезаписать существ
 Kimi Work не читает `[[hooks]]` из конфигов — зато исполняет `hooks`,
 объявленные в манифесте плагина (`kimi.plugin.json`: поле
 `[{event, command, matcher?, timeout?}]`, 16 событий; `PreToolUse` умеет
-блокировать вызов с причиной). `--client kimiwork` копирует `mc_guard.py` и
+блокировать вызов с причиной). `--client=kimiwork` копирует `mc_guard.py` и
 `mc_guard.env` в `hooks/` каталога исходников плагина и рендерит 7 записей
 хуков в его манифест (session_start, freshness, nul_guard, gate, session_arg,
-stop, mark) с бампом `+local`-версии и бэкапом. После синка плагин нужно
-перерегистрировать в личном рынке и обновить в клиенте — хуки читает
-установленная копия. Подробности: см. docs/kimi-work-setup.md.
+stop, mark) с бампом `+local`-версии и бэкапом. Каталог исходников —
+`<KIMI_SHARE_DIR>/plugin-sources/personal/memory-compiler`; по умолчанию
+`KIMI_SHARE_DIR` соответствует `%APPDATA%/kimi-desktop/daimon-share`.
+Существующая managed-копия синхронизируется автоматически. После синка
+перерегистрируйте/обновите плагин и полностью перезапустите Kimi Work:
+манифест загружается при старте. Подробности: [настройка Kimi Work](../docs/kimi-work-setup.md).
 
 Имена инструментов в Kimi Work выглядят как
 `mcp__plugin-<плагин>_<сервер>__<tool>`; `normalize_tool_name()` на границе
@@ -45,7 +48,7 @@ camelCase-поля payload к snake_case — оба мира понимаютс�
 
 ## Профили клиентов
 
-Один скрипт обслуживает оба клиента. Профиль определяется по приоритету:
+Один скрипт обслуживает Claude Code и семейство Kimi. Профиль определяется по приоритету:
 `--client=claude|kimi` в команде хука (его выписывает install.py в конфиг) →
 переменная `MC_GUARD_CLIENT` → поле `client_type` события → эвристика по полям
 события → fallback `claude` (с записью `client.fallback` в журнал хука).

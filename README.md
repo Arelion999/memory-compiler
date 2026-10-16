@@ -115,6 +115,9 @@ Full walkthrough: [docs/kimi-work-setup.en.md](docs/kimi-work-setup.en.md) — e
 | `session_note(note, project)` | A note WHILE working — one line, no summary rebuild |
 | `load_session(project)` | Load context plus notifications about stale articles |
 | `get_active_context(project)` | Feed of the last 10 actions |
+| `open_questions(project)` | Unresolved questions from previous sessions |
+| `close_question(project, match, remainder)` | Close a question, preserving any unresolved remainder |
+| `save_compact(project, summary)` | Save context across a compaction boundary |
 
 **Temporal state:**
 
@@ -139,6 +142,8 @@ Full walkthrough: [docs/kimi-work-setup.en.md](docs/kimi-work-setup.en.md) — e
 | `list_projects()` | List projects with article counts |
 | `set_project_deps(project, depends_on)` | Declare dependencies between projects |
 | `get_project_deps(project)` | Read a project's dependencies |
+| `route_project(text, cwd, top_k)` | Choose a project from the working directory and task context |
+| `init_schema(project)` | Create a project contract template in `_schema.md` |
 
 **Maintenance:**
 
@@ -152,6 +157,9 @@ Full walkthrough: [docs/kimi-work-setup.en.md](docs/kimi-work-setup.en.md) — e
 | `lint(project, fix, verbose)` | Check for duplicates, staleness, tags and broken links. By default "stale" and "orphan" collapse into a counter — they describe the state of the base rather than problems (across 1612 articles they made up 95% of the output); `verbose` expands them line by line |
 | `reindex()` | Rebuild the index |
 | `article_history(project, filename)` | Git history of an article |
+| `consolidate(project, min_sim)` | Report duplicates and similar topics without merging automatically |
+| `stale_facts(project, warn_days)` | Find expiring certificates and other ageing facts |
+| `gap_report(project, days, limit)` | Report frequent empty or weak searches and sparse projects |
 | `backlinks(project, filename)` | Who links to this article: incoming MANUAL links with a context line. The auto-generated "See also" block is excluded — it reflects semantic similarity |
 
 **Contextual generation (contextual retrieval):**
@@ -191,7 +199,7 @@ Result over 140 queries (`scripts/eval_pipeline.py`): **MRR 0.4242 → 0.4914, r
 
 ⚠️ **The figures above were taken with a pre-v1.32.0 harness.** On the cleaned set (`load_golden` with unreachable targets filtered out, n=132) the same code yields **MRR 0.5212, recall@1 0.3939, recall@10 0.7727**, while the old pipeline yields 0.4499. Search behaviour did not change; the harness was under-reporting, not the code. Versions may only be compared against each other under an identical harness version.
 
-**Current baseline (harness v1.40.0, n=110): MRR 0.6013, recall@1 0.4818, recall@10 0.8364.** The latest shift is again the harness, not search: opening an article after a CHANGE OF WORK (a `finish_task`, `save_lesson`, `edit_article`… happened between the query and the open) is no longer credited to the preceding query. The signal is event-based rather than time-based, and it splits the data sharply: without a change of work the median gap is 12 s and no pair exceeds 10 minutes, whereas with one the median is 3.7 hours. That is why no time threshold was needed. On a single snapshot: without boundaries n=131 / MRR 0.5514, with boundaries n=110 / MRR 0.6013.
+**Historical baseline (harness v1.40.0, n=110): MRR 0.6013, recall@1 0.4818, recall@10 0.8364.** The latest shift is again the harness, not search: opening an article after a CHANGE OF WORK (a `finish_task`, `save_lesson`, `edit_article`… happened between the query and the open) is no longer credited to the preceding query. The signal is event-based rather than time-based, and it splits the data sharply: without a change of work the median gap is 12 s and no pair exceeds 10 minutes, whereas with one the median is 3.7 hours. That is why no time threshold was needed. On a single snapshot: without boundaries n=131 / MRR 0.5514, with boundaries n=110 / MRR 0.6013.
 
 Previous baseline (harness v1.36.0, n=129): MRR 0.5512, recall@1 0.4419, recall@10 0.7597. That change was also harness-side: `search_by_tag` was dropped as a source because it does not rank by relevance at all — it walks files and matches the tag (back then it returned hits in directory-traversal order; since v1.91.0 it orders them by article date). Its clicks were measuring the wrong pipeline. The set shrank by just 3 queries while MRR rose by 0.03: tag "queries" were shadowing genuine search queries and **claiming their opens**. The source-selection criterion was fixed at the same time — it used to be "the set scores better with it" (selection on the metric), and is now "the source exercises the pipeline under measurement" (verified against the code).
 
@@ -266,13 +274,13 @@ The backfill is interruptible and resumable (the state is the frontmatter itself
 `save_lesson` automatically performs:
 
 1. A write into the daily log (audit trail)
-2. Auto-tagging (14 regex rules)
+2. Auto-tagging (27 regex rules)
 3. A semantic lookup for an existing article — merge instead of duplicate
 4. Cross-references in related articles
 5. An update to the active-context feed
 6. Extraction of git references (commits, issues, tags)
 7. An update to matching tracking articles (version, IP, port, URL) — the current value is owned by tracking, with a guard against version regression; a version the note itself calls a plan, a requirement, not yet done or a condition (`< 0.4.0`) is not taken, nor is a bare version that follows only the name of another product (`Electron 44.2.0`, `mcp[cli]==1.28.1`); an IP field changes only when the relevant text names exactly one address of the same role
-8. A git commit
+8. A background git commit; the client does not wait for git
 
 ### Memory reflexes
 
@@ -292,7 +300,7 @@ Matching on a word mentioned in the body is deliberately absent, and so is a ver
 - superseded articles never arrive;
 - secrets are never decrypted — only the title and a pointer to `read_article`.
 
-The endpoint is `POST /api/reflex` with `{"kind": "error|target|file", "text": …, "cwd": …, "exclude": [...]}`; the response carries `memos` and a ready `text`. The author's hook is the `reflex` subcommand of the guard script in `~/.claude/hooks` and is not part of the repository: it puts the response `text` into `additionalContext`.
+The endpoint is `POST /api/reflex` with `{"kind": "error|target|file", "text": …, "cwd": …, "exclude": [...]}`; the response carries `memos` and a ready `text`. The hook is the `reflex` subcommand of [hooks/mc_guard.py](hooks/mc_guard.py), installed for Claude Code and Kimi Code by `python hooks/install.py`. The Kimi Work plugin currently installs a smaller set of hooks without `reflex` (see its setup guide).
 
 The basis is a measurement on 13.09.2026 over 873 sessions. Of 432 errors in eleven recurring classes, 225 happened when the fix was already in the base, and after an error the agent looked into the base in 13% of cases.
 
@@ -337,7 +345,7 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 ### REST API
 
-22 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and the MCP transports: `/mcp` (Streamable HTTP, recommended) and `/sse` (legacy).
+24 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, session hints (`/api/session_hint`), a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, daily metrics (`/api/metrics/daily`), tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and the MCP transports: `/mcp` (Streamable HTTP, recommended) and `/sse` (legacy).
 
 `/api/analytics` separates search attempts (`searches`), technical failures (`search_errors`), and successful searches (`successful_searches`). Empty results (`misses`) and action rates use successful searches as their denominator. A failed search is not an empty result; failed reads and writes are not successful actions. The Web UI and daily reports show no percentage when there are no successful searches.
 
@@ -357,7 +365,7 @@ Three layers of protection, each enabled by an env variable:
 | Layer | Variable | What it does |
 |-------|----------|--------------|
 | Authorisation | `MC_API_KEY` | Login page + 30-day cookie, Bearer token; for MCP also the `X-Api-Key` header (`?key=` only on the legacy `/sse`) |
-| Encryption | `MC_ENCRYPT_KEY` | AES-256 for secret articles (save_secret) |
+| Encryption | `MC_ENCRYPT_KEY` | Fernet (AES-128-CBC + HMAC-SHA256) for secret articles (save_secret) |
 | Audit | automatic | A log of every MCP call, "Audit" tab in the Web UI |
 
 With no variables set, access is open (backwards compatibility). More detail: [docs/security.md](docs/security.md)
@@ -385,16 +393,28 @@ A one-off run and check: `pwsh -File scripts\mc-backup-pull.ps1 -Verify` (log at
 
 ```
 memory-compiler/
-├── server.py                  # Entry point (11 lines)
+├── server.py                  # Server entry point
 ├── memory_compiler/
 │   ├── __init__.py
 │   ├── config.py              # Constants, metadata, shared state
 │   ├── search.py              # Whoosh BM25F + semantic + reranking + contextual retrieval
 │   ├── storage.py             # Articles, git, utilities, auto-tagging
-│   ├── handlers.py            # MCP tool implementations
+│   ├── handlers.py            # MCP handler core and re-exports
+│   ├── handlers_search.py     # Search and context retrieval
+│   ├── handlers_articles.py   # Article writes and edits
+│   ├── handlers_sessions.py   # Sessions, start_task, finish_task
+│   ├── handlers_reports.py    # Reports and maintenance
+│   ├── journal.py             # Session journal and questions
+│   ├── versioning.py          # Version aggregation
+│   ├── freshness.py           # Context freshness across chats
+│   ├── reflexes.py            # Reflex notes and fact probes
+│   ├── embed_queue.py         # Background embedding queue
+│   ├── analytics.py           # Search quality metrics
+│   ├── daily_metrics.py       # Daily reports
 │   ├── tools.py               # MCP tool registration, dispatcher, resources, prompts
 │   ├── api.py                 # REST endpoints, Starlette app
 │   ├── ui.py                  # Web UI HTML template
+│   ├── ui_app.py              # MCP Apps search panel
 │   ├── markdown_render.py     # Server-side MD rendering (markdown-it-py + Pygments + nh3)
 │   ├── obs.py                 # Observability: structured logging, request_id, error counters
 │   ├── retrieval_eval.py      # Search evaluation: behavioural golden set + known-item, recall@k/MRR
@@ -405,6 +425,9 @@ memory-compiler/
 ├── skills/
 │   └── memory-autopilot/
 │       └── SKILL.md           # The memory autopilot skill for Claude Code
+├── hooks/                     # mc_guard.py + install.py
+├── scripts/                   # Release, backups, diagnostics
+├── VERSION
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -432,9 +455,9 @@ pytest tests/ -v
 
 The `memory-autopilot` skill automates the whole cycle — it looks up context, picks the tool and saves the result. The user simply works while memory is managed invisibly.
 
-Installation: copy `skills/memory-autopilot/SKILL.md` to `~/.claude/skills/memory-autopilot/SKILL.md`.
+Installation: copy the whole `skills/memory-autopilot/` directory, including `references/`, to `~/.claude/skills/memory-autopilot/`.
 
-The server itself warns a session about other sessions' writes to the project and reminds it about `session_note` after long work without a write. It tracks these snapshots per MCP session — and Claude Desktop, when memory-compiler is also listed in `claude_desktop_config.json`, may hand its own server instance to Code-tab chats, i.e. one MCP session for all of them. To let the server tell chats apart, the client passes the chat id in any call as the service argument `_client_session`: the server strips it before the tool runs and keeps it out of the audit log, and without it behaves as before. In Claude Code a PreToolUse hook on `mcp__memory-compiler__.*` does this by returning `updatedInput` — the original arguments plus `_client_session` = `session_id`; no `permissionDecision` is needed. The parameter is declared in every tool's schema as an optional service field: an argument missing from the schema never gets through the Claude Desktop bridge to the server (verified on Desktop 1.52386 with Claude Code 2.1.266). ⚠️ Desktop caches the tool list for the lifetime of the app — restart it fully after updating the server.
+The server warns about other chats' writes to a project and reminds the assistant about `session_note` after long work without a write. Snapshots are keyed by chat and project: a valid `_client_session` distinguishes chats behind a shared MCP bridge, with the MCP session as fallback. The argument is removed before the handler and kept out of the audit log. Claude Code supplies it through PreToolUse and `updatedInput`; Kimi has the `/api/session_hint` side channel with a call fingerprint and a 120-second TTL. Every tool declares the parameter so that client bridges pass it through. Snapshots survive server restarts with a seven-day TTL. Fully restart Desktop after schema changes: it caches the tool list for the lifetime of the app.
 
 ### Manual mode
 
@@ -457,6 +480,8 @@ PROJECTS=backend,infra,general python server.py
 ### Description language
 
 `MC_LANG=en` switches tool and prompt descriptions to English — the text an MCP client shows the model when it picks a call. Defaults to `ru`; any unknown value also yields Russian.
+
+With Docker, `.env` supplies only variables explicitly referenced by `docker-compose.yml`. `MC_LANG` and tuning knobs such as `RERANK_ENABLED`, `SEARCH_POOL` and `CHUNK_ADAPTIVE` are not currently passed through: add the needed entry under the service's `environment` (for example, `- MC_LANG=${MC_LANG:-ru}`), then recreate the container with `docker-compose up -d --force-recreate`. Setting these only in `.env` has no effect. A direct `python server.py` launch reads process environment variables; it does not load `.env` itself.
 
 ⚠️ Server responses stay in Russian: only the descriptions are translated. This is a deliberate half-step — descriptions are what the model reads when choosing a tool, and they matter more.
 
@@ -501,11 +526,11 @@ The output ceiling is set on the client side, in `~/.claude/settings.json`:
 }
 ```
 
-The default is 32000 and the documented maximum is 64000; it takes effect when the application restarts. Amazon Bedrock users are advised to go the other way and set 4096 — its throttling logic differs.
+The value `64000` above is an example setting, not a universal maximum. Defaults and caps depend on the model and provider; Claude Code clamps the setting to the model cap. Check the [current environment-variable reference](https://code.claude.com/docs/en/env-vars#claude-code-max-output-tokens) and restart the client after changing it.
 
 ⚠️ Non-Latin text costs more tokens. On the default ceiling keep `content` within ~1500 characters of ordinary text; a raised ceiling comfortably takes ~4000. Long analysis is better saved as its own article and linked to: headings carry ×5 weight in search, while text buried in another topic's `content` will not surface under its own topic.
 
-⚠️ Count what actually goes into the call, not the readable text. JSON accepts non-Latin characters both literally and as `\uXXXX` escape sequences — in the latter case a single letter occupies six characters, so the same text exhausts the budget six times faster. The `raw` tells them apart: readable text is the ordinary case, an unbroken ribbon of `\uXXXX` is the escaped form, where the content limit drops to roughly 400 characters. If a retry with the same text in meaning goes through, the form changed, not the length.
+⚠️ Check the generated argument representation. JSON allows non-Latin letters both literally and as `\uXXXX`: one letter then occupies six JSON characters, but the token cost depends on the tokenizer and is not necessarily six times greater. The error's `raw` shows which form was generated. The ~1500/~4000-character figures are practical observations, not guaranteed server or client limits.
 
 ## Support
 

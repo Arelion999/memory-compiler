@@ -44,11 +44,15 @@ plugin only needs the URL and the key.
 ## 2. Creating the plugin and connecting MCP
 
 Kimi Work connects MCP servers through personal-market plugins. Create a
-plugin directory (outside the memory-compiler repository, e.g. in your own
-tools directory):
+directory `<daimon-share>/plugin-sources/personal/memory-compiler` outside
+the repository. Below, `<plugin-dir>` means this exact path. Set the hook
+installer's process environment variable `KIMI_SHARE_DIR=<daimon-share>`;
+it defaults to `%APPDATA%/kimi-desktop/daimon-share` on Windows. On macOS/Linux,
+set `KIMI_SHARE_DIR` explicitly to your daimon share directory:
+
+`<plugin-dir>/kimi.plugin.json`:
 
 ```json
-// <plugin-dir>/kimi.plugin.json
 {
   "name": "memory-compiler",
   "version": "0.1.0",
@@ -67,19 +71,18 @@ tools directory):
 Copy the skill into the plugin (it will be needed later too):
 
 ```bash
-mkdir -p <plugin-dir>/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md <plugin-dir>/skills/memory-autopilot/SKILL.md
+mkdir -p "<plugin-dir>/skills/memory-autopilot"
+cp -R skills/memory-autopilot/. "<plugin-dir>/skills/memory-autopilot/"
 ```
 
 Register the plugin in the personal market and install it:
 
 ```bash
 # Registration (the path to kimi-daimon depends on the client installation)
-kimi-daimon kimi-plugin register-personal <plugin-dir> --share-dir <daimon-share>
+kimi-daimon kimi-plugin register-personal "<plugin-dir>" --share-dir "<daimon-share>"
 ```
 
-Then: **Settings → Plugins → the Personal tab → install**. The daemon
-applies the installation to active sessions — no client restart needed.
+Then: **Settings → Plugins → the Personal tab → install**. After step 5, fully restart the client so that the hooks are loaded.
 
 The `sessionStart` field is a native replacement for a SessionStart hook:
 the runtime surfaces the memory-autopilot skill at the start of every
@@ -96,15 +99,16 @@ Kimi Work reads user skills from `~/.agents/skills` — put a copy there:
 
 ```bash
 mkdir -p ~/.agents/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md ~/.agents/skills/memory-autopilot/SKILL.md
+cp -R skills/memory-autopilot/. ~/.agents/skills/memory-autopilot/
 ```
 
 The copy inside the plugin (step 2) handles auto-loading at session start;
 the copy in `~/.agents/skills` handles triggering by context in any working
 directory. The two are identical — keep them in sync when updating.
 
-**Project setup:** edit the "Project identification" table in SKILL.md for
-your own projects.
+**Project setup:** create projects on the server through `add_project` or
+a first write; `route_project(text, cwd)` selects them by directory and topic.
+There is no project mapping table in SKILL.md.
 
 ---
 
@@ -148,6 +152,7 @@ into `kimi.plugin.json` and bumps the plugin version. After that:
 
 1. re-register the plugin (`kimi-plugin register-personal`, as in step 2);
 2. in the client, press **update** on the plugin in the Personal tab.
+3. fully restart Kimi Work.
 
 What the plugin hooks include:
 
@@ -156,7 +161,7 @@ What the plugin hooks include:
 | `SessionStart` | `session_start` | starting context from the base |
 | `UserPromptSubmit` | `freshness` | other sessions' writes + the memory reminder |
 | `PreToolUse` | `nul_guard` | blocks redirects into `nul`/`con` (Windows) |
-| `PreToolUse` | `gate` | **first call of ANY tool is blocked until the session has read the base within 15 min** |
+| `PreToolUse` | `gate` | **any tool requires a base read within the last 15 minutes** |
 | `PreToolUse` | `session_arg` | passes the chat id to the server (context freshness) |
 | `Stop` | `stop` | backstop: don't let the session close without finish_task |
 | `PostToolUse` | `mark` | marks "base read" (clears the gate) |

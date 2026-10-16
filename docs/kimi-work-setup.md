@@ -44,11 +44,15 @@ curl http://<хост>:8765/api/health
 ## 2. Создание плагина и подключение MCP
 
 Kimi Work подключает MCP-серверы через плагины личного рынка. Создайте
-каталог плагина (вне репозитория memory-compiler, например в своём каталоге
-инструментов):
+каталог `<daimon-share>/plugin-sources/personal/memory-compiler` вне репозитория.
+Ниже `<каталог-плагина>` означает именно этот путь. Для установщика хуков
+задайте `KIMI_SHARE_DIR=<daimon-share>` в окружении процесса; по умолчанию
+он использует `%APPDATA%/kimi-desktop/daimon-share` (Windows). На macOS/Linux
+явно укажите `KIMI_SHARE_DIR`, соответствующий установке daimon:
+
+`<каталог-плагина>/kimi.plugin.json`:
 
 ```json
-// <каталог-плагина>/kimi.plugin.json
 {
   "name": "memory-compiler",
   "version": "0.1.0",
@@ -67,19 +71,18 @@ Kimi Work подключает MCP-серверы через плагины ли
 Скопируйте скил в плагин (он понадобится и дальше):
 
 ```bash
-mkdir -p <каталог-плагина>/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md <каталог-плагина>/skills/memory-autopilot/SKILL.md
+mkdir -p "<каталог-плагина>/skills/memory-autopilot"
+cp -R skills/memory-autopilot/. "<каталог-плагина>/skills/memory-autopilot/"
 ```
 
 Зарегистрируйте плагин в личном рынке и установите:
 
 ```bash
 # Регистрация (путь к kimi-daimon зависит от установки клиента)
-kimi-daimon kimi-plugin register-personal <каталог-плагина> --share-dir <daimon-share>
+kimi-daimon kimi-plugin register-personal "<каталог-плагина>" --share-dir "<daimon-share>"
 ```
 
-Затем: **Настройки → Плагины → вкладка «Персональные» → установить**. Демон
-применяет установку к активным сессиям — перезапуск клиента не нужен.
+Затем: **Настройки → Плагины → вкладка «Персональные» → установить**. После шага 5 полностью перезапустите клиент, чтобы загрузились хуки.
 
 Поле `sessionStart` — нативная замена SessionStart-хука: рантайм сам
 показывает скил memory-autopilot в начале каждой сессии.
@@ -96,15 +99,16 @@ Kimi Work читает пользовательские скиллы из `~/.ag
 
 ```bash
 mkdir -p ~/.agents/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md ~/.agents/skills/memory-autopilot/SKILL.md
+cp -R skills/memory-autopilot/. ~/.agents/skills/memory-autopilot/
 ```
 
 Копия внутри плагина (шаг 2) отвечает за автозагрузку на старте сессии,
 копия в `~/.agents/skills` — за срабатывание по триггерам в любом рабочем
 каталоге. Обе одинаковые, синхронизируйте при обновлении.
 
-**Настройка проектов:** отредактируйте таблицу «Определение проекта» в
-SKILL.md под свои проекты.
+**Настройка проектов:** создавайте проекты на сервере через `add_project`
+или первую запись; выбор по каталогу и теме делает `route_project(text, cwd)`.
+Таблицы маппинга в SKILL.md нет.
 
 ---
 
@@ -148,6 +152,7 @@ python hooks/install.py --client=kimiwork
 
 1. перерегистрируйте плагин (`kimi-plugin register-personal`, как на шаге 2);
 2. в клиенте нажмите **обновить** у плагина во вкладке «Персональные».
+3. полностью перезапустите Kimi Work.
 
 Что включено в хуки плагина:
 
@@ -156,14 +161,26 @@ python hooks/install.py --client=kimiwork
 | `SessionStart` | `session_start` | стартовый контекст из базы |
 | `UserPromptSubmit` | `freshness` | записи других сессий + напоминание про память |
 | `PreToolUse` | `nul_guard` | блок редиректа в `nul`/`con` (Windows) |
-| `PreToolUse` | `gate` | **не пускает на инфраструктуру без чтения базы 15 мин** |
+| `PreToolUse` | `gate` | **любой инструмент требует чтения базы за последние 15 минут** |
 | `PreToolUse` | `session_arg` | передаёт id чата серверу (свежесть контекста) |
 | `Stop` | `stop` | страховка: не дать закрыть сессию без finish_task |
 | `PostToolUse` | `mark` | отметка «база прочитана» (снимает гейт) |
 
+Гейт охватывает любой инструмент, кроме memory-compiler
+и загрузчиков `Skill`/`select_tools`. В свежей сессии сначала вызовите
+`start_task` (для справки — `search`), затем повторите инструмент. Для
+инфраструктуры карточка цели из базы может заменить блокировку.
+
 Имена инструментов в Kimi Work выглядят как `mcp__plugin-<плагин>_<сервер>__<tool>`
 — mc_guard сводит их к обычному виду `mcp__<сервер>__<tool>` сам, матчеры
 прописывать не нужно. Тесты: `MC_GUARD_CLIENT=kimi python hooks/test_mc_guard.py`.
+
+**Managed-копия.** Рантайм читает хуки из
+`daimon/runtime/kimi-code/home/plugins/managed/<плагин>/`, а не из
+`plugin-sources`. Установщик синхронизирует существующую копию с бэкапами.
+После изменения хуков нужен полный перезапуск клиента: новый чат в уже
+открытом приложении продолжает использовать манифест, загруженный при старте.
+Если гейт молчит и `mc_hooks.log` не пополняется, проверьте эту копию.
 
 ---
 
@@ -173,7 +190,7 @@ python hooks/install.py --client=kimiwork
 
 1. **Скил в индексе:** в списке скиллов сессии должен быть `memory-autopilot`.
 2. **MCP доступен:** «проверь доступность базы знаний» → вызов `list_projects`.
-3. **Гейт (после шага 5):** попросите вызвать любой инфраструмент, не читая
+3. **Гейт (после шага 5):** попросите вызвать `Read` или `Bash`, не читая
    базу, — вызов будет заблокирован с инструкцией сначала сделать `search`.
    После `search` повторный вызов пройдёт. Проверка видна в журнале
    `~/.kimi-code/hooks/mc_hooks.log` (записи `gate.block` / `gate.pass`).

@@ -81,17 +81,17 @@ curl http://localhost:8765/api/health
 ```bash
 # Из репо memory-compiler
 mkdir -p ~/.claude/skills/memory-autopilot
-cp skills/memory-autopilot/SKILL.md ~/.claude/skills/memory-autopilot/SKILL.md
+cp -R skills/memory-autopilot/. ~/.claude/skills/memory-autopilot/
 ```
 
 **Что делает скил:**
 - Автоматически триггерится на задачи, факты, вопросы, ошибки
-- Определяет проект по контексту (таблица маппинга внутри)
+- Определяет проект через `route_project(text, cwd)` и список проектов сервера
 - Выбирает правильный tool по дереву решений (save_lesson / save_decision / save_runbook / save_from_template / save_secret)
 - Вызывает start_task в начале и finish_task в конце
 - Ищет креды и контекст в базе без вопросов пользователю
 
-**Настройка проектов:** отредактируйте таблицу "Определение проекта" в SKILL.md под свои проекты.
+**Настройка проектов:** создайте проекты через `add_project` или первую запись, передавайте рабочий каталог в `route_project`. Таблицы маппинга в скиле нет; редактировать его под проекты не нужно.
 
 ---
 
@@ -117,31 +117,24 @@ cp skills/memory-autopilot/SKILL.md ~/.claude/skills/memory-autopilot/SKILL.md
 
 ## 5. Hooks (страховка)
 
-Скил memory-autopilot заменяет большинство хуков. Оставьте только два:
+Установите сторож из репозитория, из его корня:
 
-```json
-{
-  "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"decision\":\"block\",\"reason\":\"СТОП. Была ли решена нетривиальная задача? Если ДА и НЕ вызвал memory-compiler:finish_task — ВЫЗОВИ СЕЙЧАС.\"}}'",
-        "timeout": 5
-      }]
-    }],
-    "PostCompact": [{
-      "hooks": [{
-        "type": "command",
-        "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostCompact\",\"additionalContext\":\"КОНТЕКСТ БЫЛ СЖАТ. Если были нетривиальные решения которые не записаны — вызови memory-compiler:finish_task сейчас.\"}}'",
-        "timeout": 5
-      }]
-    }]
-  }
-}
+```bash
+python hooks/install.py --client=claude --dry-run
+python hooks/install.py --client=claude
 ```
 
-- **Stop** — страховка: блокирует завершение сессии если finish_task не был вызван
-- **PostCompact** — напоминание при сжатии контекста
+Установщик копирует `mc_guard.py` в `~/.claude/hooks/`, делает бэкап
+`~/.claude/settings.json` и заменяет в нём секцию `hooks`. Если у вас есть
+свои хуки, сохраните их и объедините с результатом установки. Проверьте
+`~/.claude/hooks/mc_guard.env`: `MC_API_URL`, `MC_API_KEY`, при необходимости
+`MC_KNOWLEDGE_DIR`. Эти машинные значения не коммитятся в репозиторий.
+
+Сторож загружает стартовый контекст, передаёт id чата серверу, напоминает
+о чужих записях, требует чтения базы перед инфраструктурными вызовами,
+ведёт очередь записей и доставляет рефлексы. `Stop` проверяет состояние
+записей; `PostCompact` напоминает сохранить контекст через `save_compact`.
+Подробности: [hooks/README.md](../hooks/README.md).
 
 ---
 
@@ -176,9 +169,9 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 
 | Функция | Статус | Комментарий |
 |---------|--------|-------------|
-| MCP tools (все 46) | ✅ | Полная поддержка |
+| MCP tools (все 50) | ✅ | Полная поддержка |
 | Скил memory-autopilot | ✅ | Автотриггер по description |
-| Hooks Stop/PostCompact | ✅ | Страховка |
+| Hooks mc_guard | ✅ | Гейт, очередь, свежесть, рефлексы, compact |
 | Авто-search_error при traceback | ✅ | Через скил (Фаза 0) |
 | Авто-git_capture после commit | ❌ | Нет FileChanged в Desktop |
 
@@ -197,5 +190,5 @@ set_project_deps(project="myapp", depends_on=["infra", "work"])
 - Логи Desktop: `%APPDATA%\Claude\logs\`
 
 **Stop hook блокирует?**
-- Claude должен вызвать finish_task чтобы разблокировать
-- Если застрял — временно закомментируйте Stop hook
+- Проверьте `~/.claude/hooks/mc_hooks.log` и очередь `~/.claude/hooks/pending`: повторите или исправьте неуспешную запись.
+- После решения задачи вызовите `finish_task`; не считайте сообщение об ошибке успешной записью.

@@ -25,6 +25,8 @@
 │                    AuthMiddleware (ASGI)                    │
 │                                                            │
 │  /api/health          → пропустить (публичный)             │
+│  /api/version         → публичный                            │
+│  /api/auth/login      → публичный вход             │
 │  /login               → пропустить (логин-страница)        │
 │  /.well-known/*       → 404 (OAuth discovery)              │
 │  /mcp                 → Bearer или заголовок X-Api-Key     │
@@ -100,7 +102,7 @@ MC_ENCRYPT_KEY=ваш-ключ-шифрования
 save_secret("Пароль от сервера", "root:P@ss123", project="infra")
                     │
                     ▼
-           PBKDF2 (100000 итераций) → Fernet (AES-256)
+           PBKDF2-HMAC-SHA256 (100000 итераций) → Fernet (AES-128-CBC + HMAC-SHA256)
                     │
                     ▼
         Файл на диске: ENC:gAAAAABn...  (нечитаемый)
@@ -108,8 +110,11 @@ save_secret("Пароль от сервера", "root:P@ss123", project="infra")
                     │
                     ▼
 read_article() → расшифровка → "root:P@ss123"
-search()       → "[зашифровано — используй read_article]"
+search()       → JSON: метаданные + secret:true, без тела
 ```
+
+`search` возвращает метаданные статьи с `secret: true`, без тела секрета.
+Примитивы шифрования описаны в [документации Fernet](https://cryptography.io/en/latest/fernet/#implementation).
 
 ### Что шифруется
 
@@ -169,7 +174,9 @@ search()       → "[зашифровано — используй read_article]
 | MCP (`/mcp`) | Bearer / заголовок `X-Api-Key` | Настраивается один раз в конфиге |
 | MCP legacy (`/sse`) | Bearer / `?key=` в URL | Оставлен для старых конфигов |
 | /api/health | Публичный | Для Docker healthcheck |
-| Секретные статьи | AES-256 на диске | Только через save_secret |
+| /api/version | Публичный | Версия сервера |
+| /api/auth/login | Публичный | Проверяет ключ и выдаёт cookie |
+| Секретные статьи | Fernet на диске | Только через save_secret |
 | Обычные статьи | Plain text | Не шифруются |
 | Git history | Секреты зашифрованы | Обычные статьи в plain text |
 | Аудит | Автоматический | content маскируется |
