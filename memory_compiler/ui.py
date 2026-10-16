@@ -329,7 +329,10 @@ var I18N={
     "analytics.topAccessed":"Топ по обращениям",
     "analytics.hits":"обр.",
     "quality.title":"Качество памяти (7 дней)",
-    "quality.searches":"Поисков",
+    "quality.searches":"Попыток поиска",
+    "quality.errors":"Ошибок поиска",
+    "quality.successful":"Успешных поисков",
+    "quality.rateBase":"Доли — от успешных поисков",
     "quality.misses":"Впустую",
     "quality.useful":"Привело к действию",
     "quality.reform":"За поиском сразу поиск",
@@ -426,7 +429,10 @@ var I18N={
     "analytics.topAccessed":"Top accessed",
     "analytics.hits":"hits",
     "quality.title":"Memory quality (7 days)",
-    "quality.searches":"Searches",
+    "quality.searches":"Search attempts",
+    "quality.errors":"Search errors",
+    "quality.successful":"Successful searches",
+    "quality.rateBase":"Rates — of successful searches",
     "quality.misses":"Empty",
     "quality.useful":"Led to an action",
     "quality.reform":"Search followed by search",
@@ -1598,9 +1604,12 @@ async function loadAnalytics(){
     // разорвав литерал пополам (поймано node --check, тот же класс, что с
     // плейсхолдером CSS).
     const NL=String.fromCharCode(10);
-    const pct=v=>Math.round(v*100)+'%';
+    const pct=v=>q.successful_searches ? Math.round(v*100)+'%' : '—';
     h+='<div class="card"><h3>'+t('quality.title')+'</h3><pre>'
       +t('quality.searches')+': '+q.searches+NL
+      +t('quality.errors')+': '+q.search_errors+NL
+      +t('quality.successful')+': '+q.successful_searches+NL
+      +t('quality.rateBase')+NL
       +t('quality.misses')+': '+q.misses+' ('+pct(q.miss_rate)+')'+NL
       +t('quality.useful')+': '+q.acted+' ('+pct(q.act_rate)+')'+NL
       +t('quality.reform')+': '+q.chained+NL

@@ -1,11 +1,14 @@
 """MCP tool definitions and dispatch."""
 import json
+import inspect
+
+from jsonschema import Draft202012Validator
 import re
 import time
 
 from mcp.server import Server
 from mcp.types import (
-    Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate,
+    Tool, TextContent, ToolAnnotations, Resource, ResourceTemplate, CallToolResult,
     Prompt, PromptArgument, PromptMessage, GetPromptResult, Completion,
 )
 from mcp.server.lowlevel.helper_types import ReadResourceContents
@@ -1241,6 +1244,67 @@ async def _tool_props() -> dict:
     return _TOOL_PROPS
 
 
+_TOOL_VALIDATORS: dict | None = None
+
+
+async def _argument_error(name: str, arguments: dict) -> str:
+    """Validate declared schemas after healing, without echoing argument values."""
+    global _TOOL_VALIDATORS
+    if _TOOL_VALIDATORS is None:
+        validators = {}
+        for tool in await list_tools():
+            schema = dict(tool.inputSchema)
+            schema["additionalProperties"] = False
+            properties = dict(schema.get("properties", {}))
+            # Historical explicit null is supported where the handler defaults to
+            # None (tags, triggers, etc.); keep the public schema unchanged.
+            handler = getattr(handlers, tool.name, None)
+            params = inspect.signature(handler).parameters if callable(handler) else {}
+            for field, param in params.items():
+                if field in properties and param.default is None:
+                    properties[field] = {"anyOf": [properties[field], {"type": "null"}]}
+            schema["properties"] = properties
+            validators[tool.name] = Draft202012Validator(schema)
+        _TOOL_VALIDATORS = validators
+    validator = _TOOL_VALIDATORS.get(name)
+    if validator is None:
+        return ""
+    error = next(validator.iter_errors(arguments), None)
+    if error is None:
+        return ""
+    # jsonschema.error.message includes user values, so never return or log it.
+    field = next(iter(error.path), None)
+    if error.validator == "required":
+        field = next((f for f in error.validator_value if f not in arguments), None)
+    label = f" `{field}`" if field in validator.schema.get("properties", {}) else ""
+    if error.validator == "additionalProperties":
+        unknown = set(arguments) - set(validator.schema.get("properties", {}))
+        safe_names = sorted(k for k in unknown
+                            if isinstance(k, str) and re.fullmatch(r"[a-z_][a-z0-9_]{0,39}", k))
+        detail = ", ".join(safe_names) if len(safe_names) == len(unknown) else "undeclared fields"
+        return f"Invalid arguments: unsupported {detail}. Remove these fields."
+    if error.validator == "anyOf":
+        # Nullable compatibility schemas can wrap the useful item/type error.
+        error = next((e for e in error.context
+                      if e.validator == "type" and e.validator_value != "null"), error)
+    if error.validator == "type":
+        expected = error.validator_value
+        expected = " or ".join(expected) if isinstance(expected, list) else expected
+        item = " array item" if len(error.absolute_path) > 1 else ""
+        return f"Invalid arguments{label}{item}: expected {expected}."
+    if error.validator == "required":
+        return f"Invalid arguments{label}: required field is missing."
+    return f"Invalid arguments{label}: {error.validator}. Check the tool input schema."
+
+
+def _argument_failure(name: str, message: str) -> CallToolResult:
+    """Argument rejections are observable errors, with no payload in the audit."""
+    obs.record_error(name, "ArgumentValidationError")
+    audit_log(name, {}, 0, error="ArgumentValidationError")
+    return CallToolResult(isError=True, content=[
+        TextContent(type="text", text="Input validation error: " + message)])
+
+
 def _trailing_field(work: str, others: set) -> tuple | None:
     """Замыкающий блок чужого поля: '<q>…</q>' или '<parameter name="q">…</parameter>'
     (q — параметр того же тула). None, если конец строки — не такой блок."""
@@ -1498,8 +1562,8 @@ def _log_client_once() -> None:
     obs.get_logger("client").info("client connected", extra=info)
 
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+@app.call_tool(validate_input=False)
+async def call_tool(name: str, arguments: dict) -> list[TextContent] | tuple[list[TextContent], dict] | CallToolResult:
     obs.new_request_id()          # корреляция всех логов этого вызова
     obs.record_call(name)
     _log_client_once()
@@ -1511,6 +1575,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # Id чата от клиента (v1.76.0) — служебный аргумент, а не параметр
     # инструмента: хендлер упал бы на лишнем kwarg, аудиту он не нужен.
     # Используется только ключом свежести (_append_freshness).
+    if not isinstance(arguments, dict):
+        return _argument_failure(name, "Invalid arguments: expected an object.")
     client_session = arguments.pop(freshness.CLIENT_SESSION_ARG, None)
 
     # Подсказка от хука (Kimi Code без updatedInput): вызов с совпавшим
@@ -1518,6 +1584,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # их до серверного heal, после heal они разошлись бы.
     if not client_session and isinstance(arguments, dict):
         client_session = freshness.hint_take(freshness.call_fingerprint(name, arguments))
+
+    healed: list = []
+    props = (await _tool_props()).get(name)
+    if props:
+        arguments, healed = heal_arguments(arguments, props)
+    if healed:
+        _log.info("leaked markup healed", extra={"tool": name, "healed": ",".join(healed)})
 
     # ⚠️ ПРОПУЩЕННЫЙ `project` БЕРЁМ ИЗ ИСТОРИИ СЕССИИ (v1.90.0). Замер
     # 20.09.2026 по транскриптам: 78 отказов -32602 за 30 дней, и крупнейшая их
@@ -1530,7 +1603,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # руками: у search и search_by_tag он необязателен, там 'all' — осмысленный
     # режим «по всей базе», и подстановка молча сузила бы выдачу до проекта.
     substituted_project = ""
-    if isinstance(arguments, dict) and not arguments.get("project") \
+    if isinstance(arguments, dict) and arguments.get("project") in (None, "") \
             and name in _PROJECT_FROM_SESSION:
         # ⚠️ Угадываем ТОЛЬКО когда ключ — id чата от клиента (c:…). У моста
         # Claude Desktop одна MCP-сессия на ВСЕ чаты Code (v1.76.0): по общему
@@ -1541,10 +1614,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if substituted_project:
             arguments["project"] = substituted_project
         else:
-            return [TextContent(type="text", text=(
-                f"❌ Не указан `project`, и подставить его не из чего: эта сессия ещё не "
+            return _argument_failure(name, (
+                f"❌ Invalid arguments: не указан `project`, и подставить его не из чего: эта сессия ещё не "
                 f"открывала ни одного проекта. Назови проект явно — `{name}(project=\"…\", …)` "
-                f"— или сперва загрузи контекст (`start_task`, `search`)."))]
+                f"— или сперва загрузи контекст (`start_task`, `search`)."))
 
     # Normalize project name in arguments — single source of truth.
     # Eliminates MyProj vs myproj splits regardless of how the caller spelled it.
@@ -1555,13 +1628,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if proj and proj.lower() != "all":
             arguments["project"] = normalize_project(proj)
 
-    healed: list = []
-    props = (await _tool_props()).get(name)
-    if props:
-        arguments, healed = heal_arguments(arguments, props)
     audit_args = {**arguments, "_healed": healed} if healed else arguments
-    if healed:
-        _log.info("leaked markup healed", extra={"tool": name, "healed": ",".join(healed)})
+    error = await _argument_error(name, arguments)
+    if error:
+        return _argument_failure(name, error)
 
     # ⚠️ ПРОЕКТА, КОТОРОГО НЕТ, ХЕНДЛЕР НЕ ВИДИТ. 14.09.2026 агент угадал
     # project="memorycompiler" по каталогу клона, start_task молча завёл пустой

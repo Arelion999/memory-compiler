@@ -19,12 +19,15 @@ app.jsonl до миллисекунд. Настоящий проект — memor
 import asyncio
 
 import pytest
-from mcp.types import TextContent
+from mcp.types import TextContent, CallToolResult
 
 from memory_compiler import freshness, storage, tools
 
 
 def _text(blocks) -> str:
+    if isinstance(blocks, CallToolResult):
+        assert blocks.isError
+        blocks = blocks.content
     return "".join(getattr(b, "text", "") or "" for b in blocks)
 
 

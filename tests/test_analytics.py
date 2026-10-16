@@ -394,3 +394,67 @@ def test_empty_search_json_stays_below_miss_threshold():
     from memory_compiler import analytics, handlers
     empty = handlers.search_json(handlers._search_payload("запрос" * 20, [], {}))
     assert len(empty) < analytics.MISS_SIZE
+
+
+def _failed(row):
+    return {**row, "error": "TypeError"}
+
+
+def test_search_errors_are_not_empty_results_or_rate_denominator(audit):
+    audit([
+        _failed(_row(-900, "search", size=0, query="bad", _count=0)),
+        _row(-800, "search", size=100, query="short hit", _count=1),
+        _row(-790, "read_article"),
+        _row(-700, "search", size=50, query="legacy miss"),
+        _row(-600, "search", query="legacy hit"),
+        _failed(_row(-500, "search", size=0, query="bad again")),
+    ])
+    q = analytics.quality(24)
+    assert (q["searches"], q["search_errors"], q["successful_searches"]) == (5, 2, 3)
+    assert q["misses"] == 1 and q["miss_rate"] == 0.333
+    assert q["acted"] == 1 and q["act_rate"] == 0.333
+    assert [r["query"] for r in q["miss_queries"]] == ["legacy miss"]
+    d = analytics.daily(24)
+    for key in ("searches", "search_errors", "successful_searches", "miss_rate", "act_rate"):
+        assert d[key] == q[key]
+
+
+@pytest.mark.parametrize("tool", sorted(analytics.SEARCH_TOOLS))
+def test_only_failed_searches_have_no_retrieval_verdict(tool, audit):
+    audit([_failed(_row(-100, tool, size=0, _count=0)), _row(-90, "read_article")])
+    q = analytics.quality(24)
+    assert (q["searches"], q["search_errors"], q["successful_searches"]) == (1, 1, 0)
+    assert (q["misses"], q["acted"], q["miss_rate"], q["act_rate"]) == (0, 0, 0.0, 0.0)
+    assert q["miss_queries"] == []
+
+
+@pytest.mark.parametrize("failed_action", ["read_article", "save_lesson", "finish_task"])
+def test_failed_actions_do_not_count_as_use_or_writes(failed_action, audit):
+    audit([_row(-100, "search"), _failed(_row(-90, failed_action, project="bad"))])
+    q = analytics.quality(24)
+    assert q["acted"] == 0 and q["writes"] == 0 and q["projects"] == []
+
+
+def test_failed_new_search_breaks_previous_search_attribution(audit):
+    audit([_row(-100, "search"), _failed(_row(-90, "search", size=0)),
+           _row(-80, "read_article"), _row(-70, "save_lesson", project="ok")])
+    q = analytics.quality(24)
+    assert q["acted"] == 0 and q["chained"] == 1
+    assert q["writes"] == 1 and q["projects"] == [("ok", 1)]
+
+
+def test_successful_action_after_failed_action_is_still_credited(audit):
+    audit([_row(-100, "search"), _failed(_row(-90, "read_article")),
+           _row(-80, "read_article")])
+    assert analytics.quality(24)["acted"] == 1
+
+
+def test_daily_excludes_failed_finishes_notes_and_response_sizes(audit):
+    audit([_row(-300, "search", size=1000),
+           _failed(_row(-290, "search", size=9000)),
+           _failed(_row(-280, "finish_task")),
+           _row(-270, "finish_task", session_summary="done"),
+           _failed(_row(-260, "session_note"))])
+    d = analytics.daily(24)
+    assert d["finish_total"] == 1 and d["finish_no_summary"] == 0
+    assert d["notes"] == 0 and d["search_median"] == 1000

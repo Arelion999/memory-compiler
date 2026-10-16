@@ -65,16 +65,23 @@ def _pct(v) -> str:
 def format_report(d: dict, prev: dict | None) -> str:
     """Человекочитаемый отчёт плюс снимок для следующего прогона."""
     p = prev or {}
+    successful = d.get("successful_searches", d["searches"])
+    # Legacy snapshots used all attempts as the denominator; a zero-success
+    # snapshot has no defined rate. Neither is comparable to the current rate.
+    previous_rates = p if successful and p.get("successful_searches", 0) else {}
+    rate_format = _pct if successful else lambda _: "— (нет успешных поисков)"
     lines = [
         "Замер за последние %g ч. Вызовов %d, сессий %d." % (
             d["hours"], d["calls"], d["sessions"]),
         "",
         "ПОИСК. " + ", ".join([
-            _shift("запросов", d["searches"], p.get("searches")),
+            _shift("попыток", d["searches"], p.get("searches")),
+            _shift("ошибок", d.get("search_errors", 0), p.get("search_errors")),
+            _shift("успешных", d.get("successful_searches", d["searches"]), p.get("successful_searches")),
             _shift("медиана выдачи", d["search_median"], p.get("search_median")),
             _shift("доля символов", d["search_share"], p.get("search_share"), _pct),
-            _shift("впустую", d["miss_rate"], p.get("miss_rate"), _pct),
-            _shift("привело к действию", d["act_rate"], p.get("act_rate"), _pct),
+            _shift("впустую (от успешных поисков)", d["miss_rate"], previous_rates.get("miss_rate"), rate_format),
+            _shift("привело к действию (от успешных поисков)", d["act_rate"], previous_rates.get("act_rate"), rate_format),
         ]) + ".",
         # ⚠️ ДОЛИ ПО СЕССИЯМ — С НЕДЕЛЬНОГО ОКНА, и это не косметика. На сутках
         # сессий 2..7, одна двигает долю на ~17 п.п.: за первые 11 точек ряда

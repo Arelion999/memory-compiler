@@ -21,7 +21,7 @@
 import asyncio
 
 import pytest
-from mcp.types import TextContent
+from mcp.types import TextContent, CallToolResult
 
 from memory_compiler import freshness, tools
 
@@ -74,7 +74,8 @@ def test_missing_project_falls_back_to_the_one_this_chat_worked_with(bridge):
 def test_substituted_project_is_named_in_the_answer(bridge):
     _call("search", {"query": "роутер", "project": "infra"})
     out = _call("finish_task", {"topic": "итог", "content": "текст"})
-    text = "".join(c.text for c in out if isinstance(c, TextContent))
+    text = "".join(c.text for c in (out.content if isinstance(out, CallToolResult) else out)
+                   if isinstance(c, TextContent))
     assert "infra" in text, "подставленный проект обязан быть назван: %r" % text
 
 
@@ -89,7 +90,8 @@ def test_chat_without_history_gets_an_error_naming_the_parameter(bridge):
     """Подставить нечего — отказ обязан объяснить, чего не хватило, и не звать
     хендлер: тот упал бы на отсутствующем обязательном аргументе."""
     out = _call("finish_task", {"topic": "итог", "content": "текст"}, chat="chat-new")
-    text = "".join(c.text for c in out if isinstance(c, TextContent))
+    text = "".join(c.text for c in (out.content if isinstance(out, CallToolResult) else out)
+                   if isinstance(c, TextContent))
     assert "project" in text and not bridge, text
 
 
@@ -210,7 +212,8 @@ def test_no_guess_without_a_chat_id(bridge):
     asyncio.run(tools.call_tool("search", {"query": "роутер", "project": "infra"}))
     bridge.clear()
     out = asyncio.run(tools.call_tool("finish_task", {"topic": "итог", "content": "текст"}))
-    text = "".join(c.text for c in out if isinstance(c, TextContent))
+    text = "".join(c.text for c in (out.content if isinstance(out, CallToolResult) else out)
+                   if isinstance(c, TextContent))
     assert "project" in text and not bridge, (
         "без id чата проект угадывать нельзя: %r / %r" % (text, bridge))
 

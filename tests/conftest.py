@@ -130,3 +130,12 @@ def patch_knowledge_dir(knowledge_dir, monkeypatch):
     # Отказ загрузки модели (v1.95.0) — модульное состояние: оставшись от упавшего теста,
     # он включил бы notice «поиск по смыслу выключен» в выдачах следующих.
     monkeypatch.setattr(search_mod, "_embed_load_error", None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_tool_validator_cache():
+    """Handler mocks must not leak inferred nullable defaults into other tests."""
+    from memory_compiler import tools
+    tools._TOOL_VALIDATORS = None
+    yield
+    tools._TOOL_VALIDATORS = None

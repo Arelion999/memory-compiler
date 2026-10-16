@@ -167,3 +167,49 @@ def test_old_snapshot_without_weekly_fields_does_not_break():
     """Первый прогон после релиза: во вчерашнем снимке 7d-полей ещё нет."""
     text = daily_metrics.format_report(WEEK, SNAP)
     assert daily_metrics.SNAPSHOT_MARK in text and "58%" in text
+
+
+
+def test_report_names_search_errors_and_successful_denominator():
+    snap = dict(SNAP, searches=5, search_errors=2, successful_searches=3,
+                miss_rate=0.333, act_rate=0.333)
+    text = daily_metrics.format_report(snap, None)
+    readable = text.split("MTR ")[0]
+    assert "ошибок 2" in readable and "успешных 3" in readable
+    assert "от успешных поисков" in readable
+    assert daily_metrics.parse_snapshot(text)["search_errors"] == 2
+
+
+@pytest.mark.parametrize("prev", [
+    dict(SNAP, miss_rate=0.5, act_rate=0.5),
+    dict(SNAP, successful_searches=0, search_errors=40, miss_rate=0, act_rate=0),
+])
+def test_search_rate_deltas_require_a_successful_comparable_snapshot(prev):
+    snap = dict(SNAP, searches=5, successful_searches=3, search_errors=2,
+                miss_rate=0.333, act_rate=0.333)
+    text = daily_metrics.format_report(snap, prev)
+    assert "впустую (от успешных поисков) 33%" in text
+    assert "привело к действию (от успешных поисков) 33%" in text
+    assert "50% → 33%" not in text and "0% → 33%" not in text
+
+
+def test_error_only_daily_report_has_no_defined_search_rates_or_delta():
+    prev = dict(SNAP, successful_searches=40, search_errors=0)
+    snap = dict(SNAP, searches=2, successful_searches=0, search_errors=2,
+                miss_rate=0, act_rate=0)
+    text = daily_metrics.format_report(snap, prev)
+    search_line = next(line for line in text.splitlines() if line.startswith("ПОИСК."))
+    assert "нет успешных поисков" in search_line
+    assert "впустую (от успешных поисков) —" in search_line
+    assert "привело к действию (от успешных поисков) —" in search_line
+    assert "→ 0%" not in search_line
+
+
+
+def test_search_rate_deltas_remain_for_two_successful_new_snapshots():
+    prev = dict(SNAP, successful_searches=40, search_errors=0, miss_rate=0.2, act_rate=0.7)
+    snap = dict(SNAP, searches=5, successful_searches=3, search_errors=2,
+                miss_rate=0.333, act_rate=0.333)
+    text = daily_metrics.format_report(snap, prev)
+    assert "впустую (от успешных поисков) 20% → 33%" in text
+    assert "привело к действию (от успешных поисков) 70% → 33%" in text

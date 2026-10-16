@@ -1,7 +1,7 @@
 """Метрики качества памяти как продукта — из аудит-лога.
 
 Отвечает на вопрос «работает ли поиск», а не «сколько было вызовов». Источник —
-`knowledge/_audit.log`: он пишется на каждом успешном MCP-вызове и содержит
+`knowledge/_audit.log`: он пишет успешные и неудачные MCP-вызовы и содержит
 инструмент, аргументы и размер ответа.
 
 ⚠️ РАЗМЕР ОТВЕТА — РАБОЧИЙ ПРИЗНАК ПРОМАХА, и порог взят замером, а не на глаз:
@@ -97,6 +97,8 @@ def quality(hours: float = 168.0) -> dict:
     """
     rows = _read_rows(hours)
     searches = [r for r in rows if r.get("tool") in SEARCH_TOOLS]
+    # Attempts include failures; retrieval rates describe completed searches only.
+    successful = [r for r in searches if not r.get("error")]
 
     # ⚠️ ИСХОД ОПРЕДЕЛЯЕТ ПЕРВОЕ СОБЫТИЕ ПОСЛЕ ПОИСКА, а не наличие действия в
     # окне. Прежнее `any(...)` засчитывало одно чтение сразу нескольким поискам:
@@ -106,7 +108,7 @@ def quality(hours: float = 168.0) -> dict:
     # 88 поисков были засчитаны за чужой счёт.
     pos = {id(r): i for i, r in enumerate(rows)}
     misses, acted, chained = [], 0, 0
-    for s in searches:
+    for s in successful:
         # v1.91.0 убрал «score: »/«secret:false» из выдачи search — короткий, но
         # непустой ответ (один результат) стал попадать под MISS_SIZE по одной
         # длине. Если tools.call_tool записал число найденного (_count), промах —
@@ -122,7 +124,7 @@ def quality(hours: float = 168.0) -> dict:
             if nxt["_ts"] - s["_ts"] > FOLLOW_SEC:
                 break
             tool = nxt.get("tool")
-            if tool == "read_article" or tool in WRITE_TOOLS:
+            if not nxt.get("error") and (tool == "read_article" or tool in WRITE_TOOLS):
                 acted += 1
                 break
             if tool in SEARCH_TOOLS:
@@ -138,17 +140,19 @@ def quality(hours: float = 168.0) -> dict:
         if isinstance(size, int) and size > 0:
             volume[r.get("tool") or "?"] = volume.get(r.get("tool") or "?", 0) + size
 
-    writes = [r for r in rows if r.get("tool") in WRITE_TOOLS]
+    writes = [r for r in rows if r.get("tool") in WRITE_TOOLS and not r.get("error")]
     projects: dict[str, int] = {}
     for r in writes:
         proj = (r.get("args") or {}).get("project") or "?"
         projects[proj] = projects.get(proj, 0) + 1
 
-    n = len(searches)
+    n = len(successful)
     return {
         "hours": hours,
         "calls": len(rows),
-        "searches": n,
+        "searches": len(searches),
+        "search_errors": len(searches) - n,
+        "successful_searches": n,
         "misses": len(misses),
         "miss_rate": round(len(misses) / n, 3) if n else 0.0,
         "acted": acted,
@@ -256,12 +260,12 @@ def daily(hours: float = 24.0) -> dict:
     since = time.time() - float(hours) * 3600
     rows = [r for r in trend_rows if r["_ts"] >= since]
 
-    searches = [r for r in rows if r.get("tool") == "search"]
+    searches = [r for r in rows if r.get("tool") == "search" and not r.get("error")]
     sizes = [int(r.get("size") or 0) for r in searches if int(r.get("size") or 0) > 0]
     total_chars = sum(int(r["size"]) for r in rows
                       if isinstance(r.get("size"), int) and r["size"] > 0)
 
-    finishes = [r for r in rows if r.get("tool") == "finish_task"]
+    finishes = [r for r in rows if r.get("tool") == "finish_task" and not r.get("error")]
     no_summary = [r for r in finishes
                   if not str((r.get("args") or {}).get("session_summary") or "").strip()]
 
@@ -281,12 +285,14 @@ def daily(hours: float = 24.0) -> dict:
         "hours": hours,
         "calls": q["calls"],
         "searches": q["searches"],
+        "search_errors": q["search_errors"],
+        "successful_searches": q["successful_searches"],
         "miss_rate": q["miss_rate"],
         "act_rate": q["act_rate"],
         "chained": q["chained"],
         "search_median": _median(sizes),
         "search_share": round(sum(sizes) / total_chars, 3) if total_chars else 0.0,
-        "notes": len([r for r in rows if r.get("tool") == "session_note"]),
+        "notes": len([r for r in rows if r.get("tool") == "session_note" and not r.get("error")]),
         "finish_total": nf,
         "finish_no_summary": len(no_summary),
         "no_summary_rate": round(len(no_summary) / nf, 3) if nf else 0.0,
