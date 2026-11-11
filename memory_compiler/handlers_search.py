@@ -24,7 +24,8 @@ from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, track_access, is_secret_article, env_flag,
 )
 from memory_compiler.storage import (
-    article_title_tags, make_preview, safe_project_path, superseded_by,
+    article_title_tags, make_preview, safe_project_path, safe_article_path,
+    superseded_by, _article_file, SUPERSEDED_MARK,
     extract_snippets, extract_errors, _parse_frontmatter, parse_meta_value,
 )
 
@@ -39,18 +40,21 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
         # Wider pool for reranker — top results refined by cross-encoder
         results = await _whoosh_async(query, project=project, limit=10)
         cross = await _whoosh_async(query, project="all", limit=10) if project != "all" else []
-        seen = {r["file"] for r in results}
+        seen = {(r["project"], r["file"]) for r in results}
         for r in cross:
-            if r["file"] not in seen and r["project"] != project:
+            key = (r["project"], r["file"])
+            if key not in seen and r["project"] != project:
                 results.append(r)
+                seen.add(key)
                 if len(results) >= 15:
                     break
         if not results:
             return [TextContent(type="text", text=f"Ничего не найдено по '{query}' в {project}.")]
         results = await _rerank_async(query, results, top_k=5)
+        results = await _mark_superseded_corrections(await attach_corrections(results))
         out = [f"# Контекст: {project} (query: {query})\n"]
         for r in results:
-            preview = "\n".join(r["preview"].splitlines()[:8])
+            preview = _context_preview(r, "\n".join(r["preview"].splitlines()[:8]))
             scores = f"score: {r['score']}"
             if "rerank_score" in r:
                 scores += f", rerank: {r['rerank_score']:.2f}"
@@ -61,15 +65,54 @@ async def get_context(project: str, query: str = None) -> list[TextContent]:
         articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not articles:
             return [TextContent(type="text", text=f"База знаний по '{project}' пуста.")]
-        selected = [(a, a.read_text(encoding="utf-8")) for a in articles[:5]]
+        selected = []
+        for path in articles[:5]:
+            text = path.read_text(encoding="utf-8")
+            selected.append({"project": project, "file": path.name,
+                             "title": article_title_tags(text, path.stem)[0],
+                             "preview": make_preview(text, n=8)})
+        selected = await _mark_superseded_corrections(await attach_corrections(selected))
         out = [f"# Контекст: {project}\n"]
-        for path, text in selected:
+        for r in selected:
             # make_preview, как в ветке с query выше: срез [:8] по сырому файлу
             # отдавал YAML-frontmatter — из 24 строк превью контенту принадлежало 0.
             # Один и тот же инструмент отвечал по-разному с запросом и без него.
-            preview = make_preview(text, n=8)
-            out.append(f"---\n### {path.stem}\n{preview}\n")
+            preview = _context_preview(r, "\n".join(r["preview"].splitlines()[:8]))
+            out.append(f"---\n### {r['title']}\n{preview}\n")
         return [TextContent(type="text", text="\n".join(out))]
+
+
+def _context_preview(result: dict, preview: str) -> str:
+    """Предупреждение не режется лимитом превью; секретность берётся из файла.
+
+    Поисковый плейсхолдер теряет метафлаг секрета (см. ask_sources), а поправки
+    читаются с диска: ни один из этих путей не должен цитировать секретное тело.
+    """
+    from memory_compiler.search import _strip_frontmatter
+
+    project, filename = result["project"], result["file"]
+    path = _article_file(project, filename)
+    raw = path.read_text(encoding="utf-8") if path else result.get("preview", "")
+    if is_secret_article(_strip_frontmatter(raw), filename):
+        preview = "🔒 Секретная статья — содержимое доступно через read_article."
+    link = result.get("superseded_by")
+    if link:
+        replacement, title = link
+        preview = "\n".join(line for line in preview.splitlines()
+                            if not line.lstrip().startswith(SUPERSEDED_MARK))
+        try:
+            target = safe_article_path(project, replacement)
+        except ValueError:
+            target = None
+        status = "поправка отсутствует в базе"
+        if target and target.suffix == ".md":
+            if target.is_file():
+                status = "поправка"
+            status += f": {project}/{replacement}"
+            if title:
+                status += f" — {title}"
+        preview = f"⚠️ ОТМЕНЕНА — {status}.\n{preview}"
+    return preview
 
 
 # ─── search ──────────────────────────────────────────────────────────────────
@@ -475,8 +518,8 @@ async def attach_corrections(results: list[dict]) -> list[dict]:
         key = (r.get("project"), fname)
         if key in have:
             continue                       # поправка уже в выдаче — только поднимем
-        path = KNOWLEDGE_DIR / r["project"] / fname
-        if not path.exists():
+        path = _article_file(r["project"], fname)
+        if path is None:
             continue
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         corrections.append({

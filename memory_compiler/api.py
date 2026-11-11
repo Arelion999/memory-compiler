@@ -1,5 +1,6 @@
 """REST API endpoints and Starlette application factory."""
 import asyncio
+import hashlib
 import hmac
 import logging
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, load_article_meta, stats,
     _discover_projects, MC_API_KEY, MC_ENCRYPT_KEY, VERSION,
-    PROBE_LEVELS, probe_stamp,
+    PROBE_LEVELS, probe_stamp, atomic_write_bytes, is_secret_article,
 )
 from memory_compiler import search as _search_mod
 from memory_compiler.search import (
@@ -33,9 +34,9 @@ from memory_compiler.search import (
 )
 from memory_compiler.storage import (
     project_dir, regenerate_index, git_init, git_gc, read_audit_log,
-    decrypt_content, is_encrypted, safe_article_path, safe_project_dir,
-    make_preview, tracking_timeline, _parse_frontmatter,
-    article_title_tags, parse_meta_value, normalize_project,
+    decrypt_content, encrypt_content, is_encrypted, safe_article_path, safe_project_dir,
+    make_preview, tracking_timeline, _parse_frontmatter, _article_file,
+    article_title_tags, parse_meta_value, normalize_project, git_commit_background, log_event,
 )
 from memory_compiler.handlers import (
     compile as _compile, save_lesson, save_secret, delete_article, lint as _lint,
@@ -396,22 +397,81 @@ async def web_project(request: Request):
 
 async def web_article(request: Request):
     """Get full article text, with decryption for secrets (only under configured auth)."""
+    if request.query_params.get("edit") == "secret":
+        return await web_edit_secret(request)
     project = request.path_params["project"]
     filename = request.path_params["filename"]
-    try:
-        fpath = safe_article_path(project, filename)  # отвергает traversal (../, абс. путь)
-    except ValueError:
+    fpath = _article_file(project, filename)
+    if fpath is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    if not fpath.exists() or fpath.suffix != ".md":
-        return JSONResponse({"error": "not found"}, status_code=404)
-    text = _maybe_decrypt_secret_lines(fpath.read_text(encoding="utf-8"))
+    raw = fpath.read_text(encoding="utf-8")
+    encrypted = any(is_encrypted(line) for line in raw.splitlines())
+    secret = is_secret_article(_strip_frontmatter(raw), filename)
+    text = _maybe_decrypt_secret_lines(raw)
     # Заголовок — от ТЕЛА: срез lines[0] по сырому файлу упирался в открывающий
     # '---' frontmatter, и страница статьи показывала заголовок '---'.
     title, _ = article_title_tags(text, fallback=filename)
     return JSONResponse({
         "title": title, "project": project, "file": filename,
         "content": text, "content_html": render_markdown(text),
-    })
+        "secret_editable": bool(MC_API_KEY and secret and encrypted),
+    }, headers={"Cache-Control": "no-store"} if secret or encrypted else None)
+
+
+async def web_edit_secret(request: Request):
+    """Open or replace the encrypted blocks of an existing secret."""
+    if not MC_API_KEY or not _is_authed(request):
+        return JSONResponse({"error": "secret editing requires authentication"}, status_code=403)
+    editing = request.method == "PATCH"
+    if editing:
+        try:
+            data = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        if not isinstance(data, dict) or not isinstance(data.get("revision"), str):
+            return JSONResponse({"error": "revision required"}, status_code=400)
+        blocks = data.get("blocks")
+        if (not isinstance(blocks, list) or not all(isinstance(block, str) for block in blocks)
+                or not any(block.strip() for block in blocks)):
+            return JSONResponse({"error": "encrypted block content required"}, status_code=400)
+
+    project = request.path_params["project"]
+    filename = request.path_params["filename"]
+    fpath = _article_file(project, filename)
+    if fpath is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    raw = fpath.read_bytes()
+    text = raw.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    indices = [i for i, line in enumerate(lines) if is_encrypted(line)]
+    if not indices or not is_secret_article(_strip_frontmatter(text.replace("\r\n", "\n")), filename):
+        return JSONResponse({"error": "article has no editable encrypted blocks"}, status_code=409)
+    revision = hashlib.sha256(raw).hexdigest()
+    if editing and data["revision"] != revision:
+        return JSONResponse({"error": "article changed"}, status_code=409)
+    try:
+        current = [decrypt_content(lines[i], strict=True) for i in indices]
+    except ValueError:
+        return JSONResponse({"error": "could not decrypt article"}, status_code=422)
+    if not editing:
+        return JSONResponse({"revision": revision, "blocks": current},
+                            headers={"Cache-Control": "no-store"})
+    if len(blocks) != len(indices):
+        return JSONResponse({"error": "incorrect number of encrypted blocks"}, status_code=400)
+    if blocks != current:
+        try:
+            for index, old, new in zip(indices, current, blocks):
+                if old != new:
+                    lines[index] = lines[index].replace(lines[index].strip(),
+                                                        encrypt_content(new, strict=True), 1)
+        except ValueError:
+            return JSONResponse({"error": "could not encrypt article"}, status_code=422)
+        # No await between revision check and write. Only ciphertext changes,
+        # so the title, tags, index and all unencrypted sections are preserved.
+        atomic_write_bytes(fpath, "".join(lines).encode("utf-8"))
+        log_event(project, "edit_article", filename)
+        git_commit_background(f"edit: {filename} [{project}]")
+    return JSONResponse({"result": "updated"})
 
 
 async def web_save(request: Request):
@@ -1426,6 +1486,7 @@ def create_starlette_app(mcp_server: Server) -> Starlette:
             Route("/api/ask", endpoint=web_ask),
             Route("/api/save", endpoint=web_save, methods=["POST"]),
             Route("/api/article/{project}/{filename}", endpoint=web_article),
+            Route("/api/article/{project}/{filename}", endpoint=web_edit_secret, methods=["PATCH"]),
             Route("/api/projects/{project}", endpoint=web_project),
             Route("/api/graph", endpoint=web_graph),
             Route("/api/analytics", endpoint=web_analytics),

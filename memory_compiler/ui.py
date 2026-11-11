@@ -50,6 +50,15 @@ mark{background:#ffeb3b80;color:inherit;padding:0 2px;border-radius:2px;font-wei
 .card .actions{display:flex;gap:8px;margin-top:6px;align-items:center}
 .card .expand{color:var(--accent);font-size:0.8em;cursor:pointer}
 .card .btn-del{color:var(--red);font-size:0.75em;cursor:pointer;border:none;background:none;padding:2px 6px}
+.card .btn-secret-edit{color:var(--accent);font-size:0.8em;cursor:pointer;border:none;background:none;padding:2px 6px}
+.card:not(.expanded) .btn-secret-edit{display:none}
+#secret-editor{margin:auto;width:min(640px,calc(100% - 24px));max-height:85vh;overflow:auto;padding:20px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px}
+#secret-editor::backdrop{background:rgba(0,0,0,.55)}
+#secret-editor h2{margin-bottom:12px}
+#secret-edit-blocks label{display:block}
+#secret-editor .actions{display:flex;gap:8px;margin-top:8px}
+#secret-editor .btn-save{width:auto}
+#secret-edit-cancel{padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text);cursor:pointer}
 .empty{color:var(--text2);text-align:center;padding:40px 0}
 .tab-bar{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);overflow-x:auto}
 .tab-bar a{padding:8px 12px;color:var(--text2);text-decoration:none;font-size:13px;border-bottom:2px solid transparent;white-space:nowrap}
@@ -254,6 +263,17 @@ body.wide{max-width:min(1600px,100%)}
 </div>
 <div class="related-list" id="related-list"></div>
 </div>
+<dialog id="secret-editor" aria-labelledby="secret-edit-title">
+<h2 id="secret-edit-title" data-i18n="card.editSecret">Редактирование секрета</h2>
+<form id="secret-edit-form" autocomplete="off">
+<div id="secret-edit-blocks"></div>
+<div id="secret-edit-msg" role="status"></div>
+<div class="actions">
+<button type="submit" class="btn-save" data-i18n="btn.save">Сохранить</button>
+<button type="button" id="secret-edit-cancel" data-i18n="btn.cancel">Отмена</button>
+</div>
+</form>
+</dialog>
 <script>
 // ─── i18n ───────────────────────────────────────────────────────────────
 // Язык с сервера (MC_LANG) — дефолт; выбор пользователя в localStorage его перебивает.
@@ -276,6 +296,7 @@ var I18N={
     "btn.find":"Найти",
     "btn.ask":"Спросить",
     "btn.save":"Сохранить",
+    "btn.cancel":"Отмена",
     "btn.preview":"Превью",
     "btn.apply":"Применить",
     "lbl.project":"Проект",
@@ -303,6 +324,9 @@ var I18N={
     "msg.error":"Ошибка",
     "msg.loadError":"Ошибка загрузки",
     "msg.deleteError":"Ошибка удаления",
+    "msg.editConflict":"Статья изменилась. Откройте редактор заново.",
+    "msg.editError":"Не удалось сохранить секрет.",
+    "msg.editEmpty":"Заполните содержание.",
     "msg.fillRequired":"Заполните тему и содержание",
     "msg.noEntries":"Нет записей",
     "msg.compiling":"Компиляция...",
@@ -310,6 +334,8 @@ var I18N={
     "card.expand":"Развернуть",
     "card.collapse":"Свернуть",
     "card.delete":"Удалить",
+    "card.edit":"Редактировать",
+    "card.editSecret":"Редактирование секрета",
     "confirm.delete":"Удалить",
     "confirm.compile":"Применить компиляцию?",
     "graph.articles":"статей",
@@ -376,6 +402,7 @@ var I18N={
     "btn.find":"Search",
     "btn.ask":"Ask",
     "btn.save":"Save",
+    "btn.cancel":"Cancel",
     "btn.preview":"Preview",
     "btn.apply":"Apply",
     "lbl.project":"Project",
@@ -403,6 +430,9 @@ var I18N={
     "msg.error":"Error",
     "msg.loadError":"Loading error",
     "msg.deleteError":"Deletion error",
+    "msg.editConflict":"This article changed. Reopen the editor.",
+    "msg.editError":"Could not save the secret.",
+    "msg.editEmpty":"Enter some content.",
     "msg.fillRequired":"Fill in the topic and content",
     "msg.noEntries":"No entries",
     "msg.compiling":"Compiling...",
@@ -410,6 +440,8 @@ var I18N={
     "card.expand":"Expand",
     "card.collapse":"Collapse",
     "card.delete":"Delete",
+    "card.edit":"Edit",
+    "card.editSecret":"Edit secret",
     "confirm.delete":"Delete",
     "confirm.compile":"Apply compilation?",
     "graph.articles":"articles",
@@ -606,7 +638,9 @@ async function loadProject(p){
 async function expandCard(proj,file,el){
   const card=el.closest(".card");
   if(card.classList.contains("expanded")){card.classList.remove("expanded");el.textContent=t("card.expand");return;}
-  const r=await fetch("/api/article/"+proj+"/"+file);
+  const url="/api/article/"+encodeURIComponent(proj)+"/"+encodeURIComponent(file);
+  const r=await fetch(url);
+  if(!r.ok)throw new Error(t("msg.loadError"));
   const d=await r.json();
   // Replace snippets/preview with full body, keep highlight
   const snippets=card.querySelectorAll(".snippet");
@@ -623,12 +657,90 @@ async function expandCard(proj,file,el){
   }
   card.classList.add("expanded");
   el.textContent=t("card.collapse");
+  card.querySelector(".btn-secret-edit")?.remove();
+  if(d.secret_editable){
+    const edit=document.createElement("button");
+    edit.type="button";
+    edit.className="btn-secret-edit";
+    edit.setAttribute("data-i18n","card.edit");
+    edit.textContent=t("card.edit");
+    edit.onclick=()=>openSecretEditor(url,edit,async ()=>{
+      if(!card.isConnected)return;
+      card.classList.remove("expanded");
+      await expandCard(proj,file,el);
+    });
+    card.querySelector(".actions").appendChild(edit);
+  }
   loadRelated(proj,file);   // «Похожие» следуют за раскрытой статьёй (если не заморожены)
   loadTimeline(proj,file,card);   // слайдер версий — только у tracking-статей
   // Scroll to first match
   const firstMark=bodyEl.querySelector("mark");
   if(firstMark){setTimeout(()=>firstMark.scrollIntoView({behavior:"smooth",block:"center"}),100);}
 }
+
+async function openSecretEditor(url,trigger,refresh){
+  const dialog=$("secret-editor");
+  const form=$("secret-edit-form");
+  const fields=$("secret-edit-blocks");
+  const msg=$("secret-edit-msg");
+  const cancel=$("secret-edit-cancel");
+  const save=form.querySelector("[type=submit]");
+  trigger.disabled=true;
+  try{
+    const response=await fetch(url+"?edit=secret");
+    if(!response.ok)throw new Error(t("msg.loadError"));
+    const {revision,blocks}=await response.json();
+    if(dialog.open||!trigger.isConnected)return;
+    const inputs=blocks.map((block,index)=>{
+      const label=document.createElement("label");
+      label.className="form-group";
+      label.textContent=t("lbl.content")+(blocks.length>1?" "+(index+1):"");
+      const input=document.createElement("textarea");
+      input.value=block;
+      input.spellcheck=false;
+      label.appendChild(input);
+      fields.appendChild(label);
+      return input;
+    });
+    const initial=inputs.map(input=>input.value);
+    cancel.onclick=()=>dialog.close();
+    dialog.oncancel=event=>{if(save.disabled)event.preventDefault();};
+    dialog.addEventListener("close",()=>{
+      fields.replaceChildren();
+      msg.textContent="";
+      form.onsubmit=null;
+    },{once:true});
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      if(save.disabled)return;
+      const edited=inputs.map((input,i)=>input.value===initial[i]?blocks[i]:input.value);
+      if(!edited.some(block=>block.trim())){msg.textContent=t("msg.editEmpty");return;}
+      save.disabled=cancel.disabled=true;
+      msg.textContent="";
+      try{
+        const result=await fetch(url,{method:"PATCH",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({revision,blocks:edited})});
+        if(!result.ok){
+          msg.textContent=result.status===409?t("msg.editConflict"):t("msg.editError");
+          return;
+        }
+        dialog.close();
+        await refresh();
+      }catch(error){
+        if(dialog.open)msg.textContent=t("msg.editError");
+        else alert(t("msg.loadError"));
+      }finally{
+        save.disabled=cancel.disabled=false;
+      }
+    };
+    dialog.showModal();
+  }catch(error){
+    alert(t("msg.loadError"));
+  }finally{
+    trigger.disabled=false;
+  }
+}
+
 async function deleteArticle(proj,file,el){
   if(!confirm(t("confirm.delete")+" "+proj+"/"+file+"?"))return;
   const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project:proj,filename:file})});

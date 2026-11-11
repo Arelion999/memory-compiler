@@ -36,13 +36,13 @@ from datetime import datetime
 
 from mcp.types import TextContent
 
-from memory_compiler.config import KNOWLEDGE_DIR, track_access
+from memory_compiler.config import KNOWLEDGE_DIR, track_access, is_secret_article
 from memory_compiler import freshness
 from memory_compiler.storage import (
     append_session, append_note, latest_session, RUNNING_MARK, running_notes_today,
     add_question, close_questions, open_questions_list, project_corrections,
     relevant_reflections, read_project_deps, git_commit_background,
-    extract_reflections, append_reflections, safe_project_path,
+    extract_reflections, append_reflections, safe_project_path, superseded_link,
 )
 
 
@@ -344,6 +344,16 @@ def _render_block(block: "_Block", budget: int, report: list | None = None) -> s
         # последний влезающий подрезаем, только если от него остаётся смысл
         if not shown and left > START_BLOCK_FLOOR:
             piece, _ = _cut_section_body(item, left)
+            if block.key in ("found", "deps"):
+                title, _, body = item.partition("\n")
+                warning = body.splitlines()[0] if body else ""
+                if warning.startswith("⚠️ ОТМЕНЕНА") and warning not in piece:
+                    # Нельзя оставить отменённый заголовок без полной ссылки на
+                    # поправку. Сокращаем заголовок; если не влезает и так — скрываем.
+                    short_title = title[:TRACE_CHARS].rstrip() + ("…" if len(title) > TRACE_CHARS else "")
+                    piece = short_title + "\n" + warning
+                    if len(piece) > left:
+                        break
             shown.append(piece)
             left = 0
             cut_tail = True
@@ -430,12 +440,17 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
     from memory_compiler.handlers import (
         _whoosh_async, _rerank_async, _weighted_budgets, stale_summary,
     )
+    from memory_compiler.handlers_search import (
+        attach_corrections, _mark_superseded_corrections, _context_preview,
+    )
+    from memory_compiler.search import _strip_frontmatter
     MIN_SCORE = 15  # min hybrid score
     MIN_RERANK = 0.0  # cross-encoder score threshold (BAAI/bge-reranker-base outputs ~[-10, 10])
     parts = []
     blocks: list[_Block] = []
     shown_files: set[tuple[str, str]] = set()
     shown_titles: set[str] = set()
+    target_project = "general" if project == "all" else project
 
     # Ключ чата (v1.92.0): кладёт tools.call_tool, только вида c:<id>. Пусто — сжатия нет.
     chat_key = freshness.chat_key_var.get()
@@ -450,7 +465,6 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
 
     if is_continuation:
         parts.append("*Запрос распознан как «продолжить работу» — показываю недавнюю активность по проекту.*\n")
-        relevant = []
     else:
         # 1. Hybrid retrieval — берём top-20, ререйнкер выбирает top-3
         candidates = await _whoosh_async(topic, project=project, limit=20)
@@ -462,15 +476,21 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
             relevant = reranked[:1]  # at least show top-1 even if low
 
         if relevant:
+            # Проект сессии следует за исходным ранжированием, а поправки меняют только выдачу.
+            if project == "all":
+                target_project = relevant[0]["project"]
+            # Лимит относится к находкам, а поправки идут сверх него, как в search.
+            relevant = await _mark_superseded_corrections(await attach_corrections(relevant[:3]))
             track_access([f"{r['project']}/{r['file']}" for r in relevant])
             found_items, found_idents = [], []
-            for r in relevant[:3]:
+            for r in relevant:
                 lines = r["preview"].splitlines()
                 # Первая строка превью — заголовок этой же статьи («# …»), а он уже
                 # стоит в «### [проект] Заголовок»: берём вместо него строку тела.
                 if lines and lines[0].lstrip("# ").strip() == r["title"].strip():
                     lines = lines[1:]
                 preview = "\n".join(_clip_line(line) for line in lines[:4])
+                preview = _context_preview(r, preview)
                 # Оценки в заголовке нет: между запросами она не откалибрована, а
                 # порядок находок и так идёт по ней.
                 found_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
@@ -488,9 +508,6 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
                                  found_items, weight=2.5, sep="\n\n", idents=found_idents))
         else:
             parts.append("*Похожих кейсов не найдено в базе.*\n")
-
-    # 2. Determine target project
-    target_project = project if project != "all" else (relevant[0]["project"] if relevant else "general")
 
     # 3. Active context — на continuation показываем всё, иначе фильтр по topic_words
     ctx_path = KNOWLEDGE_DIR / target_project / "_active_context.md"
@@ -617,9 +634,12 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         dep_results = [r for r in dep_results if (r["project"], r["file"]) not in shown_files]
         if dep_results:
             dep_results.sort(key=lambda r: -r.get("score", 0))
+            dep_results = await _mark_superseded_corrections(await attach_corrections(dep_results[:2]))
+            dep_results = [r for r in dep_results if (r["project"], r["file"]) not in shown_files]
             dep_items, dep_idents = [], []
-            for r in dep_results[:2]:
+            for r in dep_results:
                 preview = "\n".join(_clip_line(line) for line in r["preview"].splitlines()[:3])
+                preview = _context_preview(r, preview)
                 dep_items.append(f"### [{r['project']}] {r['title']}\n{preview}")
                 dep_idents.append(f"art:{r['project']}/{r['file']}")
                 shown_files.add((r["project"], r["file"]))
@@ -649,15 +669,17 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         fpath = KNOWLEDGE_DIR / r["project"] / r["file"]
         if not fpath.exists():
             continue
-        if r["file"].startswith("decision_") or "**Тип:** decision" in fpath.read_text(encoding="utf-8")[:500]:
+        text = fpath.read_text(encoding="utf-8")
+        body = _strip_frontmatter(text)
+        if r["file"].startswith("decision_") or "**Тип:** decision" in body[:500]:
+            if superseded_link(text) or is_secret_article(body, r["file"]):
+                continue
             # Extract first line of decision section
-            text = fpath.read_text(encoding="utf-8")
             decision_line = ""
-            for line in text.splitlines():
+            lines = body.splitlines()
+            for line, next_line in zip(lines, lines[1:]):
                 if line.startswith("## Решение"):
-                    idx = text.splitlines().index(line)
-                    if idx + 1 < len(text.splitlines()):
-                        decision_line = text.splitlines()[idx + 1].strip()
+                    decision_line = next_line.strip()
                     break
             decisions_candidates.append((f"- **{r['title']}** — {decision_line[:100]}",
                                           key_file, key_title))
@@ -676,8 +698,10 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         for md in proj_path.glob("*.md"):
             if md.name.startswith("_"):
                 continue
-            head = md.read_text(encoding="utf-8")[:300]
-            if "**Тип:** runbook" not in head:
+            text = md.read_text(encoding="utf-8")
+            body = _strip_frontmatter(text)
+            head = body[:300]
+            if "**Тип:** runbook" not in head or superseded_link(text) or is_secret_article(body, md.name):
                 continue
             title = head.splitlines()[0].lstrip("# ").strip() if head.splitlines() else md.stem
             # Check relevance: any topic word in title
@@ -697,7 +721,14 @@ async def start_task(topic: str, project: str = "all") -> list[TextContent]:
         for b in blocks:
             for i, ident in enumerate(b.idents):
                 if ident in seen:
-                    b.items[i] = _trace(b.items[i])
+                    header, _, body = b.items[i].partition("\n")
+                    warning = body.splitlines()[0] if body else ""
+                    if b.key in ("found", "deps") and warning.startswith("⚠️ ОТМЕНЕНА"):
+                        # Заголовок может занять весь след: актуальную отмену
+                        # сохраняем отдельно, тело повторно не цитируем.
+                        b.items[i] = _trace(header) + "\n" + warning
+                    else:
+                        b.items[i] = _trace(b.items[i])
                     b.idents[i] = None
 
     # 7. Раздача общего бюджета: короткий блок берёт своё целиком, неиспользованное

@@ -347,6 +347,8 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 24 REST endpoints (`/api/*`): health, version, login/auth, search, answers from the base (retrieval with sources), semantically similar articles, reflex notes, a live-check verdict, session hints (`/api/session_hint`), a fact's version timeline, saving, article CRUD, projects, the knowledge graph, analytics, daily metrics (`/api/metrics/daily`), tags, compilation (preview/run), export, audit, logs. Plus `/` (Web UI), `/login` and the MCP transports: `/mcp` (Streamable HTTP, recommended) and `/sse` (legacy).
 
+To edit an existing secret in the Web UI, expand its card and choose **Edit**. Saving updates the encrypted content in the same article. The editor requires configured authentication and an encryption key. If the article changes while the editor is open, reopen it before saving.
+
 `/api/analytics` separates search attempts (`searches`), technical failures (`search_errors`), and successful searches (`successful_searches`). Empty results (`misses`) and action rates use successful searches as their denominator. A failed search is not an empty result; failed reads and writes are not successful actions. The Web UI and daily reports show no percentage when there are no successful searches.
 
 MCP tools reject undeclared fields, missing required arguments, and incorrect types with `isError: true` and an `Input validation error` message that names the field or expected type without echoing argument values. Validation runs after argument recovery and project fallback, before the handler; an invalid call does not save an article. For example, remove `limit` from `search` and `verified` from `finish_task`: these tools do not support those fields.

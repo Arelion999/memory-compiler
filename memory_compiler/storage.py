@@ -1771,15 +1771,17 @@ def _get_cipher():
         return None
 
 
-def encrypt_content(text: str) -> str:
+def encrypt_content(text: str, *, strict: bool = False) -> str:
     """Encrypt text content. Returns 'ENC:...' string or original if no key."""
     cipher = _get_cipher()
     if not cipher:
+        if strict:
+            raise ValueError("encryption unavailable")
         return text
     return "ENC:" + cipher.encrypt(text.encode()).decode()
 
 
-def decrypt_content(text: str) -> str:
+def decrypt_content(text: str, *, strict: bool = False) -> str:
     """Decrypt 'ENC:...' content. Returns original text if not encrypted.
     Согласовано с is_encrypted (тоже .strip()): ENC-строка с ведущими пробелами
     (отступ списка/цитаты) раньше детектилась как шифр, но НЕ расшифровывалась —
@@ -1789,10 +1791,14 @@ def decrypt_content(text: str) -> str:
         return text
     cipher = _get_cipher()
     if not cipher:
+        if strict:
+            raise ValueError("decryption unavailable")
         return "[MC_ENCRYPT_KEY не задан — расшифровка невозможна]"
     try:
         return cipher.decrypt(stripped[4:].encode()).decode()
     except Exception:
+        if strict:
+            raise ValueError("could not decrypt content") from None
         return "[Ошибка расшифровки]"
 
 
@@ -3634,7 +3640,7 @@ def _article_file(project: str, filename: str) -> Path | None:
         path = safe_article_path(project, filename)
     except ValueError:
         return None
-    return path if path.exists() else None
+    return path if path.suffix == ".md" and path.is_file() else None
 
 
 def mark_superseded(project: str, old_filename: str, new_filename: str,
