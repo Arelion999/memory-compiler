@@ -75,6 +75,17 @@ Full walkthrough: [docs/claude-desktop-setup.en.md](docs/claude-desktop-setup.en
 
 Full walkthrough: [docs/kimi-work-setup.en.md](docs/kimi-work-setup.en.md) — everything lives in one plugin: MCP, the memory-autopilot skill and the memory gate hooks the daimon runtime executes natively.
 
+### Try the Agensi skill in two chats
+
+Connect your Memory Compiler server (`http://localhost:8765/mcp/` for the local setup) and Agensi MCP to the same AI client. [Free Memory Compiler skill on Agensi](https://www.agensi.io/skills/memory-compiler-persistent-project-memory) · [Agensi MCP setup](https://www.agensi.io/docs/mcp-setup)
+
+Create a test project named `demo` with `add_project`, or substitute an existing test project in both prompts. Approve the free skill load if your client asks.
+
+1. **First chat.** “Use the Agensi skill Memory Compiler — Persistent Project Memory. In project `demo`, save our decision to run PostgreSQL migrations as a single release job before rolling out app replicas. Confirm where you saved it.”
+2. **New chat.** “Use the Agensi skill Memory Compiler — Persistent Project Memory. What did we decide about database migrations in project `demo`? Cite the saved note.”
+
+The new chat should recover the decision and cite the note saved in the first chat.
+
 ## Features
 
 ### 50 MCP tools

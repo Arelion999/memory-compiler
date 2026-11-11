@@ -75,6 +75,17 @@ curl -s http://localhost:8765/api/health
 
 Полная инструкция: [docs/kimi-work-setup.md](docs/kimi-work-setup.md) — всё живёт в одном плагине: MCP, скил memory-autopilot и хуки гейта памяти, которые рантайм daimon исполняет нативно.
 
+### Как попробовать навык Agensi в двух чатах
+
+Подключите к одному AI-клиенту свой сервер Memory Compiler (`http://localhost:8765/mcp/` при локальном запуске) и Agensi MCP. [Бесплатный навык Memory Compiler на Agensi](https://www.agensi.io/skills/memory-compiler-persistent-project-memory) · [Подключение Agensi MCP](https://www.agensi.io/docs/mcp-setup)
+
+Создайте тестовый проект `demo` через `add_project` или подставьте в оба запроса имя существующего тестового проекта. Если клиент попросит подтверждение, разрешите загрузку бесплатного навыка.
+
+1. **Первый чат.** «Используй навык Agensi Memory Compiler — Persistent Project Memory. В проекте `demo` сохрани наше решение запускать миграции PostgreSQL одной задачей релиза до развёртывания реплик приложения. Укажи, где сохранил решение».
+2. **Новый чат.** «Используй навык Agensi Memory Compiler — Persistent Project Memory. Что мы решили о миграциях базы данных в проекте `demo`? Укажи сохранённую заметку».
+
+Новый чат должен найти решение и сослаться на заметку, сохранённую в первом чате.
+
 ## Возможности
 
 ### 50 MCP-инструментов
