@@ -106,10 +106,10 @@ TOOLS_EN: dict[str, dict] = {
         },
     },
     'get_summary': {
-        # RU: Получить сжатую сводку проекта (заголовки, теги, ключевые факты). ~200 токенов.
-        'description': 'Get a compact project summary (titles, tags, key facts). ~200 tokens.',
+        'description': 'Get a project summary (titles, tags, key facts).',
         'params': {
             'project': 'Project name',
+            'compact': 'Startup summary up to 1200 characters',
         },
     },
     'ask': {

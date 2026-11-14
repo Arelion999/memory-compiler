@@ -387,11 +387,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_summary",
-            description="Получить сжатую сводку проекта (заголовки, теги, ключевые факты). ~200 токенов.",
+            description="Получить сводку проекта (заголовки, теги, ключевые факты).",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string", "description": "Имя проекта"}
+                    "project": {"type": "string", "description": "Имя проекта"},
+                    "compact": {"type": "boolean", "description": "Стартовая сводка до 1200 символов"},
                 },
                 "required": ["project"]
             }

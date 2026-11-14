@@ -102,7 +102,7 @@ The new chat should recover the decision and cite the note saved in the first ch
 | `search_decisions(query, project)` | Search the decision log |
 | `read_article(project, filename, full)` | Article text; the "See also" and "Git links" sections and the frontmatter are hidden unless `full=true` |
 | `get_context(project, query)` | Top relevant articles ahead of a task |
-| `get_summary(project)` | Condensed project summary (~200 tokens) |
+| `get_summary(project, compact=False)` | Project summary. `compact=True` limits the startup summary to 1,200 characters |
 
 **Write and edit:**
 

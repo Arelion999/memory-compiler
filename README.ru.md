@@ -102,7 +102,7 @@ curl -s http://localhost:8765/api/health
 | `search_decisions(query, project)` | Поиск по журналу решений |
 | `read_article(project, filename, full)` | Текст статьи; «См. также», «Git-ссылки» и frontmatter скрыты, пока не передан `full=true` |
 | `get_context(project, query)` | Топ релевантных статей перед задачей |
-| `get_summary(project)` | Сжатая сводка проекта (~200 токенов) |
+| `get_summary(project, compact=False)` | Сводка проекта. `compact=True` ограничивает стартовую сводку 1 200 символами |
 
 **Запись и редактирование:**
 

@@ -1,6 +1,7 @@
 """Tests for handler functions."""
 import asyncio
 import json
+import os
 import pytest
 from memory_compiler.search import rebuild_index
 from memory_compiler.handlers import (
@@ -29,6 +30,50 @@ def test_get_summary_skips_frontmatter_and_cleans_tags(knowledge_dir):
     assert "Настоящий заголовок" in text
     assert "(** " not in text, "закрывающие ** не должны попадать в теги"
     assert "docker, nas" in text
+
+
+def test_compact_summary_mcp_limits_output_without_changing_default(knowledge_dir):
+    from memory_compiler.tools import call_tool
+
+    project = knowledge_dir / "testproj"
+    for index in range(20):
+        path = project / f"item{index}.md"
+        path.write_text(
+            f"# Статья {index}\n**Теги:** тест\n\n## Записи\n\n"
+            f"### 2026-11-14\n{'Проверка ' * 20}\n", encoding="utf-8",
+        )
+        os.utime(path, (1_700_000_000 + index,) * 2)
+
+    async def run():
+        ordinary = await call_tool("get_summary", {"project": "testproj"})
+        explicit = await call_tool("get_summary", {"project": "testproj", "compact": False})
+        compact = await call_tool("get_summary", {"project": "testproj", "compact": True})
+        return ordinary[0].text, explicit[0].text, compact[0].text
+
+    ordinary, explicit, compact = asyncio.run(run())
+    assert ordinary == explicit
+    assert len(ordinary) > 1200 >= len(compact)
+    assert "**Статья 19**" in compact and "**Статья 1**" in ordinary
+    assert sum(line.startswith("- ") for line in ordinary.splitlines()) == 20
+    assert compact.splitlines() == ordinary.splitlines()[:len(compact.splitlines())]
+
+
+@pytest.mark.parametrize("filename", ["secret_test.md", "legacy_secret.md"])
+def test_compact_summary_excludes_secret_body_and_keeps_long_title(knowledge_dir, filename):
+    project = knowledge_dir / "testproj"
+    path = project / filename
+    path.write_text(
+        "---\ntype: secret\n---\n# Секретная карточка\n**Теги:** тест\n**Секрет:** да\n\n## Записи\n"
+        "### 2026-11-14\nENC:encrypted-content-marker\n", encoding="utf-8",
+    )
+    summary = asyncio.run(get_summary("testproj", compact=True))[0].text
+    assert "Секретная карточка" in summary
+    assert "ENC:" not in summary
+
+    path.write_text("# " + "Длинный заголовок " * 100, encoding="utf-8")
+    summary = asyncio.run(get_summary("testproj", compact=True))[0].text
+    assert "Длинный заголовок" in summary
+    assert len(summary) <= 1200
 
 
 def test_project_from_cwd_match(knowledge_dir):

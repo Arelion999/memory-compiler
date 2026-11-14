@@ -20,7 +20,7 @@ from datetime import datetime, date, timedelta
 import numpy as np
 from mcp.types import TextContent
 
-from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS, _discover_projects
+from memory_compiler.config import KNOWLEDGE_DIR, PROJECTS, _discover_projects, is_secret_article
 from memory_compiler.storage import (
     project_path, safe_project_path, safe_article_path, regenerate_index,
     article_title_tags, parse_meta_value, _parse_frontmatter, log_event,
@@ -756,7 +756,10 @@ async def knowledge_gap(repo_path: str = None, project: str = "all",
 
     return [TextContent(type="text", text="\n".join(out))]
 
-async def get_summary(project: str) -> list[TextContent]:
+COMPACT_SUMMARY_CHARS = 1200
+
+
+async def get_summary(project: str, compact: bool = False) -> list[TextContent]:
     proj_path = safe_project_path(project)
     articles = sorted(proj_path.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     # Исключаем служебные файлы
@@ -765,26 +768,37 @@ async def get_summary(project: str) -> list[TextContent]:
         return [TextContent(type="text", text=f"Проект {project} пуст.")]
 
     lines = [f"# {project} \u2014 сводка ({len(articles)} статей)\n"]
+    remaining = COMPACT_SUMMARY_CHARS - len(lines[0])
     for a in articles[:20]:
         text = a.read_text(encoding="utf-8")
-        file_lines = text.splitlines()
         # Срез [:15] не «пропускал frontmatter», а надеялся, что тот короче: медиана
         # 13 строк, p90 40, максимум 275. У 12 статей из 12 теги терялись, у 4 из 12
         # заголовком становилось имя файла.
         title, tags = article_title_tags(text, fallback=a.stem)
-        # Первые 2 строки тела (после метаданных)
-        body_lines = []
-        body_started = False
-        for fl in file_lines:
-            if fl.startswith("## Записи") or fl.startswith("### "):
-                body_started = True
-                continue
-            if body_started and fl.strip() and not fl.startswith("**"):
-                body_lines.append(fl.strip())
-                if len(body_lines) >= 2:
-                    break
-        brief = " ".join(body_lines)[:120]
-        lines.append(f"- **{title}** ({tags}) \u2014 {brief}")
+        if compact and is_secret_article(_parse_frontmatter(text)[1], a.name):
+            line = f"- **{title}** ({tags})"
+        else:
+            # Первые 2 строки тела после метаданных.
+            body_lines = []
+            body_started = False
+            for fl in text.splitlines():
+                if fl.startswith("## Записи") or fl.startswith("### "):
+                    body_started = True
+                    continue
+                if body_started and fl.strip() and not fl.startswith("**"):
+                    body_lines.append(fl.strip())
+                    if len(body_lines) >= 2:
+                        break
+            brief = " ".join(body_lines)[:120]
+            line = f"- **{title}** ({tags}) \u2014 {brief}"
+        if compact:
+            if len(line) + 1 > remaining:
+                if len(lines) == 1:
+                    # Keep at least the newest title, even when its full entry is too long.
+                    lines.append(f"- **{title[:remaining - 8]}…**")
+                break
+            remaining -= len(line) + 1
+        lines.append(line)
 
     return [TextContent(type="text", text="\n".join(lines))]
 
