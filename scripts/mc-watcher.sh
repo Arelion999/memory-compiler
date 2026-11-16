@@ -4,6 +4,7 @@
 #   1) copy to /usr/local/bin/mc-watcher.sh (chmod +x)
 #   2) set MC_DIR below to your memory_compiler/ directory
 #   3) add to /etc/crontab: */1 * * * * root /usr/local/bin/mc-watcher.sh
+# Requires util-linux flock.
 #
 # Детект по SHA1 СОДЕРЖИМОГО (*.py + VERSION), НЕ по mtime: SynologyDrive не
 # обновляет mtime монотонно (приносит файлы со старым timestamp и не атомарно),
@@ -35,6 +36,16 @@ VER_STATE="${MC_VER_STATE:-/var/log/mc-watcher.version}"  # задеплоенн
 COOLDOWN="${MC_COOLDOWN:-300}"                       # сек между рестартами
 DOCKER="${DOCKER:-/usr/local/bin/docker}"
 CONTAINER="${CONTAINER:-memory-compiler-mcp}"
+
+# docker restart может длиться дольше минуты. Держим блокировку от чтения
+# состояния до его записи, чтобы следующий тик cron не повторил рестарт.
+exec 9>>"${STATE}.lock" || exit 1
+flock -n -E 75 9
+case $? in
+  0) ;;
+  75) exit 0 ;; # предыдущий прогон ещё работает
+  *) exit 1 ;;
+esac
 
 EMPTY_SHA1="da39a3ee5e6b4b0d3255bfef95601890afd80709"  # sha1 пустого ввода
 

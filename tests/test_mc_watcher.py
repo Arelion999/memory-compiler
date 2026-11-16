@@ -25,7 +25,7 @@ SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, watcher_flock):
     """Песочница: свой каталог исходников, свой «docker», свои файлы состояния."""
     mc = tmp_path / "memory_compiler"
     mc.mkdir()
@@ -51,6 +51,14 @@ def env(tmp_path):
         "CONTAINER": "test-container",
     })
     return {"env": e, "tmp": tmp_path, "mc": mc, "calls": calls}
+
+
+@pytest.fixture(scope="module")
+def watcher_flock():
+    probe = subprocess.run([BASH, "-c", "command -v flock"],
+                           capture_output=True, timeout=10)
+    if probe.returncode != 0:
+        pytest.skip("watcher requires util-linux flock (run these tests under Linux)")
 
 
 def run(env):
@@ -80,6 +88,41 @@ def test_no_restart_without_changes(env):
     deploy(env)
     run(env); run(env)
     assert restarts(env) == 1, "рестарт без изменения кода"
+
+
+def test_cron_tick_during_restart_does_not_restart_twice(env):
+    release = env["tmp"] / "release-docker"
+    fake_docker = pathlib.Path(env["env"]["DOCKER"])
+    fake_docker.write_text(
+        '#!/bin/bash\n'
+        'echo "$@" >> "$TEST_DOCKER_CALLS"\n'
+        'if [ -n "$TEST_DOCKER_RELEASE" ]; then\n'
+        '  until [ -e "$TEST_DOCKER_RELEASE" ]; do sleep 0.05; done\n'
+        'fi\n', encoding="utf-8", newline="\n",
+    )
+    env["env"]["TEST_DOCKER_CALLS"] = env["calls"].as_posix()
+
+    run(env)  # первый cron-тик видит новую версию, второй начинает рестарт
+    first_env = dict(env["env"], TEST_DOCKER_RELEASE=release.as_posix())
+    first = subprocess.Popen([BASH, SCRIPT], env=first_env)
+    try:
+        deadline = time.monotonic() + 10
+        while restarts(env) == 0 and first.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert restarts(env) == 1 and first.poll() is None
+        run(env)
+        assert restarts(env) == 1, "новый тик cron повторил ещё не завершённый рестарт"
+    finally:
+        release.touch()
+        try:
+            first.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait()
+
+    assert first.returncode == 0
+    run(env)
+    assert restarts(env) == 1
 
 
 def test_cooldown_holds_code_change(env):
