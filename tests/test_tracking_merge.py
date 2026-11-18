@@ -18,7 +18,7 @@ DEPLOY = {"version": "1.92.2", "container": "memory-compiler-mcp", "port": 8765,
 
 
 def _history_len(entity, project="testproj"):
-    # Пустой history пишется как «history:» и читается как None — отсюда «or []».
+    # В старых файлах пустой history мог читаться как None.
     return len(load_tracking(project, entity).get("history") or [])
 
 
@@ -37,6 +37,44 @@ def test_merge_keeps_fields_that_were_not_passed(knowledge_dir):
     assert cur["deploy"] == "SynologyDrive volume + mc-watcher"
     last = data["history"][-1]
     assert {k: last[k] for k in DEPLOY} == DEPLOY
+
+
+def test_nested_tracking_history_survives_repeated_updates(knowledge_dir):
+    entity = "windows-checkpoint"
+    path = r"C:\Temp\snapshot.json"
+    facts = {
+        "status": "ready",
+        "artifacts": [{"path": path, "metadata": {"copy": [path, False, None]}}],
+    }
+    save_tracking_article("testproj", entity, facts)
+
+    for status in ("copied", "verified", "complete"):
+        save_tracking_article("testproj", entity, {"status": status})
+
+    data = load_tracking("testproj", entity)
+    assert [item["status"] for item in data["history"]] == ["ready", "copied", "verified"]
+    for snapshot in [*data["history"], data["current"]]:
+        assert snapshot["artifacts"] == facts["artifacts"]
+
+
+def test_tracking_round_trips_literal_values_that_look_like_yaml(knowledge_dir):
+    facts = {
+        "version": "1.10",
+        "text": {
+            "key: with punctuation": "yes",
+            "null": "null",
+            "snapshot": "2026-11-18",
+            "multiline": "First line\n---\nLast line",
+            "unicode_separator": "Первый\u0085второй",
+            "empty": {},
+        },
+    }
+    save_tracking_article("testproj", "literals", facts)
+    save_tracking_article("testproj", "literals", {"status": "updated"})
+
+    data = load_tracking("testproj", "literals")
+    for snapshot in [data["current"], data["history"][0]]:
+        assert {key: snapshot[key] for key in facts} == facts
 
 
 def test_passed_field_replaced_others_intact(knowledge_dir):

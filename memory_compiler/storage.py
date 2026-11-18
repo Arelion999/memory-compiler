@@ -13,6 +13,8 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from memory_compiler.config import (
     KNOWLEDGE_DIR, PROJECTS, article_meta, save_article_meta,
     _discover_projects, atomic_write_text, is_secret_article,
@@ -2541,18 +2543,11 @@ def fetch_url(url: str, timeout: int = 15) -> tuple:
 # Body — человекочитаемое описание, автогенерируется при update.
 
 
-try:
-    import yaml as _yaml  # type: ignore
-    _HAS_YAML = True
-except ImportError:
-    _HAS_YAML = False
-
-
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Parse YAML frontmatter.
 
-    Prefers PyYAML for correct parsing at any depth (nested lists inside nested dicts, etc).
-    Falls back to custom parser if PyYAML unavailable — supports limited subset:
+    Uses PyYAML for nested data. The legacy parser handles older malformed
+    frontmatter and supports a limited subset:
       - top-level scalars
       - nested dicts (1 level deep)
       - lists of dicts / lists of scalars
@@ -2569,15 +2564,12 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     body = text[end + 5:]
 
     # Primary path: PyYAML (correct at any depth)
-    if _HAS_YAML:
-        try:
-            data = _yaml.safe_load(fm_text) or {}
-            if not isinstance(data, dict):
-                data = {}
-            return data, body
-        except Exception:
-            # Malformed YAML — fall through to custom parser
-            pass
+    try:
+        data = yaml.safe_load(fm_text)
+        return (data if isinstance(data, dict) else {}), body
+    except Exception:
+        # Malformed YAML — fall through to the legacy parser.
+        pass
 
     # Fallback custom parser
     data: dict = {}
@@ -2678,11 +2670,9 @@ def _fix_pending_dicts(obj):
 
 
 def _write_frontmatter(data: dict) -> str:
-    """Serialize dict to YAML-like frontmatter. Simple subset."""
-    lines = ["---"]
-    _write_yaml_dict(data, lines, 0)
-    lines.append("---")
-    return "\n".join(lines) + "\n"
+    """Serialize nested snapshots without changing scalar values on read-back."""
+    # Escape non-ASCII line separators as well as ordinary YAML special characters.
+    return "---\n" + yaml.safe_dump(data, sort_keys=False, allow_unicode=False) + "---\n"
 
 
 def merge_contexts(text: str, contexts: dict) -> str:
@@ -2701,42 +2691,6 @@ def merge_contexts(text: str, contexts: dict) -> str:
     existing.update(contexts)
     fm["contexts"] = [{"heading": h, "context": c} for h, c in existing.items()]
     return _write_frontmatter(fm) + body
-
-
-def _write_yaml_dict(d: dict, lines: list, indent: int):
-    pad = " " * indent
-    for k, v in d.items():
-        if isinstance(v, dict):
-            lines.append(f"{pad}{k}:")
-            _write_yaml_dict(v, lines, indent + 2)
-        elif isinstance(v, list):
-            lines.append(f"{pad}{k}:")
-            for item in v:
-                if isinstance(item, dict):
-                    # First field inline with dash
-                    keys = list(item.keys())
-                    if not keys:
-                        continue
-                    lines.append(f"{pad}  - {keys[0]}: {_fmt_scalar(item[keys[0]])}")
-                    for ik in keys[1:]:
-                        lines.append(f"{pad}    {ik}: {_fmt_scalar(item[ik])}")
-                else:
-                    lines.append(f"{pad}  - {_fmt_scalar(item)}")
-        else:
-            lines.append(f"{pad}{k}: {_fmt_scalar(v)}")
-
-
-def _fmt_scalar(v) -> str:
-    if v is None:
-        return "null"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, str):
-        # Quote if contains special YAML chars
-        if any(c in v for c in ":#[]{}&*!|>'%@`") or v.strip() != v:
-            return f'"{v.replace(chr(92), chr(92)+chr(92)).replace(chr(34), chr(92)+chr(34))}"'
-        return v
-    return str(v)
 
 
 # Имя файла трекера — сырое entity: в именах живых трекеров пробелы, заглавные, скобки
