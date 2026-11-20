@@ -65,23 +65,31 @@ def _pct(v) -> str:
 def format_report(d: dict, prev: dict | None) -> str:
     """Человекочитаемый отчёт плюс снимок для следующего прогона."""
     p = prev or {}
+    current_method = d.get("method_version", 2 if "attributed_searches" in d else 1)
+    previous_method = p.get("method_version", 2 if "attributed_searches" in p else 1)
+    comparable = current_method == previous_method
+    search_previous = p if comparable else {}
     successful = d.get("successful_searches", d["searches"])
-    # Legacy snapshots used all attempts as the denominator; a zero-success
-    # snapshot has no defined rate. Neither is comparable to the current rate.
-    previous_rates = p if successful and p.get("successful_searches", 0) else {}
+    # Older snapshots could include rejected calls in successful searches.
+    previous_miss_rate = (p.get("miss_rate") if comparable and successful and p.get("successful_searches")
+                          and "attributed_searches" in p else None)
     rate_format = _pct if successful else lambda _: "— (нет успешных поисков)"
+    attributed = d.get("attributed_searches", 0)
+    previous_action_rate = p.get("act_rate") if comparable and attributed and p.get("attributed_searches") else None
+    action_format = _pct if attributed else lambda _: "— (нет поисков с ключом чата)"
     lines = [
         "Замер за последние %g ч. Вызовов %d, сессий %d." % (
             d["hours"], d["calls"], d["sessions"]),
         "",
         "ПОИСК. " + ", ".join([
             _shift("попыток", d["searches"], p.get("searches")),
-            _shift("ошибок", d.get("search_errors", 0), p.get("search_errors")),
-            _shift("успешных", d.get("successful_searches", d["searches"]), p.get("successful_searches")),
-            _shift("медиана выдачи", d["search_median"], p.get("search_median")),
-            _shift("доля символов", d["search_share"], p.get("search_share"), _pct),
-            _shift("впустую (от успешных поисков)", d["miss_rate"], previous_rates.get("miss_rate"), rate_format),
-            _shift("привело к действию (от успешных поисков)", d["act_rate"], previous_rates.get("act_rate"), rate_format),
+            _shift("ошибок", d.get("search_errors", 0), search_previous.get("search_errors")),
+            _shift("успешных", d.get("successful_searches", d["searches"]), search_previous.get("successful_searches")),
+            _shift("медиана выдачи", d["search_median"], search_previous.get("search_median")),
+            _shift("доля символов", d["search_share"], search_previous.get("search_share"), _pct),
+            _shift("впустую (от успешных поисков)", d["miss_rate"], previous_miss_rate, rate_format),
+            _shift("успешных с ключом чата", attributed, p.get("attributed_searches")),
+            _shift("чтение/запись в том же чате", d["act_rate"], previous_action_rate, action_format),
         ]) + ".",
         # ⚠️ ДОЛИ ПО СЕССИЯМ — С НЕДЕЛЬНОГО ОКНА, и это не косметика. На сутках
         # сессий 2..7, одна двигает долю на ~17 п.п.: за первые 11 точек ряда
@@ -112,6 +120,12 @@ def format_report(d: dict, prev: dict | None) -> str:
         "",
         SNAPSHOT_MARK + json.dumps(d, ensure_ascii=False, sort_keys=True),
     ]
+    if "method_version" in d:
+        lines.insert(1, "Методика %s. Окно [%s; %s). События %s — %s." % (
+            d["method_version"], d.get("window_start", "?"), d.get("window_end", "?"),
+            d.get("coverage_start") or "нет", d.get("coverage_end") or "нет"))
+        if prev and not comparable:
+            lines.insert(2, "Предыдущий снимок рассчитан по другой методике. Дельты долей поиска пропущены.")
     return "\n".join(lines)
 
 

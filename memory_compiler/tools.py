@@ -1732,6 +1732,8 @@ async def _call_tool_body(name: str, arguments, client_session, state: dict):
     # чаты Code, и по общему ключу один чат прятал бы пункты от другого.
     chat_key = _session_key(client_session)
     chat_token = freshness.chat_key_var.set(chat_key if chat_key.startswith("c:") else "")
+    route_token = handlers.route_payload_var.set(None) if name == "route_project" else None
+    route_payload = None
     try:
         result = ([TextContent(type="text", text=refusal)] if refusal
                   else await _dispatch_tool(name, arguments))
@@ -1741,6 +1743,9 @@ async def _call_tool_body(name: str, arguments, client_session, state: dict):
         result = [TextContent(type="text", text=f"❌ Небезопасный параметр: {e}")]
         telemetry.trace_var.get().update(outcome="rejected", reason="unsafe_parameter")
     finally:
+        if route_token is not None:
+            route_payload = handlers.route_payload_var.get()
+            handlers.route_payload_var.reset(route_token)
         freshness.chat_key_var.reset(chat_token)
     state["phase"] = "postprocess_exception"
     if not refusal:
@@ -1768,6 +1773,8 @@ async def _call_tool_body(name: str, arguments, client_session, state: dict):
     structured = None
     if name == "search":
         result, structured = _search_response(arguments.get("query", ""), result)
+    elif name == "route_project":
+        structured = route_payload
 
     # Track response size (result может содержать ResourceLink без .text)
     total = sum(len(getattr(t, "text", "") or "") for t in result)

@@ -32,6 +32,19 @@ def test_machine_snapshot_round_trips():
     assert daily_metrics.parse_snapshot(text) == SNAP
 
 
+def test_method_change_suppresses_incomparable_search_deltas():
+    current = dict(SNAP, method_version=2, successful_searches=30,
+                   attributed_searches=25, search_errors=10)
+    previous = dict(current, method_version=1, act_rate=0.1, search_errors=1,
+                    search_median=9999, search_share=0.99)
+    text = daily_metrics.format_report(current, previous)
+    search_line = next(line for line in text.splitlines() if line.startswith("ПОИСК."))
+    assert "ошибок 10" in search_line and "ошибок 1 →" not in search_line
+    assert "чтение/запись в том же чате 70%" in search_line
+    assert "9999" not in search_line and "99%" not in search_line
+    assert "другой методике" in text
+
+
 def test_second_run_shows_movement():
     prev = dict(SNAP, search_median=14287, blind_rate=0.81)
     text = daily_metrics.format_report(SNAP, prev)
@@ -189,7 +202,7 @@ def test_search_rate_deltas_require_a_successful_comparable_snapshot(prev):
                 miss_rate=0.333, act_rate=0.333)
     text = daily_metrics.format_report(snap, prev)
     assert "впустую (от успешных поисков) 33%" in text
-    assert "привело к действию (от успешных поисков) 33%" in text
+    assert "чтение/запись в том же чате —" in text
     assert "50% → 33%" not in text and "0% → 33%" not in text
 
 
@@ -201,15 +214,26 @@ def test_error_only_daily_report_has_no_defined_search_rates_or_delta():
     search_line = next(line for line in text.splitlines() if line.startswith("ПОИСК."))
     assert "нет успешных поисков" in search_line
     assert "впустую (от успешных поисков) —" in search_line
-    assert "привело к действию (от успешных поисков) —" in search_line
+    assert "чтение/запись в том же чате —" in search_line
     assert "→ 0%" not in search_line
 
 
 
 def test_search_rate_deltas_remain_for_two_successful_new_snapshots():
-    prev = dict(SNAP, successful_searches=40, search_errors=0, miss_rate=0.2, act_rate=0.7)
+    prev = dict(SNAP, successful_searches=40, search_errors=0, miss_rate=0.2, act_rate=0.7,
+                attributed_searches=20)
     snap = dict(SNAP, searches=5, successful_searches=3, search_errors=2,
-                miss_rate=0.333, act_rate=0.333)
+                miss_rate=0.333, act_rate=0.5, attributed_searches=2)
     text = daily_metrics.format_report(snap, prev)
     assert "впустую (от успешных поисков) 20% → 33%" in text
-    assert "привело к действию (от успешных поисков) 70% → 33%" in text
+    assert "успешных с ключом чата 20 → 2" in text
+    assert "чтение/запись в том же чате 70% → 50%" in text
+
+
+def test_new_action_rate_does_not_compare_with_global_snapshot():
+    prev = dict(SNAP, successful_searches=40, miss_rate=0.2, act_rate=0.7)
+    snap = dict(SNAP, successful_searches=3, miss_rate=0.333, act_rate=0.5,
+                attributed_searches=2)
+    text = daily_metrics.format_report(snap, prev)
+    assert "впустую (от успешных поисков) 33%" in text
+    assert "чтение/запись в том же чате 50%" in text

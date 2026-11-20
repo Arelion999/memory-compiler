@@ -153,7 +153,7 @@ The new chat should recover the decision and cite the note saved in the first ch
 | `list_projects()` | List projects with article counts |
 | `set_project_deps(project, depends_on)` | Declare dependencies between projects |
 | `get_project_deps(project)` | Read a project's dependencies |
-| `route_project(text, cwd, top_k)` | Choose a project from the working directory and task context |
+| `route_project(text, cwd, top_k)` | Choose a project from the working directory and task context; `structuredContent` includes the recommended `project`, `score` and `source` |
 | `init_schema(project)` | Create a project contract template in `_schema.md` |
 
 **Maintenance:**
@@ -360,7 +360,9 @@ Requires a client that declares the extension on `initialize`; Claude web and de
 
 To edit an existing secret in the Web UI, expand its card and choose **Edit**. Saving updates the encrypted content in the same article. The editor requires configured authentication and an encryption key. If the article changes while the editor is open, reopen it before saving.
 
-`/api/analytics` separates search attempts (`searches`), technical failures (`search_errors`), and successful searches (`successful_searches`). Empty results (`misses`) and action rates use successful searches as their denominator. A failed search is not an empty result; failed reads and writes are not successful actions. The Web UI and daily reports show no percentage when there are no successful searches.
+`/api/analytics` separates search attempts (`searches`), rejections, errors and cancellations (`search_errors`), and successful searches (`successful_searches`). The empty-result rate (`miss_rate`) uses all successful searches. The action rate (`act_rate`) uses successful searches with an explicit or hinted chat key (`attributed_searches`). It checks for the first successful read or write or the next search attempt in the same chat within three minutes. The Web UI and daily reports display rates when the corresponding sample is available. Daily reports compare rates with snapshots using the same method.
+
+Method version 2 reports `method_version`, `window_start`, `window_end`, `coverage_start` and `coverage_end`. The window includes its start and excludes its end. Coverage identifies the first and last recorded calls in that window. Snapshots from the earlier global calculation retain their historical values and do not supply search-rate deltas for version 2. These sequences measure subsequent memory activity. Confirmed task outcomes require separate verification.
 
 MCP tools reject undeclared fields, missing required arguments, and incorrect types with `isError: true` and an `Input validation error` message that names the field or expected type without echoing argument values. Validation runs after argument recovery and project fallback, before the handler; an invalid call does not save an article. For example, remove `limit` from `search` and `verified` from `finish_task`: these tools do not support those fields.
 

@@ -18,7 +18,8 @@ def _write_log(tmp_path, rows):
 
 def _row(offset_sec, tool, size=8000, **args):
     ts = datetime.fromtimestamp(time.time() + offset_sec).strftime(analytics.AUDIT_TS_FMT)
-    return {"ts": ts, "tool": tool, "args": args, "size": size}
+    return {"ts": ts, "tool": tool, "args": args, "size": size,
+            "trace": {"chat_source": "explicit", "chat_hash": "chat-a"}}
 
 
 @pytest.fixture
@@ -32,6 +33,36 @@ def test_empty_log_gives_zeros_not_crash(audit):
     audit([])
     q = analytics.quality(24)
     assert q["searches"] == 0 and q["miss_rate"] == 0.0 and q["miss_queries"] == []
+
+
+def test_quality_reports_method_and_fixed_window(audit):
+    end = datetime(2026, 11, 20, 4, 30).timestamp()
+    audit([
+        {"ts": "2026-11-13 04:29:59", "tool": "search", "size": 1000},
+        {"ts": "2026-11-13 04:30:00", "tool": "search", "size": 1000},
+        {"ts": "2026-11-20 04:30:00", "tool": "search", "size": 1000},
+    ])
+    q = analytics.quality(168, until=end)
+    assert q["method_version"] == 2
+    assert q["searches"] == 1
+    assert q["window_start"].startswith("2026-11-13T04:30:00")
+    assert q["window_end"].startswith("2026-11-20T04:30:00")
+    assert q["coverage_start"] == q["coverage_end"] == "2026-11-13 04:30:00"
+    assert analytics.daily(168, until=end)["method_version"] == 2
+
+
+def test_published_window_can_be_replayed_with_fractional_end(audit):
+    end = datetime(2026, 11, 20, 4, 30, 0, 500000).timestamp()
+    audit([{"ts": "2026-11-20 04:30:00", "tool": "search", "size": 1000}])
+    report = analytics.quality(24, until=end)
+    published_end = datetime.fromisoformat(report["window_end"]).timestamp()
+    assert analytics.quality(24, until=published_end)["calls"] == report["calls"] == 1
+
+
+@pytest.mark.parametrize("seconds,expected", [(180, 1), (181, 0)])
+def test_search_outcome_window_boundary(audit, seconds, expected):
+    audit([_row(-600, "search"), _row(-600 + seconds, "read_article")])
+    assert analytics.quality(24)["acted"] == expected
 
 
 def test_missing_file_is_survivable(tmp_path, monkeypatch):
@@ -75,6 +106,55 @@ def test_read_after_search_counts_as_useful(audit):
     q = analytics.quality(24)
     assert q["acted"] == 1 and q["act_rate"] == 1.0
     assert q["chained"] == 0
+
+
+def test_search_outcomes_are_attributed_only_within_a_known_chat(audit):
+    audit([
+        _row(-600, "search", _count=1),
+        dict(_row(-590, "search", _count=1),
+             trace={"chat_source": "explicit", "chat_hash": "chat-b"}),
+        dict(_row(-580, "read_article"),
+             trace={"chat_source": "explicit", "chat_hash": "chat-b"}),
+        dict(_row(-570, "read_article"), trace=None),
+        dict(_row(-560, "search", _count=0), trace=None),
+        dict(_row(-550, "read_article"), trace=None),
+        dict(_row(-540, "search", _count=1),
+             trace={"chat_source": "mcp", "chat_hash": "shared-transport"}),
+        dict(_row(-530, "read_article"),
+             trace={"chat_source": "mcp", "chat_hash": "shared-transport"}),
+        dict(_row(-520, "search", _count=1),
+             trace={"chat_source": "hint", "chat_hash": "chat-c"}),
+        dict(_row(-510, "read_article"),
+             trace={"chat_source": "explicit", "chat_hash": "chat-c"}),
+    ])
+    q = analytics.quality(24)
+    assert (q["successful_searches"], q["misses"], q["miss_rate"]) == (5, 1, 0.2)
+    assert (q["attributed_searches"], q["acted"], q["chained"]) == (3, 2, 0)
+    assert q["act_rate"] == pytest.approx(2 / 3, abs=1e-3)
+    assert analytics.daily(24)["attributed_searches"] == 3
+
+
+def test_search_without_chat_keeps_miss_metrics(audit):
+    audit([
+        dict(_row(-600, "search", _count=0), trace=None),
+        dict(_row(-590, "read_article"), trace=None),
+    ])
+    q = analytics.quality(24)
+    assert (q["successful_searches"], q["miss_rate"]) == (1, 1.0)
+    assert (q["attributed_searches"], q["acted"], q["chained"], q["act_rate"]) == (0, 0, 0, 0.0)
+
+
+def test_rejected_calls_are_not_successful_even_without_audit_error(audit):
+    search = _row(-600, "search", _count=1)
+    rejected_read = _row(-590, "read_article")
+    rejected_search = _row(-580, "search", _count=0)
+    rejected_write = _row(-570, "save_lesson")
+    for entry in (rejected_read, rejected_search, rejected_write):
+        entry["trace"]["outcome"] = "rejected"
+    audit([search, rejected_read, rejected_search, rejected_write, _row(-560, "read_article")])
+    q = analytics.quality(24)
+    assert (q["successful_searches"], q["search_errors"], q["misses"]) == (1, 1, 0)
+    assert (q["attributed_searches"], q["acted"], q["chained"], q["writes"]) == (1, 0, 1, 0)
 
 
 def test_second_search_without_action_is_only_chained(audit):

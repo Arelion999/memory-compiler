@@ -1587,6 +1587,9 @@ mg.STATE_DIR = state
 mg.HOOK_LOG = state / "race.log"
 mg.PENDING_DIR = state / "pending"
 mg._target_map_cache = {}
+# This race checks atomic merging. Timeout rejection is tested separately above.
+# Eight processes on a loaded Windows host can exhaust the normal one-second budget.
+mg.REFLEX_LOCK_WAIT = 10.0
 role, start, addrs = sys.argv[3], float(sys.argv[4]), sys.argv[5].split(",")
 
 

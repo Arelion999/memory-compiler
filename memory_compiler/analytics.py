@@ -9,11 +9,9 @@
 запросов, не нашедших ничего, — 29..56. Отсюда MISS_SIZE = 200: он ловит
 «ничего не найдено» и не задевает короткие, но содержательные ответы.
 
-⚠️ СВЯЗКА «поиск -> чтение» ПРИБЛИЗИТЕЛЬНА. Аудит не пишет session_id, поэтому
-чтение сопоставляется с поиском по времени и глобально: при параллельных
-сессиях возможен перехлёст. Для вопроса «часто ли выдача вообще пригождается»
-этого достаточно; точные цифры ранжирования даёт retrieval_eval.py на
-golden-наборе, и подменять его этим модулем нельзя.
+Связка «поиск -> чтение/запись» учитывает первое подходящее событие за 180 секунд
+в том же explicit/hint-чате. Успешные поиски без ключа участвуют в статистике
+пустых выдач. Рабочий результат задачи эта последовательность не подтверждает.
 
 ⚠️ ЧТЕНИЕ ЛОГА — ТЯЖЁЛОЕ (файл в мегабайтах). Из async-хендлера вызывать
 только через asyncio.to_thread, иначе встаёт весь сервер: ровно этот класс
@@ -33,6 +31,7 @@ AUDIT_TS_FMT = "%Y-%m-%d %H:%M:%S"
 MISS_SIZE = 200
 FOLLOW_SEC = 180
 TAIL_BYTES = 20_000_000
+METHOD_VERSION = 2
 
 SEARCH_TOOLS = {"search", "search_by_tag", "search_error", "search_decisions",
                 "search_snippets", "ask"}
@@ -46,7 +45,7 @@ def _audit_path() -> Path:
     return Path(KNOWLEDGE_DIR) / "_audit.log"
 
 
-def _read_rows(hours: float) -> list[dict]:
+def _read_rows(hours: float, *, until: float | None = None) -> list[dict]:
     path = _audit_path()
     try:
         size = path.stat().st_size
@@ -57,7 +56,8 @@ def _read_rows(hours: float) -> list[dict]:
             data = f.read()
     except Exception:
         return []
-    since = time.time() - hours * 3600
+    end = round(time.time() if until is None else until, 6)
+    since = end - hours * 3600
     rows = []
     for line in data.decode("utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -68,14 +68,48 @@ def _read_rows(hours: float) -> list[dict]:
             ts = datetime.strptime(rec.get("ts", ""), AUDIT_TS_FMT).timestamp()
         except Exception:
             continue
-        if ts >= since:
+        if since <= ts < end:
             rec["_ts"] = ts
             rows.append(rec)
     rows.sort(key=lambda r: r["_ts"])
     return rows
 
 
-def quality(hours: float = 168.0) -> dict:
+def _succeeded(row: dict) -> bool:
+    trace = row.get("trace") or {}
+    return not row.get("error") and trace.get("outcome") in (None, "ok")
+
+
+def _search_outcomes(rows: list[dict]) -> tuple[int, int, int]:
+    """Count attributed searches and their next qualifying event in the same chat.
+
+    Keep in sync with the standalone mc_guard stats command.
+    """
+    next_event = {}
+    attributed = acted = chained = 0
+    for row in reversed(rows):
+        trace = row.get("trace") or {}
+        chat = trace.get("chat_hash") if trace.get("chat_source") in ("explicit", "hint") else None
+        if not chat:
+            continue
+        ts = row["_ts"]
+        tool = row.get("tool")
+        if tool in SEARCH_TOOLS:
+            if _succeeded(row):
+                attributed += 1
+                following = next_event.get(chat)
+                if following and ts + FOLLOW_SEC >= following[0]:
+                    if following[1]:
+                        acted += 1
+                    else:
+                        chained += 1
+            next_event[chat] = (ts, False)
+        elif (tool == "read_article" or tool in WRITE_TOOLS) and _succeeded(row):
+            next_event[chat] = (ts, True)
+    return attributed, acted, chained
+
+
+def quality(hours: float = 168.0, *, until: float | None = None) -> dict:
     """Сводка качества за период. Вызывать в потоке, а не в event loop.
 
     ⚠️ МЕТРИКА ПОЛЬЗЫ СЧИТАЕТ ДЕЙСТВИЕ, А НЕ ТОЛЬКО ЧТЕНИЕ (v1.66.0). Прежний
@@ -95,10 +129,11 @@ def quality(hours: float = 168.0) -> dict:
     по тому, как красивее выглядит метрика, значит калибровать измерение под
     ответ. Остаётся наблюдаемый факт: `chained` — за поиском сразу поиск.
     """
-    rows = _read_rows(hours)
+    end = round(time.time() if until is None else until, 6)
+    rows = _read_rows(hours, until=end)
     searches = [r for r in rows if r.get("tool") in SEARCH_TOOLS]
     # Attempts include failures; retrieval rates describe completed searches only.
-    successful = [r for r in searches if not r.get("error")]
+    successful = [r for r in searches if _succeeded(r)]
 
     # ⚠️ ИСХОД ОПРЕДЕЛЯЕТ ПЕРВОЕ СОБЫТИЕ ПОСЛЕ ПОИСКА, а не наличие действия в
     # окне. Прежнее `any(...)` засчитывало одно чтение сразу нескольким поискам:
@@ -106,8 +141,8 @@ def quality(hours: float = 168.0) -> dict:
     # случившееся уже после второго. Сверка на боевом логе (525 поисков за
     # месяц): по окну выходило 85% полезных, по первому событию — 68%, то есть
     # 88 поисков были засчитаны за чужой счёт.
-    pos = {id(r): i for i, r in enumerate(rows)}
-    misses, acted, chained = [], 0, 0
+    attributed, acted, chained = _search_outcomes(rows)
+    misses = []
     for s in successful:
         # v1.91.0 убрал «score: »/«secret:false» из выдачи search — короткий, но
         # непустой ответ (один результат) стал попадать под MISS_SIZE по одной
@@ -120,16 +155,6 @@ def quality(hours: float = 168.0) -> dict:
             is_miss = int(s.get("size") or 0) < MISS_SIZE
         if is_miss:
             misses.append(s)
-        for nxt in rows[pos[id(s)] + 1:]:
-            if nxt["_ts"] - s["_ts"] > FOLLOW_SEC:
-                break
-            tool = nxt.get("tool")
-            if not nxt.get("error") and (tool == "read_article" or tool in WRITE_TOOLS):
-                acted += 1
-                break
-            if tool in SEARCH_TOOLS:
-                chained += 1
-                break
 
     # Кто съедает контекст. Без этой строки приоритеты ставились вслепую: замер
     # показал, что 64% всех отданных символов приходится на search, а вовсе не
@@ -140,7 +165,7 @@ def quality(hours: float = 168.0) -> dict:
         if isinstance(size, int) and size > 0:
             volume[r.get("tool") or "?"] = volume.get(r.get("tool") or "?", 0) + size
 
-    writes = [r for r in rows if r.get("tool") in WRITE_TOOLS and not r.get("error")]
+    writes = [r for r in rows if r.get("tool") in WRITE_TOOLS and _succeeded(r)]
     projects: dict[str, int] = {}
     for r in writes:
         proj = (r.get("args") or {}).get("project") or "?"
@@ -148,15 +173,21 @@ def quality(hours: float = 168.0) -> dict:
 
     n = len(successful)
     return {
+        "method_version": METHOD_VERSION,
+        "window_start": datetime.fromtimestamp(end - hours * 3600).astimezone().isoformat(timespec="microseconds"),
+        "window_end": datetime.fromtimestamp(end).astimezone().isoformat(timespec="microseconds"),
+        "coverage_start": rows[0]["ts"] if rows else None,
+        "coverage_end": rows[-1]["ts"] if rows else None,
         "hours": hours,
         "calls": len(rows),
         "searches": len(searches),
         "search_errors": len(searches) - n,
         "successful_searches": n,
+        "attributed_searches": attributed,
         "misses": len(misses),
         "miss_rate": round(len(misses) / n, 3) if n else 0.0,
         "acted": acted,
-        "act_rate": round(acted / n, 3) if n else 0.0,
+        "act_rate": round(acted / attributed, 3) if attributed else 0.0,
         "chained": chained,
         "context_bytes": sorted(volume.items(), key=lambda kv: -kv[1])[:8],
         "context_total": sum(volume.values()),
@@ -243,7 +274,7 @@ def _median(values: list) -> int:
     return int(s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2)
 
 
-def daily(hours: float = 24.0) -> dict:
+def daily(hours: float = 24.0, *, until: float | None = None) -> dict:
     """Суточный срез качества памяти. Вызывать в потоке, а не в event loop.
 
     ⚠️ Существующие формулы НЕ дублируются — miss_rate/act_rate/chained берутся
@@ -252,20 +283,21 @@ def daily(hours: float = 24.0) -> dict:
     разъедется молча. Цена — лог читается дважды; на суточном окне это доли
     секунды, и она осознанная.
     """
-    q = quality(hours)
+    end = round(time.time() if until is None else until, 6)
+    q = quality(hours, until=end)
     # Читаем ОДИН раз по широкому окну и режем срез в памяти: отдельное чтение
     # ради недели было бы третьим проходом по мегабайтному логу за один замер.
     trend_hours = max(float(hours), TREND_HOURS)
-    trend_rows = _read_rows(trend_hours)
-    since = time.time() - float(hours) * 3600
+    trend_rows = _read_rows(trend_hours, until=end)
+    since = end - float(hours) * 3600
     rows = [r for r in trend_rows if r["_ts"] >= since]
 
-    searches = [r for r in rows if r.get("tool") == "search" and not r.get("error")]
+    searches = [r for r in rows if r.get("tool") == "search" and _succeeded(r)]
     sizes = [int(r.get("size") or 0) for r in searches if int(r.get("size") or 0) > 0]
     total_chars = sum(int(r["size"]) for r in rows
                       if isinstance(r.get("size"), int) and r["size"] > 0)
 
-    finishes = [r for r in rows if r.get("tool") == "finish_task" and not r.get("error")]
+    finishes = [r for r in rows if r.get("tool") == "finish_task" and _succeeded(r)]
     no_summary = [r for r in finishes
                   if not str((r.get("args") or {}).get("session_summary") or "").strip()]
 
@@ -282,17 +314,19 @@ def daily(hours: float = 24.0) -> dict:
 
     nf = len(finishes)
     return {
+        **{key: q[key] for key in ("method_version", "window_start", "window_end", "coverage_start", "coverage_end")},
         "hours": hours,
         "calls": q["calls"],
         "searches": q["searches"],
         "search_errors": q["search_errors"],
         "successful_searches": q["successful_searches"],
+        "attributed_searches": q["attributed_searches"],
         "miss_rate": q["miss_rate"],
         "act_rate": q["act_rate"],
         "chained": q["chained"],
         "search_median": _median(sizes),
         "search_share": round(sum(sizes) / total_chars, 3) if total_chars else 0.0,
-        "notes": len([r for r in rows if r.get("tool") == "session_note" and not r.get("error")]),
+        "notes": len([r for r in rows if r.get("tool") == "session_note" and _succeeded(r)]),
         "finish_total": nf,
         "finish_no_summary": len(no_summary),
         "no_summary_rate": round(len(no_summary) / nf, 3) if nf else 0.0,

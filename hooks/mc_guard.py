@@ -1929,42 +1929,58 @@ SEARCH_FOLLOW_SEC = 180
 
 SEARCH_TOOLS = {"search", "search_by_tag", "search_error", "search_decisions",
                 "search_snippets", "ask"}
+STATS_WRITE_TOOLS = WRITE_TOOLS - {"compile"}
 
 
-def _product_stats(hours):
+def _stats_succeeded(row):
+    trace = row.get("trace") or {}
+    return not row.get("error") and trace.get("outcome") in (None, "ok")
+
+
+def _product_stats(hours, *, until=None):
     """Метрики САМОЙ базы, а не сторожа: где память не сработала как продукт.
 
-    Источник — knowledge/_audit.log (локальное зеркало). Сопоставление
-    «поиск -> чтение» идёт по времени и глобально: session_id аудит не пишет,
-    поэтому при параллельных сессиях цифра приблизительная. Для «часто ли
-    выдача вообще пригождается» этого достаточно, для точных выводов есть
-    retrieval_eval.py на golden-наборе."""
-    since = datetime.now().timestamp() - hours * 3600
+    Источник — knowledge/_audit.log (локальное зеркало). Исход поиска
+    связывается с ближайшим событием того же чата, как на сервере."""
+    end = round(datetime.now().timestamp() if until is None else until, 6)
+    since = end - hours * 3600
     rows = []
     for r in _tail_audit(max_bytes=20_000_000):
         try:
             ts = datetime.strptime(r.get("ts", ""), AUDIT_TS_FMT)
         except Exception:
             continue
-        if ts.timestamp() >= since:
+        if since <= ts.timestamp() < end:
             r["_ts"] = ts
             rows.append(r)
     rows.sort(key=lambda r: r["_ts"])
 
     searches = [r for r in rows if r.get("tool") in SEARCH_TOOLS]
     # Attempts include failures; retrieval rates describe completed searches only.
-    successful = [r for r in searches if not r.get("error")]
-    # Полезным исходом считается ДЕЙСТВИЕ по выдаче — чтение статьи ИЛИ запись в
-    # базу. Прежний счёт только по read_article объявлял провалом самый частый
-    # удачный случай: ответ нашёлся прямо в превью (выдача поиска весит 13 КБ),
-    # и сессия пошла писать. Замер 26.08.2026, 525 поисков за месяц: чтение 51%,
-    # запись 17%, ещё поиск 22%, ничего 9%.
-    # ⚠️ Исход определяет ПЕРВОЕ событие после поиска, а не наличие действия в
-    # окне: `any(...)` засчитывал одно чтение сразу нескольким поискам. Сверка на
-    # боевом логе (525 поисков за месяц): по окну 85% полезных, по первому
-    # событию — 68%; завышение на 88 поисков.
-    pos = {id(r): i for i, r in enumerate(rows)}
-    misses, acted, chained = [], 0, 0
+    successful = [r for r in searches if _stats_succeeded(r)]
+    # Same algorithm as analytics._search_outcomes. The hook runs standalone.
+    next_event = {}
+    attributed = acted = chained = 0
+    for row in reversed(rows):
+        trace = row.get("trace") or {}
+        chat = trace.get("chat_hash") if trace.get("chat_source") in ("explicit", "hint") else None
+        if not chat:
+            continue
+        ts = row["_ts"]
+        tool = row.get("tool", "")
+        if tool in SEARCH_TOOLS:
+            if _stats_succeeded(row):
+                attributed += 1
+                following = next_event.get(chat)
+                if following and (following[0] - ts).total_seconds() <= SEARCH_FOLLOW_SEC:
+                    if following[1]:
+                        acted += 1
+                    else:
+                        chained += 1
+            next_event[chat] = (ts, False)
+        elif (tool == "read_article" or tool in STATS_WRITE_TOOLS) and _stats_succeeded(row):
+            next_event[chat] = (ts, True)
+    misses = []
     for s in successful:
         # v1.91.0 убрал «score: »/«secret:false» из выдачи search — короткий, но
         # непустой ответ (один результат) стал попадать под SEARCH_MISS_SIZE по одной
@@ -1978,16 +1994,6 @@ def _product_stats(hours):
             is_miss = int(s.get("size") or 0) < SEARCH_MISS_SIZE
         if is_miss:
             misses.append(s)
-        for nxt in rows[pos[id(s)] + 1:]:
-            if (nxt["_ts"] - s["_ts"]).total_seconds() > SEARCH_FOLLOW_SEC:
-                break
-            tool = nxt.get("tool", "")
-            if not nxt.get("error") and (tool == "read_article" or short_tool(tool) in WRITE_TOOLS):
-                acted += 1
-                break
-            if tool in SEARCH_TOOLS:
-                chained += 1
-                break
 
     # Кто съедает контекст: без этой строки приоритеты ставились вслепую.
     volume = {}
@@ -1997,17 +2003,21 @@ def _product_stats(hours):
             t = r.get("tool") or "?"
             volume[t] = volume.get(t, 0) + size
 
-    written = [r for r in rows if short_tool(r.get("tool", "")) in WRITE_TOOLS
-               and not r.get("error")]
+    written = [r for r in rows if r.get("tool") in STATS_WRITE_TOOLS
+               and _stats_succeeded(r)]
     projects = {}
     for r in written:
         proj = (r.get("args") or {}).get("project") or "?"
         projects[proj] = projects.get(proj, 0) + 1
     return {
+        "method_version": 2,
+        "window_start": datetime.fromtimestamp(since).astimezone().isoformat(timespec="microseconds"),
+        "window_end": datetime.fromtimestamp(end).astimezone().isoformat(timespec="microseconds"),
         "searches": len(searches), "search_errors": len(searches) - len(successful),
         "successful_searches": len(successful), "misses": misses, "acted": acted,
+        "attributed_searches": attributed,
         "miss_rate": round(len(misses) / len(successful), 3) if successful else 0.0,
-        "act_rate": round(acted / len(successful), 3) if successful else 0.0,
+        "act_rate": round(acted / attributed, 3) if attributed else 0.0,
         "chained": chained, "written": len(written),
         "volume": sorted(volume.items(), key=lambda kv: -kv[1])[:5],
         "volume_total": sum(volume.values()),
@@ -2075,12 +2085,15 @@ def cmd_stats(event):
         print("  ошибок поиска              %d" % ps["search_errors"])
         print("  успешных поисков           %d" % ps["successful_searches"])
         if ps["successful_searches"]:
-            print("  доли — от успешных поисков")
-            print("  из них впустую             %d (%d%%)" % (
+            print("  впустую (от успешных)      %d (%d%%)" % (
                 miss_n, round(100 * miss_n / ps["successful_searches"])))
-            print("  привело к действию         %d (%d%%) — чтение статьи или запись в базу" % (
-                ps["acted"], round(100 * ps["acted"] / ps["successful_searches"])))
-            print("  за поиском сразу поиск     %d (обычно сбор по разным подтемам)" % ps["chained"])
+            print("  успешных с ключом чата     %d" % ps["attributed_searches"])
+            if ps["attributed_searches"]:
+                print("  чтение/запись в том же чате %d (%d%%)" % (
+                    ps["acted"], round(100 * ps["acted"] / ps["attributed_searches"])))
+                print("  следующий поиск в том же чате %d" % ps["chained"])
+            else:
+                print("  доля действий в чате       —")
         elif ps["searches"]:
             print("  успешных поисков нет; доли не вычисляются")
         if ps.get("volume_total"):
@@ -2123,14 +2136,6 @@ def cmd_stats(event):
                 "%d%% успешных поисков впустую — это пробел БАЗЫ или ранжирования, "
                 "запросы выше стоит завести статьями либо добавить в golden-набор "
                 "retrieval_eval" % round(100 * miss_share))
-        # ⚠️ Порог по доле действий НАМЕРЕННО НИЗКИЙ. Прежний вердикт срабатывал
-        # при <50% и указывал на ранжирование, хотя считал только чтение статьи;
-        # на боевых данных к действию ведут 68% поисков. Вердикт о ранжировании
-        # имеет смысл лишь при явном провале, а не при норме.
-        if ps["acted"] / ps["successful_searches"] < 0.25:
-            verdicts.append(
-                "лишь %d%% успешных поисков привели к действию — стоит посмотреть ранжирование "
-                "на golden-наборе (retrieval_eval)" % round(100 * ps["acted"] / ps["successful_searches"]))
     if cnt.get("mc.fail", 0) >= 3:
         verdicts.append(
             "%d отказов записи — если это -32001, причина в рестартах контейнера "

@@ -71,12 +71,21 @@ def test_hook_search_error_metrics_match_server(monkeypatch, tmp_path, capsys):
             row(110, "search_by_tag", 20), row(100, "ask"),
             row(90, "search_error", 0, "TypeError"), row(80, "read_article"),
             row(70, "finish_task", error="TypeError", project="bad")]
+    for entry in rows:
+        entry["trace"] = {"chat_source": "explicit", "chat_hash": "chat-a"}
+    rows[5]["trace"]["chat_hash"] = "chat-b"
+    rows[7]["trace"]["chat_hash"] = "chat-b"
+    rows.append(dict(row(105, "compile", dry_run=True, project="preview"),
+                     trace={"chat_source": "explicit", "chat_hash": "chat-a"}))
+    rows.append(dict(row(107, "read_article"),
+                     trace={"chat_source": "explicit", "chat_hash": "chat-a", "outcome": "rejected"}))
     monkeypatch.setattr(hook, "_tail_audit", lambda **kw: [dict(r) for r in rows])
     monkeypatch.setattr(analytics, "KNOWLEDGE_DIR", tmp_path)
     (tmp_path / "_audit.log").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     actual, expected = hook._product_stats(24), analytics.quality(24)
     assert actual["searches"] == 5
-    for key in ("searches", "search_errors", "successful_searches", "acted", "chained", "miss_rate", "act_rate"):
+    for key in ("searches", "search_errors", "successful_searches", "attributed_searches",
+                "acted", "chained", "miss_rate", "act_rate"):
         assert actual[key] == expected[key]
     assert len(actual["misses"]) == expected["misses"] == 1
     assert actual["written"] == expected["writes"] == 1
@@ -87,8 +96,9 @@ def test_hook_search_error_metrics_match_server(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sys, "argv", ["mc_guard.py", "stats", "24"])
     assert hook.cmd_stats({}) == 0
     text = capsys.readouterr().out
-    assert text.count("1 (33%)") == 2
-    assert "доли — от успешных поисков" in text
+    assert "1 (33%)" in text
+    assert "чтение/запись в том же чате 2 (67%)" in text
+    assert "успешных с ключом чата" in text
 
 
 def test_hook_stats_only_errors_shows_errors_without_ranking_verdict(monkeypatch, capsys):

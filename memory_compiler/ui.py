@@ -358,10 +358,12 @@ var I18N={
     "quality.searches":"Попыток поиска",
     "quality.errors":"Ошибок поиска",
     "quality.successful":"Успешных поисков",
-    "quality.rateBase":"Доли — от успешных поисков",
-    "quality.misses":"Впустую",
-    "quality.useful":"Привело к действию",
-    "quality.reform":"За поиском сразу поиск",
+    "quality.misses":"Впустую (от успешных поисков)",
+    "quality.attributed":"Успешных с ключом чата",
+    "quality.method":"Версия методики",
+    "quality.window":"Окно",
+    "quality.useful":"Чтение/запись в том же чате",
+    "quality.reform":"Следующий поиск в том же чате",
     "quality.volume":"Съедено контекста",
     "quality.writes":"Записей в базу",
     "quality.missList":"Запросы, не давшие ничего",
@@ -464,10 +466,12 @@ var I18N={
     "quality.searches":"Search attempts",
     "quality.errors":"Search errors",
     "quality.successful":"Successful searches",
-    "quality.rateBase":"Rates — of successful searches",
-    "quality.misses":"Empty",
-    "quality.useful":"Led to an action",
-    "quality.reform":"Search followed by search",
+    "quality.misses":"Empty (of successful searches)",
+    "quality.attributed":"Successful searches with a chat key",
+    "quality.method":"Method version",
+    "quality.window":"Window",
+    "quality.useful":"Read or write in the same chat",
+    "quality.reform":"Next search in the same chat",
     "quality.volume":"Context consumed",
     "quality.writes":"Writes to base",
     "quality.missList":"Queries that returned nothing",
@@ -1716,15 +1720,17 @@ async function loadAnalytics(){
     // разорвав литерал пополам (поймано node --check, тот же класс, что с
     // плейсхолдером CSS).
     const NL=String.fromCharCode(10);
-    const pct=v=>q.successful_searches ? Math.round(v*100)+'%' : '—';
+    const pct=(v,base)=>base ? Math.round(v*100)+'%' : '—';
     h+='<div class="card"><h3>'+t('quality.title')+'</h3><pre>'
+      +(q.method_version ? t('quality.method')+': '+q.method_version+NL : '')
+      +(q.window_start && q.window_end ? t('quality.window')+': ['+esc(q.window_start)+'; '+esc(q.window_end)+')'+NL : '')
       +t('quality.searches')+': '+q.searches+NL
       +t('quality.errors')+': '+q.search_errors+NL
       +t('quality.successful')+': '+q.successful_searches+NL
-      +t('quality.rateBase')+NL
-      +t('quality.misses')+': '+q.misses+' ('+pct(q.miss_rate)+')'+NL
-      +t('quality.useful')+': '+q.acted+' ('+pct(q.act_rate)+')'+NL
-      +t('quality.reform')+': '+q.chained+NL
+      +t('quality.misses')+': '+q.misses+' ('+pct(q.miss_rate,q.successful_searches)+')'+NL
+      +t('quality.attributed')+': '+q.attributed_searches+NL
+      +t('quality.useful')+': '+(q.attributed_searches ? q.acted+' ('+pct(q.act_rate,q.attributed_searches)+')' : '—')+NL
+      +t('quality.reform')+': '+(q.attributed_searches ? q.chained : '—')+NL
       +t('quality.writes')+': '+q.writes+NL
       +t('quality.volume')+': '+Math.round((q.context_total||0)/1000)+' k'+NL
       +(q.context_bytes||[]).map(x=>'  '+x[0]+': '+Math.round(x[1]/1000)+' k').join(NL)+'</pre>';

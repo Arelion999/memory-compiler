@@ -5,6 +5,7 @@ All async functions return list[TextContent].
 import asyncio
 import re
 import shutil
+from contextvars import ContextVar
 from typing import Optional
 
 from mcp.types import TextContent
@@ -220,6 +221,9 @@ def _weighted_budgets(want: list[int], weight: list[float], total: int,
 
 
 
+route_payload_var: ContextVar[dict | None] = ContextVar("route_payload", default=None)
+
+
 def _cwd_candidates(cwd: str) -> list[tuple[str, int]]:
     """Проекты, совпавшие с cwd, в порядке предпочтения: [(имя, статей), ...].
 
@@ -285,11 +289,15 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
     """
     import memory_compiler.config as _cfg
 
+    # The Markdown remains readable while clients can use the exact recommendation.
+    route_payload_var.set({"project": "general", "score": 0, "source": "fallback"})
+
     # 0. CWD override — сильнейший сигнал. Если рабочий каталог совпадает с проектом, берём его.
     if cwd:
         candidates = _cwd_candidates(cwd)
         if candidates:
             cwd_proj = candidates[0][0]
+            route_payload_var.set({"project": cwd_proj, "score": 100, "source": "cwd"})
             # Остальные совпавшие называем вслух: пустой двойник в списке проектов
             # иначе так и висит незамеченным, а агент продолжает его угадывать.
             others = ", ".join(f"`{p}` ({n} статей)" for p, n in candidates[1:])
@@ -364,11 +372,13 @@ async def route_project(text: str = "", cwd: str = "", top_k: int = 3) -> list[T
     ambiguous = (len(sorted_scores) > 1 and sorted_scores[1][1] >= 25
                  and best_score - sorted_scores[1][1] < 5)
     if ambiguous:
+        route_payload_var.set({"project": "general", "score": 0, "source": "ambiguous"})
         second = sorted_scores[1][0]
         parts.append(f"\n→ Неоднозначно: «{best}» и «{second}» почти равны (разрыв "
                      f"{round(best_score - sorted_scores[1][1], 1)}) — уточни проект явно "
                      f"или используй `general`.")
     elif best_score >= 25:
+        route_payload_var.set({"project": best, "score": best_score, "source": "text"})
         parts.append(f"\n→ Используй `project=\"{best}\"` для save/start_task.")
     else:
         parts.append("\n→ Все совпадения слабые — лучше уточнить у пользователя или использовать `general`.")
